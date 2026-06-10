@@ -92,19 +92,39 @@ enum Commands {
     },
     /// Show index statistics
     Stats,
+    /// Agent hook entry points (read tool-call JSON from stdin)
+    Hook {
+        #[command(subcommand)]
+        action: HookAction,
+    },
     /// Run as MCP server (stdio transport)
     Mcp,
 }
 
+#[derive(Subcommand)]
+enum HookAction {
+    /// Pre-edit guard: refresh the index, then warn about callers/hotspots
+    /// of the file referenced in the tool-call JSON on stdin
+    PreEdit,
+    /// Post-edit: incrementally refresh the index
+    PostEdit,
+}
+
 fn main() -> Result<()> {
+    let cli = Cli::parse();
+
+    // Hooks share stderr with the agent — keep it for actionable warnings only.
+    let default_level = if matches!(cli.command, Commands::Hook { .. }) {
+        "warn"
+    } else {
+        "info"
+    };
     tracing_subscriber::fmt()
         .with_env_filter(
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(default_level)),
         )
         .with_writer(std::io::stderr)
         .init();
-
-    let cli = Cli::parse();
     let workspace = std::fs::canonicalize(&cli.workspace)?;
     let mut config = Config::new(&workspace);
 
@@ -138,6 +158,7 @@ fn main() -> Result<()> {
         Commands::Context { file } => cmd_context(config, &file, json),
         Commands::Map { limit } => cmd_map(config, limit, json),
         Commands::Stats => cmd_stats(config, json),
+        Commands::Hook { action } => cmd_hook(config, action, json),
         Commands::Mcp => cmd_mcp(config),
     }
 }
@@ -347,112 +368,25 @@ fn cmd_history(config: Config, file: &str, symbol: Option<&str>, json: bool) -> 
 
 fn cmd_context(config: Config, file: &str, json: bool) -> Result<()> {
     let repo = Repository::open(&config.db_path, config.model.dimensions)?;
-    let conn = repo.conn();
-
-    // Find file
-    let file_id: i64 = match conn.query_row(
-        "SELECT id FROM files WHERE path = ?1 OR path LIKE ?2",
-        rusqlite::params![file, format!("%{file}")],
-        |r| r.get(0),
-    ) {
-        Ok(id) => id,
-        Err(_) => {
-            eprintln!("file not found: {file}");
-            return Ok(());
-        }
+    let Some(output) = code_abyss::context::build_file_context(&repo, file)? else {
+        eprintln!("file not found: {file}");
+        return Ok(());
     };
-
-    let file_path: String = repo.get_file_path(file_id)?.unwrap_or_default();
-
-    // Get all symbols defined in this file
-    let symbols = repo.find_symbols_in_file(file_id)?;
-
-    // For each symbol, find external callers. Confident matches (>= 0.7) are
-    // reported as callers; ambiguous ones are listed separately so agents can
-    // tell solid ground from guesses.
-    const CONTEXT_MIN_CONFIDENCE: f64 = 0.7;
-    let caller_json = |c: &code_abyss::storage::repo::RefRecord| {
-        serde_json::json!({
-            "file": &c.source_file_path,
-            "line": c.source_line + 1,
-            "caller": &c.source_symbol,
-            "confidence": c.confidence,
-            "is_test": repo.is_test_file(c.source_file_id).unwrap_or(false),
-        })
-    };
-    let mut sym_callers: Vec<serde_json::Value> = Vec::new();
-    for sym in &symbols {
-        let callers = repo.find_callers_of(&sym.name, Some(file_id), 20)?;
-        let external: Vec<_> = callers
-            .iter()
-            .filter(|c| c.source_file_id != file_id)
-            .collect();
-        if !external.is_empty() {
-            let (confident, possible): (Vec<_>, Vec<_>) = external
-                .into_iter()
-                .partition(|c| c.confidence >= CONTEXT_MIN_CONFIDENCE);
-            sym_callers.push(serde_json::json!({
-                "symbol": sym.name,
-                "kind": sym.kind,
-                "line": sym.line + 1,
-                "external_callers": confident.into_iter().map(caller_json).collect::<Vec<_>>(),
-                "possible_callers": possible.into_iter().map(caller_json).collect::<Vec<_>>(),
-            }));
-        }
-    }
-
-    // Get outgoing refs (what this file depends on)
-    let mut deps_stmt = conn.prepare(
-        "SELECT DISTINCT r.target_name, f.path, r.kind
-         FROM refs r LEFT JOIN files f ON r.target_file_id = f.id
-         WHERE r.source_file_id = ?1 AND r.kind IN ('call','type_ref')
-         AND r.target_file_id IS NOT NULL AND r.target_file_id != ?1
-         LIMIT 20",
-    )?;
-    let deps: Vec<serde_json::Value> = deps_stmt
-        .query_map([file_id], |row| {
-            Ok(serde_json::json!({
-                "name": row.get::<_, String>(0)?,
-                "file": row.get::<_, String>(1)?,
-                "kind": row.get::<_, String>(2)?,
-            }))
-        })?
-        .filter_map(|r| r.ok())
-        .collect();
-
-    // Hotspot info
-    let hotspot: Option<(f64, i64, f64)> = conn.query_row(
-        "SELECT hotspot_score, change_count_30d, cyclomatic FROM file_metrics WHERE file_id = ?1",
-        [file_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-    ).ok();
-
-    // Coupled files
-    let mut coupling_stmt = conn.prepare(
-        "SELECT file_b, co_changes, coupling_score FROM change_coupling WHERE file_a = ?1
-         UNION SELECT file_a, co_changes, coupling_score FROM change_coupling WHERE file_b = ?1
-         ORDER BY coupling_score DESC LIMIT 5",
-    )?;
-    let coupled: Vec<serde_json::Value> = coupling_stmt
-        .query_map([&file_path], |row| {
-            Ok(serde_json::json!({
-                "file": row.get::<_, String>(0)?,
-                "co_changes": row.get::<_, i64>(1)?,
-                "coupling": format!("{:.0}%", row.get::<_, f64>(2)? * 100.0),
-            }))
-        })?
-        .filter_map(|r| r.ok())
-        .collect();
-
-    let output = serde_json::json!({
-        "file": file_path,
-        "symbols_defined": symbols.len(),
-        "symbols_with_external_callers": sym_callers,
-        "dependencies": deps,
-        "hotspot": hotspot.map(|(score, changes, cc)| serde_json::json!({
-            "score": score, "changes_30d": changes, "complexity": cc
-        })),
-        "coupled_files": coupled,
-    });
+    let file_path = output["file"].as_str().unwrap_or(file).to_string();
+    let sym_callers = output["symbols_with_external_callers"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    let deps = output["dependencies"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    let hotspot = output.get("hotspot").filter(|h| !h.is_null()).cloned();
+    let coupled = output["coupled_files"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    let symbols_defined = output["symbols_defined"].as_u64().unwrap_or(0);
 
     if json {
         println!("{}", serde_json::to_string_pretty(&output)?);
@@ -460,7 +394,7 @@ fn cmd_context(config: Config, file: &str, json: bool) -> Result<()> {
         println!("=== {} ===\n", file_path);
         println!(
             "{} symbols defined, {} with external callers\n",
-            symbols.len(),
+            symbols_defined,
             sym_callers.len()
         );
 
@@ -497,7 +431,9 @@ fn cmd_context(config: Config, file: &str, json: bool) -> Result<()> {
         if let Some(h) = &hotspot {
             println!(
                 "\n  hotspot: score={:.0}  changes={}  cc={:.0}",
-                h.0, h.1, h.2
+                h["score"].as_f64().unwrap_or(0.0),
+                h["changes_30d"].as_i64().unwrap_or(0),
+                h["complexity"].as_f64().unwrap_or(0.0)
             );
         }
 
@@ -576,6 +512,115 @@ fn cmd_stats(config: Config, json: bool) -> Result<()> {
             s["files"], s["chunks"], s["symbols"], s["refs"]
         );
     }
+    Ok(())
+}
+
+const HOOK_LANGS: [&str; 10] = [
+    "go", "rs", "ts", "tsx", "js", "jsx", "mjs", "cjs", "py", "pyi",
+];
+
+fn cmd_hook(config: Config, action: HookAction, json: bool) -> Result<()> {
+    // Hooks must never block the agent: every early-out is a silent success.
+    match action {
+        HookAction::PreEdit => hook_pre_edit(config, json),
+        HookAction::PostEdit => hook_post_edit(config),
+    }
+}
+
+fn read_stdin_json() -> Option<serde_json::Value> {
+    use std::io::Read;
+    let mut buf = String::new();
+    std::io::stdin().read_to_string(&mut buf).ok()?;
+    serde_json::from_str(buf.trim()).ok()
+}
+
+fn hook_pre_edit(config: Config, json: bool) -> Result<()> {
+    let Some(payload) = read_stdin_json() else {
+        return Ok(());
+    };
+    let Some(raw_path) = code_abyss::context::extract_file_path(&payload) else {
+        return Ok(());
+    };
+    let ext = raw_path.rsplit('.').next().unwrap_or("");
+    if !HOOK_LANGS.contains(&ext) {
+        return Ok(());
+    }
+    // Opt-in: only fire when the project has an index.
+    if !config.db_path.exists() {
+        return Ok(());
+    }
+
+    let repo = Repository::open(&config.db_path, config.model.dimensions)?;
+    // Hash-incremental refresh so warnings reflect the file as it is now.
+    let pipeline = IndexPipeline::new(config.clone());
+    let _ = pipeline.run_structural(&repo);
+
+    let rel = std::path::Path::new(&raw_path)
+        .strip_prefix(&config.workspace)
+        .map(|p| p.to_string_lossy().replace('\\', "/"))
+        .unwrap_or_else(|_| raw_path.replace('\\', "/"));
+
+    let Some(ctx) = code_abyss::context::build_file_context(&repo, &rel)? else {
+        return Ok(());
+    };
+    if json {
+        println!("{}", serde_json::to_string(&ctx)?);
+    }
+
+    let empty = Vec::new();
+    let syms = ctx["symbols_with_external_callers"]
+        .as_array()
+        .unwrap_or(&empty);
+    let mut prod = 0usize;
+    let mut possible = 0usize;
+    let mut names: Vec<String> = Vec::new();
+    for s in syms {
+        let confident = s["external_callers"]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .filter(|c| !c["is_test"].as_bool().unwrap_or(false))
+                    .count()
+            })
+            .unwrap_or(0);
+        possible += s["possible_callers"].as_array().map(Vec::len).unwrap_or(0);
+        if confident > 0 {
+            prod += confident;
+            names.push(s["symbol"].as_str().unwrap_or("?").to_string());
+        }
+    }
+
+    let fname = rel.rsplit('/').next().unwrap_or(&rel);
+    if prod > 0 {
+        let shown = names.iter().take(5).cloned().collect::<Vec<_>>().join(", ");
+        eprintln!(
+            "[abyss] {fname}: {prod} production caller(s) across {} symbol(s) ({shown})",
+            names.len()
+        );
+    }
+    if possible > 0 {
+        eprintln!(
+            "[abyss] {fname}: {possible} ambiguous reference(s) — `abyss callers <symbol> --min-confidence 0` to inspect"
+        );
+    }
+    if let Some(score) = ctx["hotspot"]["score"].as_f64()
+        && score > 5000.0
+    {
+        eprintln!(
+            "[abyss] ⚠ {fname} is a hotspot (score={score:.0}) — `abyss impact <symbol>` before large edits"
+        );
+    }
+
+    Ok(())
+}
+
+fn hook_post_edit(config: Config) -> Result<()> {
+    if !config.db_path.exists() {
+        return Ok(());
+    }
+    let repo = Repository::open(&config.db_path, config.model.dimensions)?;
+    let pipeline = IndexPipeline::new(config);
+    let _ = pipeline.run_structural(&repo);
     Ok(())
 }
 

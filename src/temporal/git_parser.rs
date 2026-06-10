@@ -42,7 +42,7 @@ pub fn parse_git_log_to_memory(workspace: &Path, since_days: u32) -> Result<GitD
         // Temporal data is best-effort: not a git repo, empty repo, locale-specific
         // error text, missing git — none of these should fail indexing.
         let stderr = String::from_utf8_lossy(&output.stderr);
-        tracing::warn!(
+        tracing::debug!(
             "git log unavailable, skipping temporal data: {}",
             stderr.trim()
         );
