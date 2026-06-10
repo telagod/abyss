@@ -1,9 +1,19 @@
 [package]
-name = "abyss"
-version = "0.2.0"
+name = "code-abyss"
+version = "0.3.0-dev"
 edition = "2024"
-description = "Code relationship graph and temporal intelligence CLI"
+description = "Code relationship graph and temporal intelligence CLI — the code graph your agent checks before it edits"
 license = "Apache-2.0"
+repository = "https://github.com/telagod/abyss"
+readme = "README.md"
+keywords = ["code-index", "call-graph", "tree-sitter", "mcp", "agent"]
+categories = ["development-tools", "command-line-utilities"]
+
+[features]
+# Slim by default: structural index + call graph + temporal intelligence.
+# `semantic` pulls fastembed (ONNX runtime) for embedding-based search — adds ~30MB to the binary.
+default = []
+semantic = ["dep:fastembed"]
 
 [[bin]]
 name = "abyss"
@@ -18,7 +28,7 @@ path = "src/lib.rs"
 rmcp = { version = "1", features = ["server", "transport-io"] }
 
 # Async runtime
-tokio = { version = "1", features = ["full"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-std", "io-util", "sync", "time"] }
 
 # SQLite + FTS5 + vector
 rusqlite = { version = "0.34", features = ["bundled", "blob"] }
@@ -43,8 +53,8 @@ tree-sitter-html = "0.23"
 tree-sitter-css = "0.23"
 # tree-sitter-markdown uses old API, skip for now
 
-# Embedding inference
-fastembed = "4"
+# Embedding inference (optional, feature = "semantic")
+fastembed = { version = "4", optional = true }
 
 # File system
 notify = "8"
@@ -76,5 +86,6 @@ num_cpus = "1"
 
 [profile.release]
 opt-level = 3
-lto = "thin"
+lto = "fat"
+codegen-units = 1
 strip = true

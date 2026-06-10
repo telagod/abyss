@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashSet, VecDeque};
 
 use anyhow::Result;
 use serde::Serialize;
@@ -75,12 +75,11 @@ impl<'a> GraphQuery<'a> {
                 tests.push(caller);
             } else {
                 direct.push(caller.clone());
-                if let Some(ref sym) = r.source_symbol {
-                    if !sym.is_empty() && !visited.contains(sym) {
+                if let Some(ref sym) = r.source_symbol
+                    && !sym.is_empty() && !visited.contains(sym) {
                         visited.insert(sym.clone());
                         queue.push_back((sym.clone(), 1));
                     }
-                }
             }
         }
 
@@ -104,12 +103,11 @@ impl<'a> GraphQuery<'a> {
                     tests.push(caller);
                 } else {
                     transitive.push(caller);
-                    if let Some(ref sym_name) = r.source_symbol {
-                        if !sym_name.is_empty() && !visited.contains(sym_name) {
+                    if let Some(ref sym_name) = r.source_symbol
+                        && !sym_name.is_empty() && !visited.contains(sym_name) {
                             visited.insert(sym_name.clone());
                             queue.push_back((sym_name.clone(), depth + 1));
                         }
-                    }
                 }
             }
         }

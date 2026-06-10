@@ -2,10 +2,11 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use tracing::{info, error};
+use tracing::info;
 use tracing_subscriber::EnvFilter;
 
 use code_abyss::config::Config;
+#[cfg(feature = "semantic")]
 use code_abyss::embedding::Embedder;
 use code_abyss::indexer::IndexPipeline;
 use code_abyss::mcp::McpServer;
@@ -37,8 +38,10 @@ enum Commands {
     /// Fast structural index (symbols + fulltext, no embedding). Seconds.
     Index,
     /// Generate embeddings for semantic search. Slow, run after `index`.
+    #[cfg(feature = "semantic")]
     Embed,
     /// Full index + embed in one shot
+    #[cfg(feature = "semantic")]
     IndexAll {
         #[arg(long)]
         watch: bool,
@@ -102,7 +105,9 @@ fn main() -> Result<()> {
 
     match cli.command {
         Commands::Index => cmd_index(config, json),
+        #[cfg(feature = "semantic")]
         Commands::Embed => cmd_embed(config),
+        #[cfg(feature = "semantic")]
         Commands::IndexAll { watch } => cmd_index_all(config, watch),
         Commands::Search { query, limit } => cmd_search(config, &query, limit, json),
         Commands::Callers { symbol, limit } => cmd_callers(config, &symbol, limit, json),
@@ -129,6 +134,7 @@ fn cmd_index(config: Config, json: bool) -> Result<()> {
     Ok(())
 }
 
+#[cfg(feature = "semantic")]
 fn cmd_embed(config: Config) -> Result<()> {
     info!("loading model: {}", config.model.model_id);
     let embedder = Embedder::load(&config.model)?;
@@ -145,6 +151,7 @@ fn cmd_embed(config: Config) -> Result<()> {
     Ok(())
 }
 
+#[cfg(feature = "semantic")]
 fn cmd_index_all(config: Config, watch: bool) -> Result<()> {
     info!("loading model: {}", config.model.model_id);
     let embedder = Embedder::load(&config.model)?;
@@ -170,8 +177,10 @@ fn cmd_index_all(config: Config, watch: bool) -> Result<()> {
 
 fn cmd_search(config: Config, query: &str, limit: usize, json: bool) -> Result<()> {
     let repo = Repository::open(&config.db_path, config.model.dimensions)?;
-    let has_vectors = repo.has_vectors()?;
-    let embedder = if has_vectors { Embedder::load(&config.model).ok() } else { None };
+    #[cfg(feature = "semantic")]
+    let embedder = if repo.has_vectors()? { Embedder::load(&config.model).ok() } else { None };
+    #[cfg(not(feature = "semantic"))]
+    let embedder: Option<code_abyss::embedding::Embedder> = None;
     let engine = code_abyss::search::SearchEngine::new(&repo, embedder.as_ref());
     let results = engine.search(query, limit)?;
 
@@ -434,7 +443,8 @@ fn cmd_mcp(config: Config) -> Result<()> {
         let stats = pipeline.run_structural(&repo)?;
         info!("index ready: {} files, {} chunks", stats.total_files, stats.total_chunks);
 
-        // Load embedding model
+        // Load embedding model (semantic builds only)
+        #[cfg(feature = "semantic")]
         let embedder = match Embedder::load(&config.model) {
             Ok(e) => {
                 info!("embedding model loaded");
@@ -445,6 +455,8 @@ fn cmd_mcp(config: Config) -> Result<()> {
                 None
             }
         };
+        #[cfg(not(feature = "semantic"))]
+        let embedder: Option<code_abyss::embedding::Embedder> = None;
 
         let repo_arc = std::sync::Arc::new(std::sync::Mutex::new(repo));
         let embedder_arc = std::sync::Arc::new(embedder);

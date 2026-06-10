@@ -51,6 +51,7 @@ impl Repository {
         }
 
         // Register sqlite-vec as auto extension BEFORE opening connection
+        #[allow(clippy::missing_transmute_annotations)] // FFI signature fixed by sqlite3_auto_extension
         unsafe {
             sqlite3_auto_extension(Some(std::mem::transmute(
                 sqlite_vec::sqlite3_vec_init as *const (),
@@ -142,6 +143,7 @@ impl Repository {
 
     // --- Chunk operations ---
 
+    #[allow(clippy::too_many_arguments)]
     pub fn insert_chunk(
         &self,
         file_id: i64,
@@ -310,6 +312,7 @@ impl Repository {
 
     // --- Reference (graph) operations ---
 
+    #[allow(clippy::too_many_arguments)]
     pub fn insert_ref(
         &self,
         source_file_id: i64,

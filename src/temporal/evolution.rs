@@ -2,7 +2,6 @@ use std::path::Path;
 use std::process::Command;
 
 use anyhow::Result;
-use rusqlite::params;
 use serde::Serialize;
 
 use crate::storage::Repository;

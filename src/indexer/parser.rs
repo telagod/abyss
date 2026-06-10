@@ -7,6 +7,12 @@ pub struct MultiParser {
     parsers: HashMap<String, Language>,
 }
 
+impl Default for MultiParser {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl MultiParser {
     pub fn new() -> Self {
         let mut parsers = HashMap::new();

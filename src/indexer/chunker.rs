@@ -73,6 +73,7 @@ impl SymbolKind {
 
 pub struct Chunker {
     max_lines: u32,
+    #[allow(dead_code)] // reserved for min-chunk merging (see DESIGN-v0.2 chunking rules)
     min_lines: u32,
     target_lines: u32, // merge small chunks until reaching this
 }
@@ -110,6 +111,7 @@ impl Chunker {
         chunks
     }
 
+    #[allow(clippy::only_used_in_recursion)]
     fn collect_chunks(
         &self,
         node: &Node,
@@ -156,11 +158,10 @@ impl Chunker {
                 symbols,
             });
         } else {
-            if let Some(name) = self.extract_node_name(node, source) {
-                if self.is_scope_node(kind, language) {
+            if let Some(name) = self.extract_node_name(node, source)
+                && self.is_scope_node(kind, language) {
                     scope_stack.push(name);
                 }
-            }
 
             let mut cursor = node.walk();
             for child in node.children(&mut cursor) {
@@ -317,15 +318,14 @@ impl Chunker {
             _ => None,
         };
 
-        if let Some(sk) = symbol_kind {
-            if let Some(name) = self.extract_node_name(node, source) {
+        if let Some(sk) = symbol_kind
+            && let Some(name) = self.extract_node_name(node, source) {
                 symbols.push(Symbol {
                     name,
                     kind: sk,
                     line: node.start_position().row as u32,
                 });
             }
-        }
 
         let mut cursor = node.walk();
         for child in node.children(&mut cursor) {

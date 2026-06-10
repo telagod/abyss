@@ -70,9 +70,8 @@ impl IndexPipeline {
             };
 
             let hash = blake3::hash(&content).to_hex().to_string();
-            if let Some((_, eh)) = existing_map.get(&rel_path) {
-                if *eh == hash { stats.unchanged += 1; continue; }
-            }
+            if let Some((_, eh)) = existing_map.get(&rel_path)
+                && *eh == hash { stats.unchanged += 1; continue; }
             to_index.push((path.clone(), rel_path));
         }
 
@@ -146,7 +145,7 @@ impl IndexPipeline {
 
     /// Pure CPU work — no DB access, safe for parallel execution
     fn process_file_parallel(
-        workspace: &Path,
+        _workspace: &Path,
         rel_path: &str,
         path: &Path,
     ) -> Result<FileOutput> {
@@ -377,10 +376,10 @@ impl IndexPipeline {
             repo.commit()?;
 
             embedded += (batch_end - batch_start) as u64;
-            if embedded % 256 == 0 || batch_end == to_embed.len() {
+            if embedded.is_multiple_of(256) || batch_end == to_embed.len() {
                 let elapsed = start.elapsed().as_secs();
-                let rate = if elapsed > 0 { embedded / elapsed } else { embedded };
-                let remaining = if rate > 0 { (embed_count as u64 - embedded) / rate } else { 0 };
+                let rate = embedded.checked_div(elapsed).unwrap_or(embedded);
+                let remaining = (embed_count as u64 - embedded).checked_div(rate).unwrap_or(0);
                 info!("  embedded {}/{} ({}/s, ~{}s remaining)", embedded, embed_count, rate, remaining);
             }
         }
@@ -446,14 +445,12 @@ impl IndexPipeline {
     }
 
     fn parse_and_chunk(&self, source: &str, language: Option<&str>) -> Vec<CodeChunk> {
-        if let Some(lang) = language {
-            if self.parser.supports(lang) {
-                if let Ok(tree) = self.parser.parse(source, lang) {
+        if let Some(lang) = language
+            && self.parser.supports(lang)
+                && let Ok(tree) = self.parser.parse(source, lang) {
                     let chunks = self.chunker.chunk(source, &tree, lang);
                     if !chunks.is_empty() { return chunks; }
                 }
-            }
-        }
         vec![CodeChunk {
             content: source.to_string(),
             kind: ChunkKind::Module,

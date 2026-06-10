@@ -35,9 +35,9 @@ impl<'a> SearchEngine<'a> {
         let mut scores: HashMap<i64, (f64, Vec<String>)> = HashMap::new();
 
         // Semantic search (only if embedder available and vectors exist)
-        if let Some(embedder) = self.embedder {
-            if self.repo.has_vectors().unwrap_or(false) {
-                if let Ok(results) = semantic::search(self.repo, embedder, query, fetch_limit) {
+        if let Some(embedder) = self.embedder
+            && self.repo.has_vectors().unwrap_or(false)
+                && let Ok(results) = semantic::search(self.repo, embedder, query, fetch_limit) {
                     for (rank, r) in results.iter().enumerate() {
                         let rrf = 1.0 / (k + rank as f64 + 1.0);
                         let entry = scores.entry(r.chunk_id).or_insert((0.0, Vec::new()));
@@ -45,8 +45,6 @@ impl<'a> SearchEngine<'a> {
                         entry.1.push("semantic".to_string());
                     }
                 }
-            }
-        }
 
         // Symbol search
         if let Ok(results) = symbol::search(self.repo, query, fetch_limit) {

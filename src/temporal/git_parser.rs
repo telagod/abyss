@@ -34,7 +34,7 @@ pub struct FileChangeRecord {
 pub fn parse_git_log_to_memory(workspace: &Path, since_days: u32) -> Result<GitData> {
     let since = format!("--since={since_days}.days.ago");
     let output = Command::new("git")
-        .args(["log", "--numstat", &format!("--format=COMMIT|%H|%an|%at|%s"), &since])
+        .args(["log", "--numstat", "--format=COMMIT|%H|%an|%at|%s", &since])
         .current_dir(workspace)
         .output()?;
 

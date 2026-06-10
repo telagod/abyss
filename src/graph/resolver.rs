@@ -1,6 +1,3 @@
-use anyhow::Result;
-use tracing::debug;
-
 use crate::graph::extractor::{RawReference, RefKind};
 use crate::storage::Repository;
 
@@ -40,11 +37,10 @@ impl<'a> SymbolResolver<'a> {
         }
 
         // 3. Qualifier-based resolution (confidence = 0.9)
-        if let Some(qualifier) = &raw.target_qualifier {
-            if let Some(resolved) = self.resolve_via_qualifier(source_file_id, qualifier, &raw.target_name) {
+        if let Some(qualifier) = &raw.target_qualifier
+            && let Some(resolved) = self.resolve_via_qualifier(source_file_id, qualifier, &raw.target_name) {
                 return resolved;
             }
-        }
 
         // 4. Global unique resolution (confidence = 0.8)
         if let Ok(candidates) = self.repo.find_symbol_global(&raw.target_name) {

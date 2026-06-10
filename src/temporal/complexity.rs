@@ -59,6 +59,7 @@ fn is_branch_node(kind: &str, language: &str) -> bool {
     }
 }
 
+#[allow(clippy::only_used_in_recursion)]
 fn find_functions(node: &Node, source: &str, language: &str, max: &mut u32) {
     let kind = node.kind();
     let is_func = matches!(kind,

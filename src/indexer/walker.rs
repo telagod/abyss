@@ -45,7 +45,7 @@ impl FileWalker {
 
         for entry in walker {
             let entry = entry?;
-            if entry.file_type().map_or(false, |ft| ft.is_file()) {
+            if entry.file_type().is_some_and(|ft| ft.is_file()) {
                 let path = entry.into_path();
                 if self.is_indexable(&path) {
                     files.push(path);
