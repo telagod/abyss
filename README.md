@@ -99,7 +99,15 @@ References resolve through tiered heuristics, each tagged with a confidence scor
 | 4 | Globally unique symbol | 0.8 |
 | 5 | Ambiguous (first candidate) | 0.5 |
 
-This is not a compiler — precision/recall benchmarks against SCIP ground truth are planned for v0.4 and will be published here, whatever the numbers say.
+This is not a compiler. Measured against SCIP (compiler-grade) ground truth on gin v1.10.0 — published whatever the numbers say:
+
+| Gate | Precision | Recall |
+|------|----------:|-------:|
+| default (`--min-confidence 0.7`) | **85.6%** | **83.8%** |
+| same-file tier alone | 96.1% | — |
+| import-qualifier tier alone | 100% | — |
+
+abyss indexed gin in **146ms**; scip-go took ~40s. Full method, per-tier table, and known weaknesses: [eval/RESULTS.md](eval/RESULTS.md). Reproduce: `eval/run.sh`.
 
 ## Agent integration
 
