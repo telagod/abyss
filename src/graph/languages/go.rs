@@ -337,9 +337,7 @@ fn infer_expr_type(expr: &Node, source: &str) -> Option<String> {
             let func = expr.child_by_field_name("function")?;
             let fname = match func.kind() {
                 "identifier" => text_of(&func, source),
-                "selector_expression" => {
-                    text_of(&func.child_by_field_name("field")?, source)
-                }
+                "selector_expression" => text_of(&func.child_by_field_name("field")?, source),
                 _ => return None,
             };
             let stripped = fname.strip_prefix("New")?;
