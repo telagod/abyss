@@ -1,0 +1,10 @@
+[
+  {"id": "t1", "target": "store/store.go",
+   "task": "Change Ledger.Amounts() and Ledger.Total() in store/store.go to return whole dollars (cents divided by 100, rounded toward zero) instead of cents. Entries() must keep returning cents."},
+  {"id": "t2", "target": "util/clamp.go",
+   "task": "Change util.Clamp in util/clamp.go so that hi is exclusive: values must be limited to the range [lo, hi-1] instead of [lo, hi]."},
+  {"id": "t3", "target": "ids/ids.go",
+   "task": "Make ids.Counter in ids/ids.go zero-based: the first call to Next() must return 0, the second 1, and so on."},
+  {"id": "t4", "target": "store/store.go",
+   "task": "Change Ledger.Amounts() in store/store.go to return the amounts sorted in ascending order. Entries() must keep returning insertion order."}
+]
