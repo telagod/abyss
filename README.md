@@ -38,11 +38,17 @@ abyss is not a search engine replacement — it's the **impact-awareness layer**
 # prebuilt binary (linux/macos, x64/arm64) with source-build fallback
 curl -fsSL https://raw.githubusercontent.com/telagod/abyss/main/install.sh | bash
 
-# or force a source build (Rust toolchain required)
+# mirror, for networks where raw.githubusercontent.com is unreachable
+curl -fsSL https://cdn.jsdelivr.net/gh/telagod/abyss@main/install.sh | bash
+
+# via cargo (binstall fetches the prebuilt binary; install builds from source)
+cargo binstall code-abyss   # or: cargo install code-abyss
+
+# or force a source build from a checkout
 ./install.sh --from-source
 ```
 
-Windows: prebuilt `.zip` on [GitHub Releases](https://github.com/telagod/abyss/releases). `npx @code-abyss/cli` wrapper is planned.
+Windows: prebuilt `.zip` on [GitHub Releases](https://github.com/telagod/abyss/releases), or `cargo binstall code-abyss`. `npx @code-abyss/cli` wrapper is planned.
 
 ## Quickstart (60 seconds)
 
