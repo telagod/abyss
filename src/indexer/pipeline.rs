@@ -25,6 +25,15 @@ struct FileOutput {
     max_func_lines: u32,
 }
 
+/// Workspace-relative path with unix separators — the canonical form stored in
+/// the index. Keeps dir-based resolution tiers working on Windows.
+fn to_rel(workspace: &Path, path: &Path) -> String {
+    path.strip_prefix(workspace)
+        .unwrap_or(path)
+        .to_string_lossy()
+        .replace('\\', "/")
+}
+
 pub struct IndexPipeline {
     config: Config,
     parser: MultiParser,
@@ -58,11 +67,7 @@ impl IndexPipeline {
         let mut to_index: Vec<(std::path::PathBuf, String)> = Vec::new();
 
         for path in &files {
-            let rel_path = path
-                .strip_prefix(&self.config.workspace)
-                .unwrap_or(path)
-                .to_string_lossy()
-                .to_string();
+            let rel_path = to_rel(&self.config.workspace, path);
 
             let content = match std::fs::read(path) {
                 Ok(b) => b,
@@ -86,11 +91,7 @@ impl IndexPipeline {
         // Deleted files
         let current_paths: std::collections::HashSet<String> = files
             .iter()
-            .filter_map(|p| {
-                p.strip_prefix(&self.config.workspace)
-                    .ok()
-                    .map(|r| r.to_string_lossy().to_string())
-            })
+            .map(|p| to_rel(&self.config.workspace, p))
             .collect();
         for (path, (id, _)) in &existing_map {
             if !current_paths.contains(path) {
@@ -358,7 +359,41 @@ impl IndexPipeline {
             [],
         )?;
 
-        // Level 3: Global unique (confidence = 0.8)
+        // Level 3: Import-qualifier match (confidence = 0.9).
+        // `util.Fn()` resolves to a file in a dir named `util/` (or file `util.ext`)
+        // when the source file imports a path whose last segment is `util`.
+        // Disambiguates same-named symbols across packages before the global tiers.
+        let l3q = conn.execute(
+            "UPDATE refs SET
+                 target_file_id = (SELECT s.file_id FROM symbols s JOIN files f ON s.file_id = f.id
+                     WHERE s.name = refs.target_name
+                       AND (f.dir LIKE '%' || refs.target_qualifier || '/'
+                            OR f.path LIKE '%/' || refs.target_qualifier || '.%'
+                            OR f.path LIKE refs.target_qualifier || '.%')
+                     LIMIT 1),
+                 target_symbol_id = (SELECT s.id FROM symbols s JOIN files f ON s.file_id = f.id
+                     WHERE s.name = refs.target_name
+                       AND (f.dir LIKE '%' || refs.target_qualifier || '/'
+                            OR f.path LIKE '%/' || refs.target_qualifier || '.%'
+                            OR f.path LIKE refs.target_qualifier || '.%')
+                     LIMIT 1),
+                 confidence = 0.9
+             WHERE confidence = 0.0 AND kind != 'import'
+               AND target_qualifier IS NOT NULL
+               AND EXISTS (SELECT 1 FROM refs ir
+                   WHERE ir.source_file_id = refs.source_file_id AND ir.kind = 'import'
+                     AND (ir.target_name = refs.target_qualifier
+                          OR ir.target_name LIKE '%/' || refs.target_qualifier
+                          OR ir.target_name LIKE '%.' || refs.target_qualifier))
+               AND EXISTS (SELECT 1 FROM symbols s JOIN files f ON s.file_id = f.id
+                   WHERE s.name = refs.target_name
+                     AND (f.dir LIKE '%' || refs.target_qualifier || '/'
+                          OR f.path LIKE '%/' || refs.target_qualifier || '.%'
+                          OR f.path LIKE refs.target_qualifier || '.%'))",
+            [],
+        )?;
+
+        // Level 4: Global unique (confidence = 0.8)
         let l3 = conn.execute(
             "UPDATE refs SET
                  target_file_id = (SELECT s.file_id FROM symbols s WHERE s.name = refs.target_name LIMIT 1),
@@ -369,7 +404,7 @@ impl IndexPipeline {
             [],
         )?;
 
-        // Level 4: Ambiguous global (confidence = 0.5)
+        // Level 5: Ambiguous global (confidence = 0.5)
         let l4 = conn.execute(
             "UPDATE refs SET
                  target_file_id = (SELECT s.file_id FROM symbols s WHERE s.name = refs.target_name LIMIT 1),
@@ -381,8 +416,8 @@ impl IndexPipeline {
         )?;
 
         info!(
-            "resolved: L1(same-file)={}, L2(same-pkg)={}, L3(global-unique)={}, L4(ambiguous)={}",
-            l1, l2, l3, l4
+            "resolved: L1(same-file)={}, L2(same-pkg)={}, L3(qualifier)={}, L4(global-unique)={}, L5(ambiguous)={}",
+            l1, l2, l3q, l3, l4
         );
 
         Ok(())
@@ -584,20 +619,12 @@ impl IndexPipeline {
     }
 
     pub fn reindex_file(&self, repo: &Repository, embedder: &Embedder, path: &Path) -> Result<u64> {
-        let rel_path = path
-            .strip_prefix(&self.config.workspace)
-            .unwrap_or(path)
-            .to_string_lossy()
-            .to_string();
+        let rel_path = to_rel(&self.config.workspace, path);
         self.index_file(repo, embedder, path, &rel_path)
     }
 
     pub fn remove_file(&self, repo: &Repository, path: &Path) -> Result<()> {
-        let rel_path = path
-            .strip_prefix(&self.config.workspace)
-            .unwrap_or(path)
-            .to_string_lossy()
-            .to_string();
+        let rel_path = to_rel(&self.config.workspace, path);
         if let Some(id) = repo.get_file_id(&rel_path)? {
             repo.delete_file(id)?;
         }

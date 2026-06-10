@@ -81,6 +81,15 @@ fn collect_refs(
                         target_qualifier: Some(name[..pos].to_string()),
                         kind: RefKind::Call,
                     });
+                } else if let Some(pos) = name.rfind('.') {
+                    // Method call: receiver.method() — qualifier is the receiver expr
+                    refs.push(RawReference {
+                        line,
+                        source_symbol: enclosing.clone(),
+                        target_name: name[pos + 1..].to_string(),
+                        target_qualifier: Some(name[..pos].to_string()),
+                        kind: RefKind::Call,
+                    });
                 } else if !is_builtin_rust(&name) {
                     refs.push(RawReference {
                         line,

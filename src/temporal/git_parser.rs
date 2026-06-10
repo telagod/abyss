@@ -39,14 +39,17 @@ pub fn parse_git_log_to_memory(workspace: &Path, since_days: u32) -> Result<GitD
         .output()?;
 
     if !output.status.success() {
+        // Temporal data is best-effort: not a git repo, empty repo, locale-specific
+        // error text, missing git — none of these should fail indexing.
         let stderr = String::from_utf8_lossy(&output.stderr);
-        if stderr.contains("not a git repository") {
-            return Ok(GitData {
-                commits: Vec::new(),
-                file_changes: Vec::new(),
-            });
-        }
-        anyhow::bail!("git log failed: {stderr}");
+        tracing::warn!(
+            "git log unavailable, skipping temporal data: {}",
+            stderr.trim()
+        );
+        return Ok(GitData {
+            commits: Vec::new(),
+            file_changes: Vec::new(),
+        });
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
