@@ -1,0 +1,32 @@
+{
+  "name": "@code-abyss/cli",
+  "version": "0.3.0",
+  "description": "abyss — the code graph your agent checks before it edits. npm wrapper that downloads the prebuilt binary.",
+  "bin": {
+    "abyss": "bin/abyss.js"
+  },
+  "scripts": {
+    "postinstall": "node install.js"
+  },
+  "files": [
+    "bin/abyss.js",
+    "install.js",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/telagod/abyss.git"
+  },
+  "homepage": "https://github.com/telagod/abyss#readme",
+  "license": "Apache-2.0",
+  "keywords": [
+    "code-index",
+    "call-graph",
+    "mcp",
+    "agent",
+    "tree-sitter"
+  ]
+}
