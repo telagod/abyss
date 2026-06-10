@@ -42,7 +42,12 @@ pub fn build_file_context(repo: &Repository, file: &str) -> Result<Option<serde_
     };
     let mut sym_callers: Vec<serde_json::Value> = Vec::new();
     for sym in &symbols {
-        let callers = repo.find_callers_of(&sym.name, Some(file_id), 20)?;
+        // Completeness over brevity: pre-edit context is a safety contract.
+        // A LIMIT of 20 once silently dropped 2 of a symbol's 16 external
+        // callers (confidence ties → arbitrary cut) and an agent shipped a
+        // compile-breaking edit trusting the list. Cap stays absurdly high
+        // only to bound pathological cases.
+        let callers = repo.find_callers_of(&sym.name, Some(file_id), 1000)?;
         let external: Vec<_> = callers
             .iter()
             .filter(|c| c.source_file_id != file_id)
