@@ -35,11 +35,14 @@ abyss is not a search engine replacement — it's the **impact-awareness layer**
 ## Install
 
 ```sh
-# from source (Rust toolchain required)
-./install.sh
+# prebuilt binary (linux/macos, x64/arm64) with source-build fallback
+curl -fsSL https://raw.githubusercontent.com/telagod/abyss/main/install.sh | bash
 
-# prebuilt binaries: coming in v0.3.0 (GitHub Releases / npx @code-abyss/cli)
+# or force a source build (Rust toolchain required)
+./install.sh --from-source
 ```
+
+Windows: prebuilt `.zip` on [GitHub Releases](https://github.com/telagod/abyss/releases). `npx @code-abyss/cli` wrapper is planned.
 
 ## Quickstart (60 seconds)
 
@@ -58,8 +61,10 @@ Every command takes `--json` for machine consumption.
 ```
 abyss index                   Structural index: symbols, refs, fulltext, git temporal. Seconds.
 abyss context <file>          Everything an agent needs before editing: callers, deps, risk, coupling
-abyss callers <symbol>        Who calls this (with confidence %)
+abyss callers <symbol>        Who calls this (confidence %, --min-confidence 0 reveals guesses)
 abyss impact <symbol>         Blast radius: direct/transitive callers, uncovered paths, risk 0-10
+abyss hook pre-edit           Agent hook: tool-call JSON on stdin → refresh index → warn on stderr
+abyss hook post-edit          Agent hook: incremental refresh after an edit
 abyss history <file>          Evolution: commits, churn, coupled files [--symbol <fn>]
 abyss search "query"          Symbol + fulltext fusion search
 abyss map                     Codebase map: hotspots, coupling, risk areas
@@ -99,7 +104,7 @@ This is not a compiler — precision/recall benchmarks against SCIP ground truth
 
 **MCP**: `abyss mcp` exposes `search_context`, `get_symbols`, `find_callers`, `impact_analysis`, `code_map`, `evolution`, `index_project` over stdio.
 
-**Pre-edit hooks**: [code-abyss](https://github.com/telagod/code-abyss) installs hooks for Claude Code, Codex CLI, Gemini CLI, Pi, Hermes, and OpenClaw that automatically run `abyss context` before any code edit — the agent sees production callers and hotspot warnings without being asked.
+**Pre-edit hooks**: `abyss hook pre-edit` reads the tool-call JSON any agent platform pipes to its hooks (Claude Code, Codex CLI, Gemini CLI, Pi, Hermes, OpenClaw payload shapes auto-detected), refreshes the index incrementally, and warns about production callers, ambiguous references, and hotspots — before the edit happens. [code-abyss](https://github.com/telagod/code-abyss) installs the per-platform hook configs in one command.
 
 ## Features
 

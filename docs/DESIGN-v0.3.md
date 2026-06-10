@@ -26,7 +26,7 @@
 - 索引新鲜度无闭环：编辑后无增量更新触发，二次 pre-edit 读旧图
 - Cargo.toml 拉 14 个 tree-sitter grammar，ref extractor 只有 4 个语言模块
 
-## 2. Phase 0 — 仓库奠基（半天）
+## 2. Phase 0 — 仓库奠基（半天）✅ 完成 2026-06-10
 
 1. `git init` + 初始 commit + 建 `telagod/abyss` 远端
 2. Cargo.toml：`name = "code-abyss"`，`[[bin]] name = "abyss"`，加 `repository`/`keywords`/`categories`
@@ -42,7 +42,7 @@
 > 后续优化路径：Phase 4 将 html/css/yaml/toml/json/bash 等「文档型 grammar」拆为
 > 默认开启的 `extra-langs` feature——chunker 对未知语言有整文件 Module 降级，移除可平滑。
 
-## 3. Phase 1 — 可信度地基：测试 + eval（2~3 天）
+## 3. Phase 1 — 可信度地基：测试 + eval（2~3 天）— 3.1/3.2 ✅（45 tests），3.3 eval harness 未做
 
 ### 3.1 单元 / 黄金测试
 
@@ -68,7 +68,7 @@
 
 **验收**：`cargo test` ≥ 60 个用例全绿；eval 表首版数字落盘（无论高低，先有锚点）。
 
-## 4. Phase 2 — 分发链路（1 天）
+## 4. Phase 2 — 分发链路（1 天）— release.yml + install.sh ✅，npm wrapper / crates.io 待首个 tag
 
 1. cargo-dist 接管 release：tag → GitHub Releases 出 5 平台二进制（linux x64/arm64、macos x64/arm64、windows x64），默认 `--no-default-features`（无 semantic，~10-15M）
 2. `install.sh` 改为下载预编译二进制（保留 `--from-source` 回退）
@@ -78,7 +78,7 @@
 
 **验收**：全新 Linux/macOS 机器 `curl ... | sh && abyss index` 60 秒内可用；`npx @code-abyss/cli stats` 可用。
 
-## 5. Phase 3 — hook 链路重铸（1 天）
+## 5. Phase 3 — hook 链路重铸（1 天）✅ 完成 2026-06-10（abyss hook pre-edit/post-edit，npm 侧薄壳化）
 
 1. 新子命令 `abyss hook pre-edit --stdin [--platform claude|codex|gemini|pi|hermes|openclaw]`
    - 内置各平台 tool-input JSON schema 的 file_path 抽取
