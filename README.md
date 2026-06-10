@@ -41,6 +41,9 @@ curl -fsSL https://raw.githubusercontent.com/telagod/abyss/main/install.sh | bas
 # mirror, for networks where raw.githubusercontent.com is unreachable
 curl -fsSL https://cdn.jsdelivr.net/gh/telagod/abyss@main/install.sh | bash
 
+# via npm (wrapper downloads the prebuilt binary on install)
+npm install -g @code-abyss/cli
+
 # via cargo (binstall fetches the prebuilt binary; install builds from source)
 cargo binstall code-abyss   # or: cargo install code-abyss
 
@@ -48,7 +51,7 @@ cargo binstall code-abyss   # or: cargo install code-abyss
 ./install.sh --from-source
 ```
 
-Windows: prebuilt `.zip` on [GitHub Releases](https://github.com/telagod/abyss/releases), or `cargo binstall code-abyss`. `npx @code-abyss/cli` wrapper is planned.
+Windows: `npm install -g @code-abyss/cli`, `cargo binstall code-abyss`, or prebuilt `.zip` on [GitHub Releases](https://github.com/telagod/abyss/releases).
 
 ## Quickstart (60 seconds)
 
