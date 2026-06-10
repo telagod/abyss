@@ -83,8 +83,9 @@ Caller tracing & impact analysis (reference extraction):
 | TypeScript / TSX | ✅ | ✅ | ✅ |
 | JavaScript | ✅ | ✅ | ✅ |
 | Python | ✅ | ✅ | ✅ |
+| Java | ✅ | ✅ | ✅ |
 
-Symbol indexing & search additionally cover Java, C, C++, JSON, TOML, YAML, Bash, HTML, CSS. Java/C/C++ caller tracing is on the roadmap.
+Symbol indexing & search additionally cover C, C++, JSON, TOML, YAML, Bash, HTML, CSS. C/C++ caller tracing is on the roadmap.
 
 ## How resolution works (and how honest it is)
 

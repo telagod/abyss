@@ -515,8 +515,8 @@ fn cmd_stats(config: Config, json: bool) -> Result<()> {
     Ok(())
 }
 
-const HOOK_LANGS: [&str; 10] = [
-    "go", "rs", "ts", "tsx", "js", "jsx", "mjs", "cjs", "py", "pyi",
+const HOOK_LANGS: [&str; 11] = [
+    "go", "rs", "ts", "tsx", "js", "jsx", "mjs", "cjs", "py", "pyi", "java",
 ];
 
 fn cmd_hook(config: Config, action: HookAction, json: bool) -> Result<()> {

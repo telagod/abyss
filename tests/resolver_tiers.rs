@@ -158,3 +158,22 @@ fn higher_tiers_win_over_lower_tiers() {
     assert_eq!(refs[0].confidence, 1.0);
     assert_eq!(refs[0].target_path.as_deref(), Some("app/a.go"));
 }
+
+#[test]
+fn java_same_package_and_unique_resolution() {
+    let fx = index_fixture(&[
+        (
+            "app/Helper.java",
+            "package app;\n\npublic class Helper {\n    public static int compute() { return 1; }\n}\n",
+        ),
+        (
+            "app/Service.java",
+            "package app;\n\npublic class Service {\n    public int run() { return compute(); }\n}\n",
+        ),
+    ]);
+    let refs = call_refs_to(&fx.repo, "compute");
+    assert_eq!(refs.len(), 1, "{refs:?}");
+    assert_eq!(refs[0].confidence, 0.95);
+    assert_eq!(refs[0].target_path.as_deref(), Some("app/Helper.java"));
+    assert_eq!(refs[0].source_symbol.as_deref(), Some("run"));
+}

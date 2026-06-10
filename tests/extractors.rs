@@ -183,3 +183,60 @@ fn javascript_uses_same_extractor() {
     let refs = extract("javascript", "function f() {\n  helper();\n}\n");
     assert!(find(&refs, "helper", RefKind::Call).is_some());
 }
+
+// --- Java ---
+
+#[test]
+fn java_method_calls_and_constructor() {
+    let refs = extract(
+        "java",
+        r#"package app;
+
+import com.example.util.Helper;
+
+public class Service {
+    public int run() {
+        Helper h = new Helper();
+        int x = h.compute(1);
+        return local(x);
+    }
+
+    private int local(int x) { return x; }
+}
+"#,
+    );
+    let compute = find(&refs, "compute", RefKind::Call).expect("method call");
+    assert_eq!(compute.target_qualifier.as_deref(), Some("h"));
+    assert_eq!(compute.source_symbol.as_deref(), Some("run"));
+
+    let ctor = find(&refs, "Helper", RefKind::Call).expect("constructor call");
+    assert_eq!(ctor.target_qualifier, None);
+
+    assert!(find(&refs, "local", RefKind::Call).is_some());
+    assert!(find(&refs, "com.example.util.Helper", RefKind::Import).is_some());
+    assert!(find(&refs, "Helper", RefKind::TypeRef).is_some());
+}
+
+#[test]
+fn java_builtin_filtering_and_generics() {
+    let refs = extract(
+        "java",
+        "import java.util.List;\n\npublic class A {\n    java.util.List<String> f() {\n        return new java.util.ArrayList<String>();\n    }\n}\n",
+    );
+    assert!(
+        find(&refs, "ArrayList", RefKind::Call).is_none(),
+        "builtin ctor filtered"
+    );
+    assert!(
+        find(&refs, "String", RefKind::TypeRef).is_none(),
+        "builtin type filtered"
+    );
+}
+
+#[test]
+fn java_test_file_detection() {
+    let ex = get_extractor("java").unwrap();
+    assert!(ex.is_test_file("src/test/java/app/ServiceTest.java"));
+    assert!(ex.is_test_file("app/ServiceTest.java"));
+    assert!(!ex.is_test_file("src/main/java/app/Service.java"));
+}
