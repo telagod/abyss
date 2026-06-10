@@ -115,7 +115,7 @@ This is not a compiler — precision/recall benchmarks against SCIP ground truth
 
 ## Status
 
-v0.3.0-dev — APIs and index format may change. See [docs/DESIGN-v0.3.md](docs/DESIGN-v0.3.md) for the roadmap: test suite + SCIP-based eval harness, prebuilt binaries, single-binary hooks, agent A/B regression benchmark.
+**v0.3.0** — 45 tests, prebuilt binaries for 5 platforms, single-binary agent hooks. APIs and index format may still change before 1.0. See [docs/DESIGN-v0.3.md](docs/DESIGN-v0.3.md) for the roadmap: SCIP-based eval harness (precision/recall, published whatever the numbers say), Java support, agent A/B regression benchmark.
 
 ## License
 
