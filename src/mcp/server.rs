@@ -44,6 +44,20 @@ fn default_limit() -> usize {
     10
 }
 
+#[derive(Deserialize, schemars::JsonSchema, Default)]
+pub struct FileContextInput {
+    /// File path, relative to the workspace (a unique path suffix also works)
+    pub file: String,
+}
+
+#[derive(Serialize, schemars::JsonSchema)]
+pub struct FileContextOutput {
+    /// Whether the file was found in the index
+    pub found: bool,
+    /// Full context document (same shape as `abyss context --json`)
+    pub context: serde_json::Value,
+}
+
 // --- Output types ---
 
 #[derive(Serialize, schemars::JsonSchema)]
@@ -259,7 +273,7 @@ impl McpServer {
         Parameters(_input): Parameters<IndexProjectInput>,
     ) -> Json<IndexProjectOutput> {
         let repo = self.repo.lock().unwrap();
-        let stats = self.pipeline.run_structural(&repo).unwrap();
+        let stats = self.pipeline.run_structural(&repo).unwrap_or_default();
 
         Json(IndexProjectOutput {
             files: stats.total_files,
@@ -293,6 +307,30 @@ impl McpServer {
                 })
                 .collect(),
         })
+    }
+
+    #[tool(
+        name = "file_context",
+        description = "Pre-edit context for a file: every symbol with external callers (confidence-tagged), possible low-confidence callers, dependencies, hotspot score, and change-coupled files. Call this BEFORE modifying a file."
+    )]
+    fn file_context(
+        &self,
+        Parameters(input): Parameters<FileContextInput>,
+    ) -> Json<FileContextOutput> {
+        let repo = self.repo.lock().unwrap();
+        match crate::context::build_file_context(&repo, &input.file)
+            .ok()
+            .flatten()
+        {
+            Some(ctx) => Json(FileContextOutput {
+                found: true,
+                context: ctx,
+            }),
+            None => Json(FileContextOutput {
+                found: false,
+                context: serde_json::json!({ "file": input.file }),
+            }),
+        }
     }
 
     #[tool(
@@ -432,13 +470,25 @@ impl McpServer {
     )]
     fn evolution(&self, Parameters(input): Parameters<EvolutionInput>) -> Json<EvolutionOutput> {
         let repo = self.repo.lock().unwrap();
-        let result = crate::temporal::evolution::trace_evolution(
+        let result = match crate::temporal::evolution::trace_evolution(
             &self.config.workspace,
             &repo,
             &input.file,
             input.symbol.as_deref(),
-        )
-        .unwrap();
+        ) {
+            Ok(r) => r,
+            Err(_) => {
+                return Json(EvolutionOutput {
+                    file_path: input.file.clone(),
+                    symbol: input.symbol.clone(),
+                    commits: Vec::new(),
+                    coupled_files: Vec::new(),
+                    churn_rate: 0.0,
+                    unique_authors: 0,
+                    total_changes: 0,
+                });
+            }
+        };
 
         Json(EvolutionOutput {
             file_path: result.file_path,
