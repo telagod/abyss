@@ -15,6 +15,9 @@ pub struct Symbol {
     pub name: String,
     pub kind: SymbolKind,
     pub line: u32,
+    /// Owner type for methods (Go receiver / enclosing class). Falls back to
+    /// the chunk scope at insert time when None.
+    pub scope: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -311,13 +314,20 @@ impl Chunker {
         }
     }
 
-    fn extract_symbols(&self, node: &Node, source: &str, _language: &str) -> Vec<Symbol> {
+    fn extract_symbols(&self, node: &Node, source: &str, language: &str) -> Vec<Symbol> {
         let mut symbols = Vec::new();
-        self.collect_symbols_recursive(node, source, &mut symbols);
+        self.collect_symbols_recursive(node, source, language, None, &mut symbols);
         symbols
     }
 
-    fn collect_symbols_recursive(&self, node: &Node, source: &str, symbols: &mut Vec<Symbol>) {
+    fn collect_symbols_recursive(
+        &self,
+        node: &Node,
+        source: &str,
+        language: &str,
+        owner: Option<&str>,
+        symbols: &mut Vec<Symbol>,
+    ) {
         let kind = node.kind();
 
         let symbol_kind = match kind {
@@ -337,16 +347,44 @@ impl Chunker {
         if let Some(sk) = symbol_kind
             && let Some(name) = self.extract_node_name(node, source)
         {
+            // Method owner: Go encodes it in the receiver; class languages in
+            // the enclosing class node we're recursing through.
+            let scope = if sk == SymbolKind::Method {
+                if language == "go" {
+                    crate::graph::languages::go::go_method_receiver_type(node, source)
+                } else {
+                    owner.map(String::from)
+                }
+            } else {
+                None
+            };
             symbols.push(Symbol {
                 name,
                 kind: sk,
                 line: node.start_position().row as u32,
+                scope,
             });
         }
 
+        // Entering a class-like node makes it the owner for nested methods
+        let next_owner: Option<String> = if matches!(
+            kind,
+            "class_definition" | "class_declaration" | "interface_declaration" | "impl_item"
+        ) {
+            self.extract_node_name(node, source)
+        } else {
+            None
+        };
+
         let mut cursor = node.walk();
         for child in node.children(&mut cursor) {
-            self.collect_symbols_recursive(&child, source, symbols);
+            self.collect_symbols_recursive(
+                &child,
+                source,
+                language,
+                next_owner.as_deref().or(owner),
+                symbols,
+            );
         }
     }
 

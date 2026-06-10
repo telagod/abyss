@@ -80,6 +80,7 @@ fn collect_refs(
                                 source_symbol: enclosing.clone(),
                                 target_name: name,
                                 target_qualifier: None,
+                                receiver_type: None,
                                 kind: RefKind::Call,
                             });
                         }
@@ -94,6 +95,7 @@ fn collect_refs(
                                 source_symbol: enclosing.clone(),
                                 target_name: text(&attr, source),
                                 target_qualifier: Some(text(&obj, source)),
+                                receiver_type: None,
                                 kind: RefKind::Call,
                             });
                         }
@@ -109,6 +111,7 @@ fn collect_refs(
                     source_symbol: None,
                     target_name: text(&module, source),
                     target_qualifier: None,
+                    receiver_type: None,
                     kind: RefKind::Import,
                 });
             }
@@ -122,6 +125,7 @@ fn collect_refs(
                         source_symbol: None,
                         target_name: text(&child, source),
                         target_qualifier: None,
+                        receiver_type: None,
                         kind: RefKind::Import,
                     });
                 }

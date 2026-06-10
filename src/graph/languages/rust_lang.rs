@@ -79,6 +79,7 @@ fn collect_refs(
                         source_symbol: enclosing.clone(),
                         target_name: name[pos + 2..].to_string(),
                         target_qualifier: Some(name[..pos].to_string()),
+                        receiver_type: None,
                         kind: RefKind::Call,
                     });
                 } else if let Some(pos) = name.rfind('.') {
@@ -88,6 +89,7 @@ fn collect_refs(
                         source_symbol: enclosing.clone(),
                         target_name: name[pos + 1..].to_string(),
                         target_qualifier: Some(name[..pos].to_string()),
+                        receiver_type: None,
                         kind: RefKind::Call,
                     });
                 } else if !is_builtin_rust(&name) {
@@ -96,6 +98,7 @@ fn collect_refs(
                         source_symbol: enclosing.clone(),
                         target_name: name,
                         target_qualifier: None,
+                        receiver_type: None,
                         kind: RefKind::Call,
                     });
                 }
@@ -109,6 +112,7 @@ fn collect_refs(
                     source_symbol: enclosing.clone(),
                     target_name: name,
                     target_qualifier: None,
+                    receiver_type: None,
                     kind: RefKind::TypeRef,
                 });
             }
@@ -124,6 +128,7 @@ fn collect_refs(
                 source_symbol: None,
                 target_name: path,
                 target_qualifier: None,
+                receiver_type: None,
                 kind: RefKind::Import,
             });
         }

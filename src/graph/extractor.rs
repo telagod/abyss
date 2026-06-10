@@ -7,6 +7,10 @@ pub struct RawReference {
     pub source_symbol: Option<String>,
     pub target_name: String,
     pub target_qualifier: Option<String>,
+    /// Inferred static type of the call receiver (`x.M()` where `x: T` → `T`).
+    /// Lite inference: parameters, method receivers, local declarations with
+    /// literal/constructor initializers. No data-flow, no interfaces.
+    pub receiver_type: Option<String>,
     pub kind: RefKind,
 }
 

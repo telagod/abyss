@@ -281,7 +281,7 @@ impl IndexPipeline {
                         &sym.name,
                         sym.kind.as_str(),
                         sym.line,
-                        chunk.scope.as_deref()
+                        sym.scope.as_deref().or(chunk.scope.as_deref())
                     ])?;
                 }
             }
@@ -291,7 +291,7 @@ impl IndexPipeline {
         let ref_count = out.refs.len() as u64;
         {
             let mut ref_stmt = conn.prepare_cached(
-                "INSERT INTO refs(source_file_id,source_line,source_symbol,target_name,target_qualifier,kind,confidence) VALUES(?1,?2,?3,?4,?5,?6,?7)")?;
+                "INSERT INTO refs(source_file_id,source_line,source_symbol,target_name,target_qualifier,receiver_type,kind,confidence) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)")?;
             for raw in &out.refs {
                 ref_stmt.execute(rusqlite::params![
                     file_id,
@@ -299,6 +299,7 @@ impl IndexPipeline {
                     raw.source_symbol.as_deref(),
                     &raw.target_name,
                     raw.target_qualifier.as_deref(),
+                    raw.receiver_type.as_deref(),
                     raw.kind.as_str(),
                     0.0f64
                 ])?;
@@ -321,6 +322,26 @@ impl IndexPipeline {
 
         // Update query planner stats for better index usage
         conn.execute_batch("ANALYZE symbols; ANALYZE refs; ANALYZE files;")?;
+
+        // Level 0: Receiver-type match (confidence = 0.95).
+        // The call site knows its receiver's static type (x.M() where x: T,
+        // inferred lite from receivers/params/local literals) and exactly one
+        // file defines a same-named symbol owned by that type (symbols.scope).
+        // Runs BEFORE same-file: type evidence beats proximity — same-file
+        // name reuse on a different type was a measured error class.
+        let l0 = conn.execute(
+            "UPDATE refs SET
+                 target_file_id = (SELECT s.file_id FROM symbols s
+                     WHERE s.name = refs.target_name AND s.scope = refs.receiver_type LIMIT 1),
+                 target_symbol_id = (SELECT s.id FROM symbols s
+                     WHERE s.name = refs.target_name AND s.scope = refs.receiver_type LIMIT 1),
+                 confidence = 0.95
+             WHERE confidence = 0.0 AND kind != 'import'
+               AND receiver_type IS NOT NULL
+               AND (SELECT COUNT(DISTINCT s.file_id) FROM symbols s
+                   WHERE s.name = refs.target_name AND s.scope = refs.receiver_type) = 1",
+            [],
+        )?;
 
         // Level 1: Same-file (confidence = 1.0) — uses idx_symbols_name_file
         let l1 = conn.execute(
@@ -448,8 +469,8 @@ impl IndexPipeline {
         )?;
 
         info!(
-            "resolved: L1(same-file)={}, L2(same-pkg-unique)={}, L3(qualifier)={}, L4(global-unique)={}, L4b(same-pkg-multi)={}, L5(ambiguous)={}",
-            l1, l2, l3q, l3, l2b, l4
+            "resolved: L0(receiver-type)={}, L1(same-file)={}, L2(same-pkg-unique)={}, L3(qualifier)={}, L4(global-unique)={}, L4b(same-pkg-multi)={}, L5(ambiguous)={}",
+            l0, l1, l2, l3q, l3, l2b, l4
         );
 
         Ok(())

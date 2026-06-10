@@ -86,6 +86,7 @@ fn collect_refs(
                     source_symbol: enclosing.clone(),
                     target_name: text(&name_node, source),
                     target_qualifier: qualifier,
+                    receiver_type: None,
                     kind: RefKind::Call,
                 });
             }
@@ -102,6 +103,7 @@ fn collect_refs(
                         source_symbol: enclosing.clone(),
                         target_name: bare,
                         target_qualifier: None,
+                        receiver_type: None,
                         kind: RefKind::Call,
                     });
                 }
@@ -115,6 +117,7 @@ fn collect_refs(
                     source_symbol: enclosing.clone(),
                     target_name: name,
                     target_qualifier: None,
+                    receiver_type: None,
                     kind: RefKind::TypeRef,
                 });
             }
@@ -136,6 +139,7 @@ fn collect_refs(
                     source_symbol: None,
                     target_name: path,
                     target_qualifier: None,
+                    receiver_type: None,
                     kind: RefKind::Import,
                 });
             }

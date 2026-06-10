@@ -82,7 +82,7 @@ def main():
     defs, scip_refs = load_scip(f"{repo}/scip.json")
     abyss_refs = load_abyss(f"{repo}/.code-abyss/index.db")
 
-    tiers = [1.0, 0.95, 0.9, 0.8, 0.5]
+    tiers = [1.0, 0.95, 0.9, 0.8, 0.6, 0.5]
     stats = {t: {"correct": 0, "wrong": 0} for t in tiers}
     truth_pairs = 0
     unresolved = 0

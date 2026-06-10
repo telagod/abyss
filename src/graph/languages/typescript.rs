@@ -92,6 +92,7 @@ fn collect_refs(
                                 source_symbol: enclosing.clone(),
                                 target_name: name,
                                 target_qualifier: None,
+                                receiver_type: None,
                                 kind: RefKind::Call,
                             });
                         }
@@ -106,6 +107,7 @@ fn collect_refs(
                                 source_symbol: enclosing.clone(),
                                 target_name: text(&prop, source),
                                 target_qualifier: Some(text(&obj, source)),
+                                receiver_type: None,
                                 kind: RefKind::Call,
                             });
                         }
@@ -121,6 +123,7 @@ fn collect_refs(
                     source_symbol: enclosing.clone(),
                     target_name: text(&constructor, source),
                     target_qualifier: None,
+                    receiver_type: None,
                     kind: RefKind::Call,
                 });
             }
@@ -133,6 +136,7 @@ fn collect_refs(
                     source_symbol: enclosing.clone(),
                     target_name: name,
                     target_qualifier: None,
+                    receiver_type: None,
                     kind: RefKind::TypeRef,
                 });
             }
@@ -146,6 +150,7 @@ fn collect_refs(
                         .trim_matches(|c| c == '\'' || c == '"')
                         .to_string(),
                     target_qualifier: None,
+                    receiver_type: None,
                     kind: RefKind::Import,
                 });
             }

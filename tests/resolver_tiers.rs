@@ -1,6 +1,6 @@
 //! Resolution-tier contract tests against the SQL resolver (`batch_resolve_refs`).
 //!
-//! Tier ladder: L1 same-file 1.0 → L2 same-package-unique 0.95 → L3 qualifier 0.9
+//! Tier ladder: L0 receiver-type 0.95 → L1 same-file 1.0 → L2 same-package-unique 0.95 → L3 qualifier 0.9
 //! → L4 global-unique 0.8 → L4b same-package-multi 0.6 → L5 ambiguous 0.5
 //! → unresolved 0.0.
 
@@ -211,4 +211,143 @@ func Out() int { return Render() }
     assert_eq!(refs.len(), 1, "{refs:?}");
     assert_eq!(refs[0].confidence, 0.6);
     assert!(refs[0].target_path.is_some(), "still offered as a hint");
+}
+
+// ═══ L0: receiver-type tier (v0.3.2) ═══
+
+#[test]
+fn tier0_receiver_type_disambiguates_same_package_collision() {
+    // Two types in one package both define Render() — the historical 0.6
+    // demotion case. A typed receiver must pick the right file at 0.95.
+    let fx = index_fixture(&[
+        (
+            "render/html.go",
+            "package render\n\ntype HTML struct{}\n\nfunc (h *HTML) Render() error { return nil }\n",
+        ),
+        (
+            "render/json.go",
+            "package render\n\ntype JSON struct{}\n\nfunc (j *JSON) Render() error { return nil }\n",
+        ),
+        (
+            "render/use.go",
+            "package render\n\nfunc Use() error {\n\tr := &HTML{}\n\treturn r.Render()\n}\n",
+        ),
+    ]);
+    let refs: Vec<_> = call_refs_to(&fx.repo, "Render")
+        .into_iter()
+        .filter(|r| r.source_path == "render/use.go")
+        .collect();
+    assert_eq!(refs.len(), 1, "{refs:?}");
+    assert_eq!(refs[0].confidence, 0.95);
+    assert_eq!(refs[0].target_path.as_deref(), Some("render/html.go"));
+}
+
+#[test]
+fn tier0_parameter_receiver_resolves_cross_package() {
+    // Receiver type comes from a function parameter; method lives in another
+    // package — name tiers alone would be ambiguous or demoted.
+    let fx = index_fixture(&[
+        (
+            "engine/engine.go",
+            "package engine\n\ntype Engine struct{}\n\nfunc (e *Engine) Start() {}\n",
+        ),
+        (
+            "boot/other.go",
+            "package boot\n\ntype Other struct{}\n\nfunc (o *Other) Start() {}\n",
+        ),
+        (
+            "boot/boot.go",
+            "package boot\n\nimport \"example.com/p/engine\"\n\nfunc Boot(e *engine.Engine) {\n\te.Start()\n}\n",
+        ),
+    ]);
+    let refs: Vec<_> = call_refs_to(&fx.repo, "Start")
+        .into_iter()
+        .filter(|r| r.source_path == "boot/boot.go")
+        .collect();
+    assert_eq!(refs.len(), 1, "{refs:?}");
+    assert_eq!(refs[0].confidence, 0.95);
+    assert_eq!(refs[0].target_path.as_deref(), Some("engine/engine.go"));
+}
+
+#[test]
+fn tier0_method_receiver_var_resolves_sibling_method() {
+    // Inside a method, calls through the receiver var resolve to the same
+    // type's methods even when defined in another file with name collisions.
+    let fx = index_fixture(&[
+        (
+            "ctx/context.go",
+            "package ctx\n\ntype Context struct{}\n\nfunc (c *Context) Reset() {}\n",
+        ),
+        (
+            "ctx/pool.go",
+            "package ctx\n\ntype Pool struct{}\n\nfunc (p *Pool) Reset() {}\n",
+        ),
+        (
+            "ctx/run.go",
+            "package ctx\n\nfunc (c *Context) Run() {\n\tc.Reset()\n}\n",
+        ),
+    ]);
+    let refs: Vec<_> = call_refs_to(&fx.repo, "Reset")
+        .into_iter()
+        .filter(|r| r.source_path == "ctx/run.go")
+        .collect();
+    assert_eq!(refs.len(), 1, "{refs:?}");
+    assert_eq!(refs[0].confidence, 0.95);
+    assert_eq!(refs[0].target_path.as_deref(), Some("ctx/context.go"));
+}
+
+#[test]
+fn tier0_constructor_inference_new_prefix() {
+    // w := NewWidget() → w: Widget by constructor naming convention.
+    let fx = index_fixture(&[
+        (
+            "ui/widget.go",
+            "package ui\n\ntype Widget struct{}\n\nfunc NewWidget() *Widget { return &Widget{} }\n\nfunc (w *Widget) Draw() {}\n",
+        ),
+        (
+            "ui/canvas.go",
+            "package ui\n\ntype Canvas struct{}\n\nfunc (c *Canvas) Draw() {}\n",
+        ),
+        (
+            "ui/app.go",
+            "package ui\n\nfunc App() {\n\tw := NewWidget()\n\tw.Draw()\n}\n",
+        ),
+    ]);
+    let refs: Vec<_> = call_refs_to(&fx.repo, "Draw")
+        .into_iter()
+        .filter(|r| r.source_path == "ui/app.go")
+        .collect();
+    assert_eq!(refs.len(), 1, "{refs:?}");
+    assert_eq!(refs[0].confidence, 0.95);
+    assert_eq!(refs[0].target_path.as_deref(), Some("ui/widget.go"));
+}
+
+#[test]
+fn tier0_unknown_receiver_stays_demoted() {
+    // Interface-typed parameter: receiver type is NOT inferrable (lite has no
+    // interface resolution) — the collision must stay at the 0.6 demotion,
+    // never a confident wrong answer.
+    let fx = index_fixture(&[
+        (
+            "shape/circle.go",
+            "package shape\n\ntype Circle struct{}\n\nfunc (c *Circle) Area() int { return 1 }\n",
+        ),
+        (
+            "shape/square.go",
+            "package shape\n\ntype Square struct{}\n\nfunc (s *Square) Area() int { return 2 }\n",
+        ),
+        (
+            "shape/calc.go",
+            "package shape\n\ntype Shaper interface{ Area() int }\n\nfunc Calc(s Shaper) int {\n\treturn s.Area()\n}\n",
+        ),
+    ]);
+    let refs: Vec<_> = call_refs_to(&fx.repo, "Area")
+        .into_iter()
+        .filter(|r| r.source_path == "shape/calc.go")
+        .collect();
+    assert_eq!(refs.len(), 1, "{refs:?}");
+    assert!(
+        refs[0].confidence <= 0.6,
+        "interface dispatch must not be confidently resolved: {refs:?}"
+    );
 }

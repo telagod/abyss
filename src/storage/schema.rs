@@ -1,7 +1,7 @@
 use anyhow::Result;
 use rusqlite::Connection;
 
-pub const SCHEMA_VERSION: u32 = 2;
+pub const SCHEMA_VERSION: u32 = 3;
 
 pub fn init_db(conn: &Connection) -> Result<()> {
     conn.execute_batch("PRAGMA journal_mode = WAL;")?;
@@ -89,6 +89,7 @@ pub fn init_db(conn: &Connection) -> Result<()> {
             source_symbol   TEXT,
             target_name     TEXT NOT NULL,
             target_qualifier TEXT,
+            receiver_type   TEXT,   -- v3: inferred type of the call receiver (x.M() where x: T)
             target_file_id  INTEGER REFERENCES files(id) ON DELETE SET NULL,
             target_symbol_id INTEGER REFERENCES symbols(id) ON DELETE SET NULL,
             kind            TEXT NOT NULL,
@@ -142,6 +143,22 @@ pub fn init_db(conn: &Connection) -> Result<()> {
         );
         ",
     )?;
+
+    // v2 → v3 migration: CREATE IF NOT EXISTS won't add columns to existing
+    // tables, so ALTER explicitly. Idempotent — duplicate-column error means
+    // the column is already there.
+    let version: u32 = conn
+        .query_row(
+            "SELECT value FROM meta WHERE key = 'schema_version'",
+            [],
+            |r| r.get::<_, String>(0),
+        )
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0);
+    if version < 3 {
+        let _ = conn.execute("ALTER TABLE refs ADD COLUMN receiver_type TEXT", []);
+    }
 
     // Set schema version
     conn.execute(
