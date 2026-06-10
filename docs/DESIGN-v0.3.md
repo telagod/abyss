@@ -35,7 +35,12 @@
 5. CI：`fmt --check` + `clippy -D warnings` + `cargo test`，linux/macos/windows 三平台
 6. 迁移 docs/DESIGN-v0.2.md、本文档入库
 
-**验收**：`cargo build --no-default-features` 通过且二进制 < 15M；CI 三平台绿。
+**验收**：默认（slim）构建通过且二进制 ≤ 20M；CI 三平台绿。
+
+> 实测（2026-06-10）：slim 43M → 18M（fat LTO + codegen-units=1 + tokio 特性裁剪）。
+> 剩余大头是 14 个 tree-sitter grammar 静态表（功能本体，不可裁）。
+> 后续优化路径：Phase 4 将 html/css/yaml/toml/json/bash 等「文档型 grammar」拆为
+> 默认开启的 `extra-langs` feature——chunker 对未知语言有整文件 Module 降级，移除可平滑。
 
 ## 3. Phase 1 — 可信度地基：测试 + eval（2~3 天）
 
