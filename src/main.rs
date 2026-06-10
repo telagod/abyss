@@ -402,18 +402,30 @@ fn cmd_context(config: Config, file: &str, json: bool) -> Result<()> {
             let sym = sc["symbol"].as_str().unwrap_or("");
             let callers = sc["external_callers"].as_array().unwrap();
             println!("  {}() ← {} callers", sym, callers.len());
-            for c in callers.iter().take(5) {
-                let t = if c["is_test"].as_bool().unwrap_or(false) {
-                    " [test]"
-                } else {
-                    ""
-                };
+            // Production callers are the pre-edit safety contract: list ALL of
+            // them — silent truncation once made an agent miss a call site.
+            // Test callers are capped, with the remainder counted explicitly.
+            let (prod, test): (Vec<_>, Vec<_>) = callers
+                .iter()
+                .partition(|c| !c["is_test"].as_bool().unwrap_or(false));
+            for c in &prod {
                 println!(
-                    "    {}:{} → {}(){t}",
+                    "    {}:{} → {}()",
                     c["file"].as_str().unwrap_or(""),
                     c["line"],
                     c["caller"].as_str().unwrap_or("")
                 );
+            }
+            for c in test.iter().take(3) {
+                println!(
+                    "    {}:{} → {}() [test]",
+                    c["file"].as_str().unwrap_or(""),
+                    c["line"],
+                    c["caller"].as_str().unwrap_or("")
+                );
+            }
+            if test.len() > 3 {
+                println!("    … and {} more test callers", test.len() - 3);
             }
         }
 

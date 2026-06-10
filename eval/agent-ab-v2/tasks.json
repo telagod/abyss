@@ -1,0 +1,30 @@
+[
+  {
+    "id": "t1",
+    "target": "render/render.go",
+    "symbol": "writeContentType",
+    "task": "Change writeContentType in render/render.go to take the content type as a single string instead of a []string slice.",
+    "applied_pattern": "func writeContentType\\(w http\\.ResponseWriter, [a-zA-Z_]+ string\\)"
+  },
+  {
+    "id": "t2",
+    "target": "utils.go",
+    "symbol": "assert1",
+    "task": "Swap the parameter order of assert1 in utils.go so the text comes first and the guard condition second.",
+    "applied_pattern": "func assert1\\([a-zA-Z_]+ string, [a-zA-Z_]+ bool\\)"
+  },
+  {
+    "id": "t3",
+    "target": "utils.go",
+    "symbol": "nameOfFunction",
+    "task": "Make nameOfFunction in utils.go also return an error as a second return value (nil when the name was resolved).",
+    "applied_pattern": "func nameOfFunction\\(f any\\) \\(string, error\\)"
+  },
+  {
+    "id": "t4",
+    "target": "debug.go",
+    "symbol": "debugPrint",
+    "task": "Change debugPrint in debug.go to take an io.Writer as its first parameter and write to it instead of DefaultWriter; existing callers should pass DefaultWriter.",
+    "applied_pattern": "func debugPrint\\([a-zA-Z_]+ io\\.Writer"
+  }
+]
