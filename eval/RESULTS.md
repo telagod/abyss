@@ -12,7 +12,7 @@ only in-repo symbols count (abyss does not resolve into dependencies).
 - **precision** — when abyss commits to an answer, how often is it right
 - **recall** — how much of the SCIP-known call graph abyss resolves correctly
 
-## Results — 2026-06-10, abyss v0.3.0
+## Results — 2026-06-10, abyss v0.3.1-dev (after eval-driven fixes)
 
 ### gin v1.10.0 (Go, 102 files) — ground truth: scip-go
 
@@ -21,26 +21,45 @@ only in-repo symbols count (abyss does not resolve into dependencies).
 | Tier | Strategy | Correct | Wrong | Precision |
 |------|----------|--------:|------:|----------:|
 | 1.0 | same file | 866 | 35 | **96.1%** |
-| 0.95 | same package | 1,601 | 382 | **80.7%** |
-| 0.9 | import qualifier | 19 | 0 | **100%** |
+| 0.95 | same package, unique candidate | 1,480 | 32 | **97.9%** |
+| 0.9 | import qualifier, unique candidate | 1 | 0 | **100%** |
 | 0.8 | global unique | 1 | 2 | 33.3% |
-| 0.5 | ambiguous guess | 0 | 1 | 0% |
+| 0.6 / 0.5 | demoted multi-candidate / ambiguous | 139 | 351 | 28.4% |
 
 | Gate | Precision | Recall |
 |------|----------:|-------:|
-| `--min-confidence 0.7` (default) | **85.6%** | **83.8%** |
+| `--min-confidence 0.7` (default) | **97.2%** | **79.1%** |
 | `--min-confidence 0` (everything) | 85.5% | 83.8% |
 
-### Known weaknesses (from this eval)
+### How the eval improved the resolver (same day)
 
-1. **Same-package method-name collisions dominate the errors.** gin defines
-   `Bind`/`String`/`Render`/`WriteContentType` on many types in one package;
-   the same-package tier picks one candidate file. Top offenders: `Bind` (86),
-   `String` (74), `Use` (55), `Render` (37). Fix direction: demote
-   multi-candidate same-package matches to a lower confidence tier, and use
-   receiver hints where available.
-2. The 0.8/0.5 tiers carry almost no volume in a single-module Go repo —
-   their numbers here are anecdotal, not significant.
+The first run of this eval scored **85.6% gated precision**. Three fixes,
+each verified by re-running the harness:
+
+1. **Same-package multi-candidate demotion** — interface-method collisions
+   (`Bind`×86, `String`×74, `Render`×37: many types in one package) were
+   resolved at 0.95 by picking the first candidate. Now only *unique*
+   same-package matches earn 0.95; collisions demote to 0.6, below the
+   default gate. L2 precision: 80.7% → 97.9%.
+2. **Qualifier-tier uniqueness** — build-tag variants (gin's `internal/json`
+   has per-tag files all defining `Marshal`) made the qualifier tier gamble.
+   Same treatment: unique candidate or demote.
+3. **Case-sensitive qualifier matching** — SQLite `LIKE` is ASCII
+   case-insensitive, so the *variable* `JSON` in `JSON.Bind()` matched the
+   *file* `json.go` and the `encoding/json` import. Switched to `GLOB`.
+
+Net: gated precision +11.6pp for −4.7pp recall — a caller list that is wrong
+1-in-40 instead of 1-in-7. Demoted matches stay visible via
+`possible_callers` / `--min-confidence 0`.
+
+### Known weaknesses (current)
+
+1. **Interface dispatch**: calls through interface-typed values resolve to a
+   concrete impl file, while SCIP's truth is the interface declaration —
+   inherently beyond name-based resolution. Receiver-type inference (lite)
+   is the next lever.
+2. Remaining gated errors are same-file / same-package name reuse on
+   different types (35 + 32 cases above).
 3. Coverage: TypeScript/Python/Java ground-truth runs are TODO
    (scip-typescript needs the corpus repo's node_modules; planned next).
 

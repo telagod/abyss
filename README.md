@@ -94,18 +94,19 @@ References resolve through tiered heuristics, each tagged with a confidence scor
 | Tier | Strategy | Confidence |
 |------|----------|-----------|
 | 1 | Same file | 1.0 |
-| 2 | Same package/directory | 0.95 |
-| 3 | Import-qualifier match | 0.9 |
+| 2 | Same package/directory, unique candidate | 0.95 |
+| 3 | Import-qualifier match, unique candidate | 0.9 |
 | 4 | Globally unique symbol | 0.8 |
-| 5 | Ambiguous (first candidate) | 0.5 |
+| 5 | Same package, multiple candidates (demoted) | 0.6 |
+| 6 | Ambiguous (first candidate) | 0.5 |
 
 This is not a compiler. Measured against SCIP (compiler-grade) ground truth on gin v1.10.0 — published whatever the numbers say:
 
 | Gate | Precision | Recall |
 |------|----------:|-------:|
-| default (`--min-confidence 0.7`) | **85.6%** | **83.8%** |
+| default (`--min-confidence 0.7`) | **97.2%** | **79.1%** |
 | same-file tier alone | 96.1% | — |
-| import-qualifier tier alone | 100% | — |
+| same-package unique-candidate tier | 97.9% | — |
 
 abyss indexed gin in **146ms**; scip-go took ~40s. Full method, per-tier table, and known weaknesses: [eval/RESULTS.md](eval/RESULTS.md). Reproduce: `eval/run.sh`.
 

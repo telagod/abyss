@@ -335,7 +335,12 @@ impl IndexPipeline {
             [],
         )?;
 
-        // Level 2: Same-package (confidence = 0.95) — uses idx_files_dir + idx_symbols_name_file
+        // Level 2: Same-package with a UNIQUE candidate file (confidence = 0.95).
+        // Multi-candidate same-package matches (interface-method name collisions:
+        // many types in one package defining Render/String/Bind) are NOT resolved
+        // here — they fall through to the qualifier tier and, failing that, to the
+        // demoted 0.6 tier below. Eval on gin showed these collisions dominate
+        // resolution errors (see eval/RESULTS.md).
         let l2 = conn.execute(
             "UPDATE refs SET
                  target_file_id = (SELECT s.file_id FROM symbols s
@@ -352,14 +357,16 @@ impl IndexPipeline {
                      LIMIT 1),
                  confidence = 0.95
              WHERE confidence = 0.0 AND kind != 'import'
-               AND EXISTS (SELECT 1 FROM symbols s JOIN files f ON s.file_id = f.id
+               AND (SELECT COUNT(DISTINCT s.file_id) FROM symbols s JOIN files f ON s.file_id = f.id
                    WHERE s.name = refs.target_name
                      AND f.dir = (SELECT dir FROM files WHERE id = refs.source_file_id)
-                     AND s.file_id != refs.source_file_id)",
+                     AND s.file_id != refs.source_file_id) = 1",
             [],
         )?;
 
-        // Level 3: Import-qualifier match (confidence = 0.9).
+        // Level 3: Import-qualifier match with a UNIQUE candidate file (confidence = 0.9).
+        // Multi-file qualifier matches (e.g. build-tag variants all defining the
+        // same symbol) fall through to the demoted tiers.
         // `util.Fn()` resolves to a file in a dir named `util/` (or file `util.ext`)
         // when the source file imports a path whose last segment is `util`.
         // Disambiguates same-named symbols across packages before the global tiers.
@@ -367,15 +374,15 @@ impl IndexPipeline {
             "UPDATE refs SET
                  target_file_id = (SELECT s.file_id FROM symbols s JOIN files f ON s.file_id = f.id
                      WHERE s.name = refs.target_name
-                       AND (f.dir LIKE '%' || refs.target_qualifier || '/'
-                            OR f.path LIKE '%/' || refs.target_qualifier || '.%'
-                            OR f.path LIKE refs.target_qualifier || '.%')
+                       AND (f.dir GLOB '*' || refs.target_qualifier || '/'
+                            OR f.path GLOB '*/' || refs.target_qualifier || '.*'
+                            OR f.path GLOB refs.target_qualifier || '.*')
                      LIMIT 1),
                  target_symbol_id = (SELECT s.id FROM symbols s JOIN files f ON s.file_id = f.id
                      WHERE s.name = refs.target_name
-                       AND (f.dir LIKE '%' || refs.target_qualifier || '/'
-                            OR f.path LIKE '%/' || refs.target_qualifier || '.%'
-                            OR f.path LIKE refs.target_qualifier || '.%')
+                       AND (f.dir GLOB '*' || refs.target_qualifier || '/'
+                            OR f.path GLOB '*/' || refs.target_qualifier || '.*'
+                            OR f.path GLOB refs.target_qualifier || '.*')
                      LIMIT 1),
                  confidence = 0.9
              WHERE confidence = 0.0 AND kind != 'import'
@@ -383,13 +390,13 @@ impl IndexPipeline {
                AND EXISTS (SELECT 1 FROM refs ir
                    WHERE ir.source_file_id = refs.source_file_id AND ir.kind = 'import'
                      AND (ir.target_name = refs.target_qualifier
-                          OR ir.target_name LIKE '%/' || refs.target_qualifier
-                          OR ir.target_name LIKE '%.' || refs.target_qualifier))
-               AND EXISTS (SELECT 1 FROM symbols s JOIN files f ON s.file_id = f.id
+                          OR ir.target_name GLOB '*/' || refs.target_qualifier
+                          OR ir.target_name GLOB '*.' || refs.target_qualifier))
+               AND (SELECT COUNT(DISTINCT s.file_id) FROM symbols s JOIN files f ON s.file_id = f.id
                    WHERE s.name = refs.target_name
-                     AND (f.dir LIKE '%' || refs.target_qualifier || '/'
-                          OR f.path LIKE '%/' || refs.target_qualifier || '.%'
-                          OR f.path LIKE refs.target_qualifier || '.%'))",
+                     AND (f.dir GLOB '*' || refs.target_qualifier || '/'
+                          OR f.path GLOB '*/' || refs.target_qualifier || '.*'
+                          OR f.path GLOB refs.target_qualifier || '.*')) = 1",
             [],
         )?;
 
@@ -401,6 +408,31 @@ impl IndexPipeline {
                  confidence = 0.8
              WHERE confidence = 0.0 AND kind != 'import'
                AND (SELECT COUNT(DISTINCT file_id) FROM symbols WHERE name = refs.target_name) = 1",
+            [],
+        )?;
+
+        // Level 4b: Same-package, multiple candidates (confidence = 0.6).
+        // Below the default 0.7 gate: surfaced as possible_callers, not facts.
+        let l2b = conn.execute(
+            "UPDATE refs SET
+                 target_file_id = (SELECT s.file_id FROM symbols s
+                     JOIN files f ON s.file_id = f.id
+                     WHERE s.name = refs.target_name
+                       AND f.dir = (SELECT dir FROM files WHERE id = refs.source_file_id)
+                       AND s.file_id != refs.source_file_id
+                     LIMIT 1),
+                 target_symbol_id = (SELECT s.id FROM symbols s
+                     JOIN files f ON s.file_id = f.id
+                     WHERE s.name = refs.target_name
+                       AND f.dir = (SELECT dir FROM files WHERE id = refs.source_file_id)
+                       AND s.file_id != refs.source_file_id
+                     LIMIT 1),
+                 confidence = 0.6
+             WHERE confidence = 0.0 AND kind != 'import'
+               AND EXISTS (SELECT 1 FROM symbols s JOIN files f ON s.file_id = f.id
+                   WHERE s.name = refs.target_name
+                     AND f.dir = (SELECT dir FROM files WHERE id = refs.source_file_id)
+                     AND s.file_id != refs.source_file_id)",
             [],
         )?;
 
@@ -416,8 +448,8 @@ impl IndexPipeline {
         )?;
 
         info!(
-            "resolved: L1(same-file)={}, L2(same-pkg)={}, L3(qualifier)={}, L4(global-unique)={}, L5(ambiguous)={}",
-            l1, l2, l3q, l3, l4
+            "resolved: L1(same-file)={}, L2(same-pkg-unique)={}, L3(qualifier)={}, L4(global-unique)={}, L4b(same-pkg-multi)={}, L5(ambiguous)={}",
+            l1, l2, l3q, l3, l2b, l4
         );
 
         Ok(())

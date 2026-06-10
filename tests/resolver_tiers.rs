@@ -1,7 +1,8 @@
 //! Resolution-tier contract tests against the SQL resolver (`batch_resolve_refs`).
 //!
-//! Tier ladder: L1 same-file 1.0 → L2 same-package 0.95 → L3 qualifier 0.9
-//! → L4 global-unique 0.8 → L5 ambiguous 0.5 → unresolved 0.0.
+//! Tier ladder: L1 same-file 1.0 → L2 same-package-unique 0.95 → L3 qualifier 0.9
+//! → L4 global-unique 0.8 → L4b same-package-multi 0.6 → L5 ambiguous 0.5
+//! → unresolved 0.0.
 
 mod common;
 use common::*;
@@ -176,4 +177,38 @@ fn java_same_package_and_unique_resolution() {
     assert_eq!(refs[0].confidence, 0.95);
     assert_eq!(refs[0].target_path.as_deref(), Some("app/Helper.java"));
     assert_eq!(refs[0].source_symbol.as_deref(), Some("run"));
+}
+
+#[test]
+fn same_package_multi_candidate_demotes_to_0_6() {
+    // Render is defined in two files of the same package (interface-method
+    // collision, the dominant error class in the gin eval) — must NOT be
+    // reported at 0.95; demoted below the 0.7 gate instead.
+    let fx = index_fixture(&[
+        (
+            "app/json.go",
+            "package app
+
+func Render() int { return 1 }
+",
+        ),
+        (
+            "app/xml.go",
+            "package app
+
+func Render() int { return 2 }
+",
+        ),
+        (
+            "app/caller.go",
+            "package app
+
+func Out() int { return Render() }
+",
+        ),
+    ]);
+    let refs = call_refs_to(&fx.repo, "Render");
+    assert_eq!(refs.len(), 1, "{refs:?}");
+    assert_eq!(refs[0].confidence, 0.6);
+    assert!(refs[0].target_path.is_some(), "still offered as a hint");
 }
