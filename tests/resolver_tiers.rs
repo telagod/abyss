@@ -351,3 +351,64 @@ fn tier0_unknown_receiver_stays_demoted() {
         "interface dispatch must not be confidently resolved: {refs:?}"
     );
 }
+
+// ═══ L0 receiver tier: TypeScript (v0.3.2) ═══
+
+#[test]
+fn tier0_ts_class_field_method_and_new_inference() {
+    // Method-as-class-field (`text = (...) => ...`) must be a symbol, and
+    // `const c = new Context()` must type the receiver.
+    let fx = index_fixture(&[
+        (
+            "src/context.ts",
+            "export class Context {\n  text = (s: string) => { return s }\n}\n",
+        ),
+        (
+            "src/request.ts",
+            "export class HonoRequest {\n  text = (s: string) => { return s }\n}\n",
+        ),
+        (
+            "src/app.ts",
+            "import { Context } from './context'\nexport const run = () => {\n  const c = new Context()\n  return c.text('hi')\n}\n",
+        ),
+    ]);
+    let refs: Vec<_> = call_refs_to(&fx.repo, "text")
+        .into_iter()
+        .filter(|r| r.source_path == "src/app.ts")
+        .collect();
+    assert_eq!(refs.len(), 1, "{refs:?}");
+    assert_eq!(refs[0].confidence, 0.95);
+    assert_eq!(refs[0].target_path.as_deref(), Some("src/context.ts"));
+}
+
+#[test]
+fn tier0_ts_typed_receiver_without_definition_demotes() {
+    // Receiver type known but the method has no static definition anywhere
+    // (hono's runtime-assigned router verbs): name-only tiers must NOT claim
+    // it — especially not same-file.
+    let fx = index_fixture(&[
+        (
+            "src/hono.ts",
+            "export class Hono {\n  route = (p: string) => { return p }\n}\n",
+        ),
+        (
+            "src/app.test.ts",
+            "import { Hono } from './hono'\nexport const get = (x: string) => x\nexport const t = () => {\n  const app = new Hono()\n  app.get('/')\n  return get('y')\n}\n",
+        ),
+    ]);
+    let mut confidences: Vec<f64> = call_refs_to(&fx.repo, "get")
+        .into_iter()
+        .filter(|r| r.source_path == "src/app.test.ts")
+        .map(|r| r.confidence)
+        .collect();
+    confidences.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    // Two refs: the direct `get('y')` call resolves same-file at 1.0 (the
+    // local const IS a symbol now); `app.get('/')` — typed receiver Hono
+    // with no Hono-owned `get` — must stay below the gate, never 1.0.
+    assert_eq!(confidences.len(), 2, "{confidences:?}");
+    assert!(
+        confidences[0] < 0.7,
+        "typed receiver without owned symbol must demote: {confidences:?}"
+    );
+    assert_eq!(confidences[1], 1.0, "{confidences:?}");
+}

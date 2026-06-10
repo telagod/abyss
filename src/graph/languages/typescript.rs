@@ -7,8 +7,13 @@ pub struct TypeScriptExtractor;
 impl LanguageRefExtractor for TypeScriptExtractor {
     fn extract(&self, tree: &Tree, source: &str) -> Vec<RawReference> {
         let mut refs = Vec::new();
-        let scope_map = build_scope_map(&tree.root_node(), source);
-        collect_refs(&tree.root_node(), source, &scope_map, &mut refs);
+        let root = tree.root_node();
+        let scope_map = build_scope_map(&root, source);
+        // Module-level declarations (const app = new Hono()) seed the map for
+        // everything below; nested functions inherit and extend it.
+        let mut vt = VarTypes::new();
+        harvest_var_decls(&root, source, &mut vt);
+        collect_refs(&root, source, &scope_map, &vt, None, &mut refs);
         refs
     }
 
@@ -70,15 +75,58 @@ fn build_scope_map(root: &Node, source: &str) -> Vec<Option<String>> {
     map
 }
 
+/// Lite per-scope variable → type map (mirrors the Go extractor): parameters
+/// with type annotations, `const x = new T()`, and `this` → enclosing class.
+/// No data-flow, no interfaces, no union types.
+type VarTypes = std::collections::HashMap<String, String>;
+
 fn collect_refs(
     node: &Node,
     source: &str,
     scope_map: &[Option<String>],
+    var_types: &VarTypes,
+    current_class: Option<&str>,
     refs: &mut Vec<RawReference>,
 ) {
     let kind = node.kind();
     let line = node.start_position().row as u32;
     let enclosing = scope_map.get(line as usize).and_then(|s| s.clone());
+
+    // Function boundary: extend the inherited map with own params + locals.
+    if matches!(
+        kind,
+        "function_declaration" | "method_definition" | "arrow_function" | "function_expression"
+    ) {
+        let mut vt = var_types.clone();
+        if let Some(params) = node.child_by_field_name("parameters") {
+            harvest_parameters(&params, source, &mut vt);
+        }
+        if let Some(body) = node.child_by_field_name("body") {
+            harvest_var_decls(&body, source, &mut vt);
+        }
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            collect_refs(&child, source, scope_map, &vt, current_class, refs);
+        }
+        return;
+    }
+
+    // Class boundary: `this.m()` below resolves to this class.
+    if kind == "class_declaration" || kind == "class" {
+        let class_name = node.child_by_field_name("name").map(|n| text(&n, source));
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            collect_refs(
+                &child,
+                source,
+                scope_map,
+                var_types,
+                class_name.as_deref().or(current_class),
+                refs,
+            );
+        }
+        return;
+    }
 
     match kind {
         "call_expression" => {
@@ -102,12 +150,17 @@ fn collect_refs(
                             func.child_by_field_name("object"),
                             func.child_by_field_name("property"),
                         ) {
+                            let receiver_type = match obj.kind() {
+                                "identifier" => var_types.get(&text(&obj, source)).cloned(),
+                                "this" => current_class.map(String::from),
+                                _ => None,
+                            };
                             refs.push(RawReference {
                                 line,
                                 source_symbol: enclosing.clone(),
                                 target_name: text(&prop, source),
                                 target_qualifier: Some(text(&obj, source)),
-                                receiver_type: None,
+                                receiver_type,
                                 kind: RefKind::Call,
                             });
                         }
@@ -160,7 +213,96 @@ fn collect_refs(
 
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
-        collect_refs(&child, source, scope_map, refs);
+        collect_refs(&child, source, scope_map, var_types, current_class, refs);
+    }
+}
+
+/// Parameters with type annotations: `(c: Context, e?: Engine)` → c/e typed.
+fn harvest_parameters(params: &Node, source: &str, vt: &mut VarTypes) {
+    let mut cursor = params.walk();
+    for param in params.named_children(&mut cursor) {
+        let pk = param.kind();
+        if pk != "required_parameter" && pk != "optional_parameter" {
+            continue;
+        }
+        let (Some(pattern), Some(ty)) = (
+            param.child_by_field_name("pattern"),
+            param.child_by_field_name("type"),
+        ) else {
+            continue;
+        };
+        if pattern.kind() != "identifier" {
+            continue; // destructuring patterns: skip
+        }
+        if let Some(base) = base_ts_type_name(&ty, source) {
+            vt.insert(text(&pattern, source), base);
+        }
+    }
+}
+
+/// `const x = new T()` declarations in a scope — skips nested functions,
+/// which harvest their own.
+fn harvest_var_decls(node: &Node, source: &str, vt: &mut VarTypes) {
+    let kind = node.kind();
+    if matches!(
+        kind,
+        "function_declaration" | "method_definition" | "arrow_function" | "function_expression"
+    ) {
+        return;
+    }
+    if kind == "variable_declarator"
+        && let (Some(name), Some(value)) = (
+            node.child_by_field_name("name"),
+            node.child_by_field_name("value"),
+        )
+        && name.kind() == "identifier"
+        && value.kind() == "new_expression"
+        && let Some(ctor) = value.child_by_field_name("constructor")
+    {
+        let ty = match ctor.kind() {
+            "identifier" => Some(text(&ctor, source)),
+            // new ns.Type() → Type
+            "member_expression" => ctor
+                .child_by_field_name("property")
+                .map(|p| text(&p, source)),
+            _ => None,
+        };
+        if let Some(ty) = ty {
+            vt.insert(text(&name, source), ty);
+        }
+    }
+
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        harvest_var_decls(&child, source, vt);
+    }
+}
+
+/// Bare type name from a type_annotation: `: Context` → Context,
+/// `: Hono<Env>` → Hono. Unions/predefined/complex types → None.
+fn base_ts_type_name(annotation: &Node, source: &str) -> Option<String> {
+    // type_annotation wraps the actual type node
+    let mut cursor = annotation.walk();
+    let inner = annotation.named_children(&mut cursor).next()?;
+    match inner.kind() {
+        "type_identifier" => {
+            let name = text(&inner, source);
+            if is_builtin_ts_type(&name) {
+                None
+            } else {
+                Some(name)
+            }
+        }
+        "generic_type" => {
+            let name_node = inner.child_by_field_name("name")?;
+            let name = text(&name_node, source);
+            if is_builtin_ts_type(&name) {
+                None
+            } else {
+                Some(name)
+            }
+        }
+        _ => None,
     }
 }
 

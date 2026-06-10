@@ -257,6 +257,8 @@ impl Chunker {
                 | "function_item"
                 | "method_definition"
                 | "method_declaration"
+                | "public_field_definition"
+                | "field_definition"
                 | "class_definition"
                 | "class_declaration"
                 | "struct_item"
@@ -335,6 +337,29 @@ impl Chunker {
                 Some(SymbolKind::Function)
             }
             "method_definition" | "method_declaration" => Some(SymbolKind::Method),
+            // TS/JS method-as-class-field: `text = (...) => {...}`. Data fields
+            // are not symbols — only function-valued ones.
+            "public_field_definition" | "field_definition"
+                if node.child_by_field_name("value").is_some_and(|v| {
+                    matches!(
+                        v.kind(),
+                        "arrow_function" | "function_expression" | "function"
+                    )
+                }) =>
+            {
+                Some(SymbolKind::Method)
+            }
+            // TS/JS module-level function consts: `export const useState = (...) => ...`
+            "variable_declarator"
+                if node.child_by_field_name("value").is_some_and(|v| {
+                    matches!(
+                        v.kind(),
+                        "arrow_function" | "function_expression" | "function"
+                    )
+                }) =>
+            {
+                Some(SymbolKind::Function)
+            }
             "class_definition" | "class_declaration" => Some(SymbolKind::Class),
             "struct_item" => Some(SymbolKind::Struct),
             "enum_item" => Some(SymbolKind::Enum),

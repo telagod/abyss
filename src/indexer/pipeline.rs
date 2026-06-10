@@ -343,7 +343,12 @@ impl IndexPipeline {
             [],
         )?;
 
-        // Level 1: Same-file (confidence = 1.0) — uses idx_symbols_name_file
+        // Level 1: Same-file (confidence = 1.0) — uses idx_symbols_name_file.
+        // Typed-receiver refs are L0's exclusive territory: if the receiver
+        // type is known but L0 found no owned symbol (dynamic methods,
+        // unindexed owners), proximity is a measured-bad guess — demote
+        // instead. Eval on hono: app.get() (runtime-assigned method) was
+        // claimed same-file 185×.
         let l1 = conn.execute(
             "UPDATE refs SET
                  target_file_id = source_file_id,
@@ -351,6 +356,7 @@ impl IndexPipeline {
                      WHERE s.name = refs.target_name AND s.file_id = refs.source_file_id LIMIT 1),
                  confidence = 1.0
              WHERE confidence = 0.0 AND kind != 'import'
+               AND receiver_type IS NULL
                AND EXISTS (SELECT 1 FROM symbols s
                    WHERE s.name = refs.target_name AND s.file_id = refs.source_file_id)",
             [],
@@ -378,6 +384,7 @@ impl IndexPipeline {
                      LIMIT 1),
                  confidence = 0.95
              WHERE confidence = 0.0 AND kind != 'import'
+               AND receiver_type IS NULL
                AND (SELECT COUNT(DISTINCT s.file_id) FROM symbols s JOIN files f ON s.file_id = f.id
                    WHERE s.name = refs.target_name
                      AND f.dir = (SELECT dir FROM files WHERE id = refs.source_file_id)
@@ -428,6 +435,7 @@ impl IndexPipeline {
                  target_symbol_id = (SELECT s.id FROM symbols s WHERE s.name = refs.target_name LIMIT 1),
                  confidence = 0.8
              WHERE confidence = 0.0 AND kind != 'import'
+               AND receiver_type IS NULL
                AND (SELECT COUNT(DISTINCT file_id) FROM symbols WHERE name = refs.target_name) = 1",
             [],
         )?;
