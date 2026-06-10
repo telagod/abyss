@@ -48,7 +48,10 @@ fn edited_file_fixture() -> Fixture {
 fn pre_edit_warns_about_production_callers() {
     let fx = edited_file_fixture();
     let abs = fx.config.workspace.join("app/core.go");
-    let payload = format!(r#"{{"tool_input": {{"file_path": "{}"}}}}"#, abs.display());
+    // Build via serde so Windows backslashes are JSON-escaped — exactly what
+    // real agent platforms send.
+    let payload =
+        serde_json::json!({"tool_input": {"file_path": abs.to_string_lossy()}}).to_string();
 
     let (_, stderr, ok) = run_hook(&fx, &["hook", "pre-edit"], &payload);
     assert!(ok);
