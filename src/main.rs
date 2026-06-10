@@ -61,12 +61,18 @@ enum Commands {
         symbol: String,
         #[arg(short, long, default_value = "20")]
         limit: usize,
+        /// Hide references resolved below this confidence (0 shows everything)
+        #[arg(long, default_value = "0.7")]
+        min_confidence: f64,
     },
     /// Analyze blast radius of changing a symbol
     Impact {
         symbol: String,
         #[arg(short, long, default_value = "3")]
         depth: u32,
+        /// Exclude references resolved below this confidence (0 includes everything)
+        #[arg(long, default_value = "0.7")]
+        min_confidence: f64,
     },
     /// Trace evolution of a file or symbol
     History {
@@ -118,8 +124,16 @@ fn main() -> Result<()> {
         #[cfg(feature = "semantic")]
         Commands::IndexAll { watch } => cmd_index_all(config, watch),
         Commands::Search { query, limit } => cmd_search(config, &query, limit, json),
-        Commands::Callers { symbol, limit } => cmd_callers(config, &symbol, limit, json),
-        Commands::Impact { symbol, depth } => cmd_impact(config, &symbol, depth, json),
+        Commands::Callers {
+            symbol,
+            limit,
+            min_confidence,
+        } => cmd_callers(config, &symbol, limit, min_confidence, json),
+        Commands::Impact {
+            symbol,
+            depth,
+            min_confidence,
+        } => cmd_impact(config, &symbol, depth, min_confidence, json),
         Commands::History { file, symbol } => cmd_history(config, &file, symbol.as_deref(), json),
         Commands::Context { file } => cmd_context(config, &file, json),
         Commands::Map { limit } => cmd_map(config, limit, json),
@@ -236,10 +250,16 @@ fn cmd_search(config: Config, query: &str, limit: usize, json: bool) -> Result<(
     Ok(())
 }
 
-fn cmd_callers(config: Config, symbol: &str, limit: usize, json: bool) -> Result<()> {
+fn cmd_callers(
+    config: Config,
+    symbol: &str,
+    limit: usize,
+    min_confidence: f64,
+    json: bool,
+) -> Result<()> {
     let repo = Repository::open(&config.db_path, config.model.dimensions)?;
     let gq = code_abyss::graph::GraphQuery::new(&repo);
-    let callers = gq.find_callers(symbol, limit)?;
+    let callers = gq.find_callers(symbol, limit, min_confidence)?;
 
     if json {
         println!("{}", serde_json::to_string(&callers)?);
@@ -264,10 +284,16 @@ fn cmd_callers(config: Config, symbol: &str, limit: usize, json: bool) -> Result
     Ok(())
 }
 
-fn cmd_impact(config: Config, symbol: &str, depth: u32, json: bool) -> Result<()> {
+fn cmd_impact(
+    config: Config,
+    symbol: &str,
+    depth: u32,
+    min_confidence: f64,
+    json: bool,
+) -> Result<()> {
     let repo = Repository::open(&config.db_path, config.model.dimensions)?;
     let gq = code_abyss::graph::GraphQuery::new(&repo);
-    let result = gq.impact_analysis(symbol, depth)?;
+    let result = gq.impact_analysis(symbol, depth, min_confidence)?;
 
     if json {
         println!("{}", serde_json::to_string(&result)?);
@@ -341,27 +367,36 @@ fn cmd_context(config: Config, file: &str, json: bool) -> Result<()> {
     // Get all symbols defined in this file
     let symbols = repo.find_symbols_in_file(file_id)?;
 
-    // For each symbol, find external callers
+    // For each symbol, find external callers. Confident matches (>= 0.7) are
+    // reported as callers; ambiguous ones are listed separately so agents can
+    // tell solid ground from guesses.
+    const CONTEXT_MIN_CONFIDENCE: f64 = 0.7;
+    let caller_json = |c: &code_abyss::storage::repo::RefRecord| {
+        serde_json::json!({
+            "file": &c.source_file_path,
+            "line": c.source_line + 1,
+            "caller": &c.source_symbol,
+            "confidence": c.confidence,
+            "is_test": repo.is_test_file(c.source_file_id).unwrap_or(false),
+        })
+    };
     let mut sym_callers: Vec<serde_json::Value> = Vec::new();
     for sym in &symbols {
-        let callers = repo.find_callers_of(&sym.name, Some(file_id), 10)?;
+        let callers = repo.find_callers_of(&sym.name, Some(file_id), 20)?;
         let external: Vec<_> = callers
             .iter()
             .filter(|c| c.source_file_id != file_id)
             .collect();
         if !external.is_empty() {
+            let (confident, possible): (Vec<_>, Vec<_>) = external
+                .into_iter()
+                .partition(|c| c.confidence >= CONTEXT_MIN_CONFIDENCE);
             sym_callers.push(serde_json::json!({
                 "symbol": sym.name,
                 "kind": sym.kind,
                 "line": sym.line + 1,
-                "external_callers": external.iter().map(|c| {
-                    serde_json::json!({
-                        "file": &c.source_file_path,
-                        "line": c.source_line + 1,
-                        "caller": &c.source_symbol,
-                        "is_test": repo.is_test_file(c.source_file_id).unwrap_or(false),
-                    })
-                }).collect::<Vec<_>>(),
+                "external_callers": confident.into_iter().map(caller_json).collect::<Vec<_>>(),
+                "possible_callers": possible.into_iter().map(caller_json).collect::<Vec<_>>(),
             }));
         }
     }

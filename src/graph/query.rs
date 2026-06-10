@@ -35,10 +35,21 @@ impl<'a> GraphQuery<'a> {
         Self { repo }
     }
 
-    pub fn find_callers(&self, symbol_name: &str, limit: usize) -> Result<Vec<CallerInfo>> {
+    /// Find callers of a symbol. Refs below `min_confidence` are dropped so
+    /// low-confidence (ambiguous) matches don't poison agent context; pass 0.0
+    /// to see everything.
+    pub fn find_callers(
+        &self,
+        symbol_name: &str,
+        limit: usize,
+        min_confidence: f64,
+    ) -> Result<Vec<CallerInfo>> {
         let refs = self.repo.find_callers_of(symbol_name, None, limit)?;
         let mut callers = Vec::new();
         for r in refs {
+            if r.confidence < min_confidence {
+                continue;
+            }
             let is_test = self.repo.is_test_file(r.source_file_id).unwrap_or(false);
             callers.push(CallerInfo {
                 file_path: r.source_file_path,
@@ -52,16 +63,26 @@ impl<'a> GraphQuery<'a> {
         Ok(callers)
     }
 
-    pub fn impact_analysis(&self, symbol_name: &str, max_depth: u32) -> Result<ImpactResult> {
+    pub fn impact_analysis(
+        &self,
+        symbol_name: &str,
+        max_depth: u32,
+        min_confidence: f64,
+    ) -> Result<ImpactResult> {
         let mut visited: HashSet<String> = HashSet::new();
         let mut queue: VecDeque<(String, u32)> = VecDeque::new();
         let mut direct = Vec::new();
         let mut transitive = Vec::new();
         let mut tests = Vec::new();
+        let mut excluded_low_confidence = 0usize;
 
         // Seed: direct callers
         let direct_refs = self.repo.find_callers_of(symbol_name, None, 200)?;
         for r in &direct_refs {
+            if r.confidence < min_confidence {
+                excluded_low_confidence += 1;
+                continue;
+            }
             let is_test = self.repo.is_test_file(r.source_file_id).unwrap_or(false);
             let caller = CallerInfo {
                 file_path: r.source_file_path.clone(),
@@ -93,6 +114,10 @@ impl<'a> GraphQuery<'a> {
 
             let callers = self.repo.find_callers_of(&sym, None, 100)?;
             for r in callers {
+                if r.confidence < min_confidence {
+                    excluded_low_confidence += 1;
+                    continue;
+                }
                 let is_test = self.repo.is_test_file(r.source_file_id).unwrap_or(false);
                 let caller = CallerInfo {
                     file_path: r.source_file_path.clone(),
@@ -131,7 +156,13 @@ impl<'a> GraphQuery<'a> {
 
         // Risk scoring
         let risk_score = compute_risk(direct.len(), transitive.len(), uncovered.len());
-        let risk_factors = compute_risk_factors(direct.len(), transitive.len(), uncovered.len());
+        let mut risk_factors =
+            compute_risk_factors(direct.len(), transitive.len(), uncovered.len());
+        if excluded_low_confidence > 0 {
+            risk_factors.push(format!(
+                "{excluded_low_confidence} low-confidence reference(s) excluded (rerun with --min-confidence 0 to see them)"
+            ));
+        }
 
         Ok(ImpactResult {
             target: symbol_name.to_string(),

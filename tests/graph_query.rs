@@ -32,7 +32,7 @@ fn chain_fixture() -> Fixture {
 fn find_callers_returns_all_with_confidence_order() {
     let fx = chain_fixture();
     let gq = GraphQuery::new(&fx.repo);
-    let callers = gq.find_callers("Target", 20).unwrap();
+    let callers = gq.find_callers("Target", 20, 0.0).unwrap();
     assert_eq!(callers.len(), 3, "{callers:?}");
     // Ordered by confidence descending: same-file first.
     assert_eq!(callers[0].symbol, "DirectA");
@@ -48,7 +48,7 @@ fn find_callers_returns_all_with_confidence_order() {
 fn impact_analysis_walks_transitive_and_tests() {
     let fx = chain_fixture();
     let gq = GraphQuery::new(&fx.repo);
-    let impact = gq.impact_analysis("Target", 3).unwrap();
+    let impact = gq.impact_analysis("Target", 3, 0.7).unwrap();
 
     let direct: Vec<&str> = impact
         .direct_callers
@@ -78,7 +78,7 @@ fn impact_analysis_walks_transitive_and_tests() {
 fn impact_of_unknown_symbol_is_empty_and_low_risk() {
     let fx = chain_fixture();
     let gq = GraphQuery::new(&fx.repo);
-    let impact = gq.impact_analysis("DoesNotExist", 3).unwrap();
+    let impact = gq.impact_analysis("DoesNotExist", 3, 0.7).unwrap();
     assert!(impact.direct_callers.is_empty());
     assert!(impact.transitive_callers.is_empty());
     assert_eq!(impact.risk_score, 0.0);

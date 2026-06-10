@@ -95,6 +95,8 @@ pub struct FindCallersInput {
     /// Max results (default: 20)
     #[serde(default = "default_20")]
     pub limit: usize,
+    /// Hide references resolved below this confidence (default: 0.7; 0 shows all)
+    pub min_confidence: Option<f64>,
 }
 
 #[derive(Serialize, schemars::JsonSchema)]
@@ -118,6 +120,8 @@ pub struct ImpactInput {
     pub symbol: String,
     /// Max transitive depth (default: 3)
     pub depth: Option<u32>,
+    /// Exclude references resolved below this confidence (default: 0.7; 0 includes all)
+    pub min_confidence: Option<f64>,
 }
 
 #[derive(Serialize, schemars::JsonSchema)]
@@ -302,7 +306,11 @@ impl McpServer {
         let repo = self.repo.lock().unwrap();
         let gq = crate::graph::GraphQuery::new(&repo);
         let callers = gq
-            .find_callers(&input.symbol, input.limit)
+            .find_callers(
+                &input.symbol,
+                input.limit,
+                input.min_confidence.unwrap_or(0.7),
+            )
             .unwrap_or_default();
 
         Json(FindCallersOutput {
@@ -328,7 +336,11 @@ impl McpServer {
         let repo = self.repo.lock().unwrap();
         let gq = crate::graph::GraphQuery::new(&repo);
         let result = gq
-            .impact_analysis(&input.symbol, input.depth.unwrap_or(3))
+            .impact_analysis(
+                &input.symbol,
+                input.depth.unwrap_or(3),
+                input.min_confidence.unwrap_or(0.7),
+            )
             .unwrap();
 
         Json(ImpactOutput {
