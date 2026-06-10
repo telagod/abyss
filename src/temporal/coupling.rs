@@ -33,7 +33,10 @@ pub fn compute_change_coupling(repo: &Repository, min_co_changes: u32) -> Result
     )?;
 
     let count: i64 = conn.query_row("SELECT COUNT(*) FROM change_coupling", [], |r| r.get(0))?;
-    info!("computed {} coupling pairs (min co-changes: {})", count, min_co_changes);
+    info!(
+        "computed {} coupling pairs (min co-changes: {})",
+        count, min_co_changes
+    );
     Ok(count as u64)
 }
 
@@ -43,7 +46,8 @@ pub fn top_coupled(repo: &Repository, limit: usize) -> Result<Vec<CouplingPair>>
         "SELECT file_a, file_b, co_changes, coupling_score
          FROM change_coupling
          ORDER BY coupling_score DESC
-         LIMIT ?1")?;
+         LIMIT ?1",
+    )?;
     let rows = stmt.query_map([limit as i64], |row| {
         Ok(CouplingPair {
             file_a: row.get(0)?,

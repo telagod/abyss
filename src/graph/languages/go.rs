@@ -50,7 +50,12 @@ fn build_scope_map(root: &Node, source: &str) -> Vec<Option<String>> {
     let line_count = source.lines().count();
     let mut map: Vec<Option<String>> = vec![None; line_count + 1];
 
-    fn walk(node: &Node, source: &str, current_func: &Option<String>, map: &mut Vec<Option<String>>) {
+    fn walk(
+        node: &Node,
+        source: &str,
+        current_func: &Option<String>,
+        map: &mut Vec<Option<String>>,
+    ) {
         let kind = node.kind();
         let func_name = if kind == "function_declaration" || kind == "method_declaration" {
             node.child_by_field_name("name")
@@ -73,7 +78,12 @@ fn build_scope_map(root: &Node, source: &str) -> Vec<Option<String>> {
 
         let mut cursor = node.walk();
         for child in node.children(&mut cursor) {
-            walk(&child, source, &func_name.clone().or_else(|| current_func.clone()), map);
+            walk(
+                &child,
+                source,
+                &func_name.clone().or_else(|| current_func.clone()),
+                map,
+            );
         }
     }
 
@@ -81,7 +91,12 @@ fn build_scope_map(root: &Node, source: &str) -> Vec<Option<String>> {
     map
 }
 
-fn collect_refs(node: &Node, source: &str, scope_map: &[Option<String>], refs: &mut Vec<RawReference>) {
+fn collect_refs(
+    node: &Node,
+    source: &str,
+    scope_map: &[Option<String>],
+    refs: &mut Vec<RawReference>,
+) {
     let kind = node.kind();
 
     match kind {
@@ -189,14 +204,54 @@ fn text_of(node: &Node, source: &str) -> String {
 }
 
 fn is_builtin_go(name: &str) -> bool {
-    matches!(name, "len" | "cap" | "make" | "new" | "append" | "copy" | "delete"
-        | "close" | "panic" | "recover" | "print" | "println" | "complex" | "real" | "imag")
+    matches!(
+        name,
+        "len"
+            | "cap"
+            | "make"
+            | "new"
+            | "append"
+            | "copy"
+            | "delete"
+            | "close"
+            | "panic"
+            | "recover"
+            | "print"
+            | "println"
+            | "complex"
+            | "real"
+            | "imag"
+    )
 }
 
 fn is_builtin_type_go(name: &str) -> bool {
-    matches!(name, "int" | "int8" | "int16" | "int32" | "int64"
-        | "uint" | "uint8" | "uint16" | "uint32" | "uint64" | "uintptr"
-        | "float32" | "float64" | "complex64" | "complex128"
-        | "string" | "bool" | "byte" | "rune" | "error" | "any"
-        | "interface" | "struct" | "map" | "chan" | "func")
+    matches!(
+        name,
+        "int"
+            | "int8"
+            | "int16"
+            | "int32"
+            | "int64"
+            | "uint"
+            | "uint8"
+            | "uint16"
+            | "uint32"
+            | "uint64"
+            | "uintptr"
+            | "float32"
+            | "float64"
+            | "complex64"
+            | "complex128"
+            | "string"
+            | "bool"
+            | "byte"
+            | "rune"
+            | "error"
+            | "any"
+            | "interface"
+            | "struct"
+            | "map"
+            | "chan"
+            | "func"
+    )
 }

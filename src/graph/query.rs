@@ -76,16 +76,20 @@ impl<'a> GraphQuery<'a> {
             } else {
                 direct.push(caller.clone());
                 if let Some(ref sym) = r.source_symbol
-                    && !sym.is_empty() && !visited.contains(sym) {
-                        visited.insert(sym.clone());
-                        queue.push_back((sym.clone(), 1));
-                    }
+                    && !sym.is_empty()
+                    && !visited.contains(sym)
+                {
+                    visited.insert(sym.clone());
+                    queue.push_back((sym.clone(), 1));
+                }
             }
         }
 
         // BFS for transitive callers
         while let Some((sym, depth)) = queue.pop_front() {
-            if depth > max_depth { continue; }
+            if depth > max_depth {
+                continue;
+            }
 
             let callers = self.repo.find_callers_of(&sym, None, 100)?;
             for r in callers {
@@ -104,17 +108,20 @@ impl<'a> GraphQuery<'a> {
                 } else {
                     transitive.push(caller);
                     if let Some(ref sym_name) = r.source_symbol
-                        && !sym_name.is_empty() && !visited.contains(sym_name) {
-                            visited.insert(sym_name.clone());
-                            queue.push_back((sym_name.clone(), depth + 1));
-                        }
+                        && !sym_name.is_empty()
+                        && !visited.contains(sym_name)
+                    {
+                        visited.insert(sym_name.clone());
+                        queue.push_back((sym_name.clone(), depth + 1));
+                    }
                 }
             }
         }
 
         // Find uncovered paths (callers with no test covering them)
         let tested_symbols: HashSet<String> = tests.iter().map(|t| t.symbol.clone()).collect();
-        let uncovered: Vec<String> = direct.iter()
+        let uncovered: Vec<String> = direct
+            .iter()
             .chain(transitive.iter())
             .filter(|c| !c.symbol.is_empty() && !tested_symbols.contains(&c.symbol))
             .map(|c| format!("{}:{}", c.file_path, c.symbol))
@@ -146,8 +153,14 @@ fn compute_risk(direct: usize, transitive: usize, uncovered: usize) -> f64 {
 
 fn compute_risk_factors(direct: usize, transitive: usize, uncovered: usize) -> Vec<String> {
     let mut f = Vec::new();
-    if direct > 10 { f.push(format!("high blast radius ({direct} direct callers)")); }
-    if transitive > 20 { f.push(format!("deep dependency chain ({transitive} transitive)")); }
-    if uncovered > 0 { f.push(format!("{uncovered} call paths without test coverage")); }
+    if direct > 10 {
+        f.push(format!("high blast radius ({direct} direct callers)"));
+    }
+    if transitive > 20 {
+        f.push(format!("deep dependency chain ({transitive} transitive)"));
+    }
+    if uncovered > 0 {
+        f.push(format!("{uncovered} call paths without test coverage"));
+    }
     f
 }

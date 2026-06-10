@@ -1,8 +1,8 @@
 pub mod extractor;
-pub mod resolver;
-pub mod query;
 pub mod languages;
+pub mod query;
+pub mod resolver;
 
-pub use extractor::{RawReference, RefKind, LanguageRefExtractor};
-pub use resolver::SymbolResolver;
+pub use extractor::{LanguageRefExtractor, RawReference, RefKind};
 pub use query::GraphQuery;
+pub use resolver::SymbolResolver;

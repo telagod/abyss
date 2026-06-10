@@ -51,14 +51,18 @@ pub fn trace_evolution(
         "SELECT file_b, co_changes, coupling_score FROM change_coupling WHERE file_a = ?1
          UNION ALL
          SELECT file_a, co_changes, coupling_score FROM change_coupling WHERE file_b = ?1
-         ORDER BY coupling_score DESC LIMIT 10")?;
-    let coupled: Vec<CoupledFile> = stmt.query_map([file_path], |row| {
-        Ok(CoupledFile {
-            path: row.get(0)?,
-            co_changes: row.get(1)?,
-            coupling_score: row.get(2)?,
-        })
-    })?.filter_map(|r| r.ok()).collect();
+         ORDER BY coupling_score DESC LIMIT 10",
+    )?;
+    let coupled: Vec<CoupledFile> = stmt
+        .query_map([file_path], |row| {
+            Ok(CoupledFile {
+                path: row.get(0)?,
+                co_changes: row.get(1)?,
+                coupling_score: row.get(2)?,
+            })
+        })?
+        .filter_map(|r| r.ok())
+        .collect();
 
     // Get churn stats from DB
     let (total_changes, unique_authors): (u32, u32) = conn.query_row(
@@ -70,13 +74,20 @@ pub fn trace_evolution(
     ).unwrap_or((0, 0));
 
     // Churn rate: total lines changed / file size
-    let churn_lines: i64 = conn.query_row(
-        "SELECT COALESCE(SUM(added + deleted), 0) FROM commit_files WHERE file_path = ?1",
-        [file_path], |r| r.get(0),
-    ).unwrap_or(0);
-    let file_size: i64 = conn.query_row(
-        "SELECT COALESCE(size, 1) FROM files WHERE path = ?1", [file_path], |r| r.get(0),
-    ).unwrap_or(1);
+    let churn_lines: i64 = conn
+        .query_row(
+            "SELECT COALESCE(SUM(added + deleted), 0) FROM commit_files WHERE file_path = ?1",
+            [file_path],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+    let file_size: i64 = conn
+        .query_row(
+            "SELECT COALESCE(size, 1) FROM files WHERE path = ?1",
+            [file_path],
+            |r| r.get(0),
+        )
+        .unwrap_or(1);
     let churn_rate = churn_lines as f64 / file_size.max(1) as f64;
 
     Ok(EvolutionTrace {
@@ -98,11 +109,20 @@ fn git_log_file(workspace: &Path, file_path: &str) -> Result<Vec<EvolutionCommit
     parse_log_output(&output.stdout)
 }
 
-fn git_log_function(workspace: &Path, file_path: &str, symbol: &str) -> Result<Vec<EvolutionCommit>> {
+fn git_log_function(
+    workspace: &Path,
+    file_path: &str,
+    symbol: &str,
+) -> Result<Vec<EvolutionCommit>> {
     // Try git log -L :symbol:file first
     let output = Command::new("git")
-        .args(["log", "--format=%H|%an|%ai|%s", "--no-patch", "-20",
-               &format!("-L:{}:{}", symbol, file_path)])
+        .args([
+            "log",
+            "--format=%H|%an|%ai|%s",
+            "--no-patch",
+            "-20",
+            &format!("-L:{}:{}", symbol, file_path),
+        ])
         .current_dir(workspace)
         .output()?;
 
@@ -115,7 +135,15 @@ fn git_log_function(workspace: &Path, file_path: &str, symbol: &str) -> Result<V
 
     // Fallback: search commits touching this file that mention the symbol
     let output = Command::new("git")
-        .args(["log", "--format=%H|%an|%ai|%s", "-S", symbol, "-20", "--", file_path])
+        .args([
+            "log",
+            "--format=%H|%an|%ai|%s",
+            "-S",
+            symbol,
+            "-20",
+            "--",
+            file_path,
+        ])
         .current_dir(workspace)
         .output()?;
     parse_log_output(&output.stdout)
@@ -125,7 +153,9 @@ fn parse_log_output(stdout: &[u8]) -> Result<Vec<EvolutionCommit>> {
     let text = String::from_utf8_lossy(stdout);
     let mut commits = Vec::new();
     for line in text.lines() {
-        if line.is_empty() { continue; }
+        if line.is_empty() {
+            continue;
+        }
         let parts: Vec<&str> = line.splitn(4, '|').collect();
         if parts.len() >= 4 {
             commits.push(EvolutionCommit {

@@ -4,12 +4,12 @@ use std::time::Duration;
 
 use anyhow::Result;
 use notify::{Event, EventKind, RecursiveMode, Watcher};
-use tracing::{info, warn, debug};
+use tracing::{debug, info, warn};
 
 use crate::config::Config;
 use crate::embedding::Embedder;
-use crate::indexer::parser;
 use crate::indexer::IndexPipeline;
+use crate::indexer::parser;
 use crate::storage::Repository;
 
 pub struct FileWatcher {
@@ -29,14 +29,13 @@ impl FileWatcher {
     ) -> Result<()> {
         let (tx, rx) = mpsc::channel();
 
-        let mut watcher = notify::recommended_watcher(move |res: Result<Event, notify::Error>| {
-            match res {
+        let mut watcher =
+            notify::recommended_watcher(move |res: Result<Event, notify::Error>| match res {
                 Ok(event) => {
                     let _ = tx.send(event);
                 }
                 Err(e) => warn!("watch error: {e}"),
-            }
-        })?;
+            })?;
 
         watcher.watch(self.config.workspace.as_ref(), RecursiveMode::Recursive)?;
         info!("watching {} for changes", self.config.workspace.display());
@@ -51,8 +50,7 @@ impl FileWatcher {
                     for path in &event.paths {
                         if self.should_index(path) {
                             match event.kind {
-                                EventKind::Create(_)
-                                | EventKind::Modify(_) => {
+                                EventKind::Create(_) | EventKind::Modify(_) => {
                                     pending.insert(path.clone());
                                 }
                                 EventKind::Remove(_) => {

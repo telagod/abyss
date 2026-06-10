@@ -92,7 +92,14 @@ impl Chunker {
         let lines: Vec<&str> = source.lines().collect();
         let mut chunks = Vec::new();
 
-        self.collect_chunks(&root, source, &lines, language, &mut Vec::new(), &mut chunks);
+        self.collect_chunks(
+            &root,
+            source,
+            &lines,
+            language,
+            &mut Vec::new(),
+            &mut chunks,
+        );
 
         if chunks.is_empty() && !source.is_empty() {
             chunks.push(CodeChunk {
@@ -159,9 +166,10 @@ impl Chunker {
             });
         } else {
             if let Some(name) = self.extract_node_name(node, source)
-                && self.is_scope_node(kind, language) {
-                    scope_stack.push(name);
-                }
+                && self.is_scope_node(kind, language)
+            {
+                scope_stack.push(name);
+            }
 
             let mut cursor = node.walk();
             for child in node.children(&mut cursor) {
@@ -200,8 +208,7 @@ impl Chunker {
             while i + 1 < chunks.len() {
                 let next = &chunks[i + 1];
                 let next_lines = next.end_line - next.start_line + 1;
-                let merged_lines = (current.end_line.max(next.end_line))
-                    - current.start_line + 1;
+                let merged_lines = (current.end_line.max(next.end_line)) - current.start_line + 1;
 
                 // Stop merging if result would be too large
                 if merged_lines > self.max_lines {
@@ -209,13 +216,13 @@ impl Chunker {
                 }
 
                 // Merge imports together always
-                let both_imports = current.kind == ChunkKind::Import
-                    && next.kind == ChunkKind::Import;
+                let both_imports =
+                    current.kind == ChunkKind::Import && next.kind == ChunkKind::Import;
 
                 // Merge small chunks in same scope
                 let same_scope = current.scope == next.scope;
-                let both_small = current_lines < self.target_lines
-                    && next_lines < self.target_lines;
+                let both_small =
+                    current_lines < self.target_lines && next_lines < self.target_lines;
 
                 if both_imports || (same_scope && both_small) {
                     current.content.push('\n');
@@ -283,14 +290,23 @@ impl Chunker {
 
     fn classify_node(&self, kind: &str, _language: &str) -> ChunkKind {
         match kind {
-            "function_definition" | "function_declaration" | "function_item"
-            | "method_definition" | "method_declaration" => ChunkKind::Function,
-            "class_definition" | "class_declaration" | "struct_item" | "enum_item"
-            | "impl_item" | "trait_item" | "interface_declaration"
+            "function_definition"
+            | "function_declaration"
+            | "function_item"
+            | "method_definition"
+            | "method_declaration" => ChunkKind::Function,
+            "class_definition"
+            | "class_declaration"
+            | "struct_item"
+            | "enum_item"
+            | "impl_item"
+            | "trait_item"
+            | "interface_declaration"
             | "type_alias_declaration" => ChunkKind::Class,
             "module_definition" | "mod_item" => ChunkKind::Module,
-            "import_declaration" | "import_statement" | "use_declaration"
-            | "export_statement" => ChunkKind::Import,
+            "import_declaration" | "import_statement" | "use_declaration" | "export_statement" => {
+                ChunkKind::Import
+            }
             _ => ChunkKind::Block,
         }
     }
@@ -319,13 +335,14 @@ impl Chunker {
         };
 
         if let Some(sk) = symbol_kind
-            && let Some(name) = self.extract_node_name(node, source) {
-                symbols.push(Symbol {
-                    name,
-                    kind: sk,
-                    line: node.start_position().row as u32,
-                });
-            }
+            && let Some(name) = self.extract_node_name(node, source)
+        {
+            symbols.push(Symbol {
+                name,
+                kind: sk,
+                line: node.start_position().row as u32,
+            });
+        }
 
         let mut cursor = node.walk();
         for child in node.children(&mut cursor) {

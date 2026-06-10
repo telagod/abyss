@@ -19,7 +19,10 @@ impl MultiParser {
         parsers.insert("rust".into(), tree_sitter_rust::LANGUAGE.into());
         parsers.insert("python".into(), tree_sitter_python::LANGUAGE.into());
         parsers.insert("javascript".into(), tree_sitter_javascript::LANGUAGE.into());
-        parsers.insert("typescript".into(), tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into());
+        parsers.insert(
+            "typescript".into(),
+            tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
+        );
         parsers.insert("tsx".into(), tree_sitter_typescript::LANGUAGE_TSX.into());
         parsers.insert("go".into(), tree_sitter_go::LANGUAGE.into());
         parsers.insert("java".into(), tree_sitter_java::LANGUAGE.into());

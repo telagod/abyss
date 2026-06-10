@@ -3,9 +3,9 @@ use std::collections::HashMap;
 use anyhow::Result;
 use serde::Serialize;
 
+use super::{fulltext, semantic, symbol};
 use crate::embedding::Embedder;
 use crate::storage::Repository;
-use super::{fulltext, semantic, symbol};
 
 #[derive(Debug, Clone, Serialize)]
 pub struct SearchResult {
@@ -37,14 +37,15 @@ impl<'a> SearchEngine<'a> {
         // Semantic search (only if embedder available and vectors exist)
         if let Some(embedder) = self.embedder
             && self.repo.has_vectors().unwrap_or(false)
-                && let Ok(results) = semantic::search(self.repo, embedder, query, fetch_limit) {
-                    for (rank, r) in results.iter().enumerate() {
-                        let rrf = 1.0 / (k + rank as f64 + 1.0);
-                        let entry = scores.entry(r.chunk_id).or_insert((0.0, Vec::new()));
-                        entry.0 += rrf * 1.0;
-                        entry.1.push("semantic".to_string());
-                    }
-                }
+            && let Ok(results) = semantic::search(self.repo, embedder, query, fetch_limit)
+        {
+            for (rank, r) in results.iter().enumerate() {
+                let rrf = 1.0 / (k + rank as f64 + 1.0);
+                let entry = scores.entry(r.chunk_id).or_insert((0.0, Vec::new()));
+                entry.0 += rrf * 1.0;
+                entry.1.push("semantic".to_string());
+            }
+        }
 
         // Symbol search
         if let Ok(results) = symbol::search(self.repo, query, fetch_limit) {

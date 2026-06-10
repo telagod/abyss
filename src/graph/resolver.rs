@@ -19,11 +19,18 @@ impl<'a> SymbolResolver<'a> {
     pub fn resolve(&self, raw: &RawReference, source_file_id: i64) -> ResolvedRef {
         // Skip import refs — they don't resolve to symbols
         if raw.kind == RefKind::Import {
-            return ResolvedRef { target_file_id: None, target_symbol_id: None, confidence: 0.0 };
+            return ResolvedRef {
+                target_file_id: None,
+                target_symbol_id: None,
+                confidence: 0.0,
+            };
         }
 
         // 1. Same-file resolution (confidence = 1.0)
-        if let Ok(Some(sym)) = self.repo.find_symbol_by_name_in_file(source_file_id, &raw.target_name) {
+        if let Ok(Some(sym)) = self
+            .repo
+            .find_symbol_by_name_in_file(source_file_id, &raw.target_name)
+        {
             return ResolvedRef {
                 target_file_id: Some(source_file_id),
                 target_symbol_id: Some(sym.id),
@@ -38,19 +45,28 @@ impl<'a> SymbolResolver<'a> {
 
         // 3. Qualifier-based resolution (confidence = 0.9)
         if let Some(qualifier) = &raw.target_qualifier
-            && let Some(resolved) = self.resolve_via_qualifier(source_file_id, qualifier, &raw.target_name) {
-                return resolved;
-            }
+            && let Some(resolved) =
+                self.resolve_via_qualifier(source_file_id, qualifier, &raw.target_name)
+        {
+            return resolved;
+        }
 
         // 4. Global unique resolution (confidence = 0.8)
         if let Ok(candidates) = self.repo.find_symbol_global(&raw.target_name) {
             // Filter to non-test definitions for type refs
             let filtered: Vec<_> = if raw.kind == RefKind::TypeRef {
-                candidates.iter()
-                    .filter(|s| s.kind == "struct" || s.kind == "interface" || s.kind == "type" || s.kind == "enum")
+                candidates
+                    .iter()
+                    .filter(|s| {
+                        s.kind == "struct"
+                            || s.kind == "interface"
+                            || s.kind == "type"
+                            || s.kind == "enum"
+                    })
                     .collect()
             } else {
-                candidates.iter()
+                candidates
+                    .iter()
                     .filter(|s| s.kind == "function" || s.kind == "method")
                     .collect()
             };
@@ -74,7 +90,11 @@ impl<'a> SymbolResolver<'a> {
         }
 
         // 5. Unresolved
-        ResolvedRef { target_file_id: None, target_symbol_id: None, confidence: 0.0 }
+        ResolvedRef {
+            target_file_id: None,
+            target_symbol_id: None,
+            confidence: 0.0,
+        }
     }
 
     fn resolve_same_package(&self, source_file_id: i64, name: &str) -> Option<ResolvedRef> {
@@ -86,7 +106,9 @@ impl<'a> SymbolResolver<'a> {
         let sibling_ids = self.repo.files_in_directory(&dir).ok()?;
 
         for fid in sibling_ids {
-            if fid == source_file_id { continue; }
+            if fid == source_file_id {
+                continue;
+            }
             if let Ok(Some(sym)) = self.repo.find_symbol_by_name_in_file(fid, name) {
                 return Some(ResolvedRef {
                     target_file_id: Some(fid),
@@ -98,12 +120,15 @@ impl<'a> SymbolResolver<'a> {
         None
     }
 
-    fn resolve_via_qualifier(&self, source_file_id: i64, qualifier: &str, name: &str) -> Option<ResolvedRef> {
+    fn resolve_via_qualifier(
+        &self,
+        source_file_id: i64,
+        qualifier: &str,
+        name: &str,
+    ) -> Option<ResolvedRef> {
         // Find import refs from this file that match the qualifier
         let refs = self.repo.find_refs_from_file(source_file_id).ok()?;
-        let import_refs: Vec<_> = refs.iter()
-            .filter(|r| r.kind == "import")
-            .collect();
+        let import_refs: Vec<_> = refs.iter().filter(|r| r.kind == "import").collect();
 
         // Try to match qualifier to an import's last path segment
         for import_ref in &import_refs {
@@ -133,6 +158,10 @@ fn parent_dir(path: &str) -> Option<String> {
     let p = std::path::Path::new(path);
     p.parent().map(|p| {
         let s = p.to_string_lossy().to_string();
-        if s.is_empty() { ".".to_string() } else { format!("{s}/") }
+        if s.is_empty() {
+            ".".to_string()
+        } else {
+            format!("{s}/")
+        }
     })
 }

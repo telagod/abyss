@@ -57,10 +57,7 @@ impl FileWalker {
     }
 
     fn is_indexable(&self, path: &Path) -> bool {
-        let ext = path
-            .extension()
-            .and_then(|e| e.to_str())
-            .unwrap_or("");
+        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
 
         matches!(
             ext,

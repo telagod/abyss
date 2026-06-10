@@ -14,9 +14,10 @@ pub struct Embedder {
 
 impl Embedder {
     pub fn load(config: &ModelConfig) -> Result<Self> {
-        let cache_dir = config.cache_dir.clone().unwrap_or_else(|| {
-            dirs_cache().join("code-abyss").join("models")
-        });
+        let cache_dir = config
+            .cache_dir
+            .clone()
+            .unwrap_or_else(|| dirs_cache().join("code-abyss").join("models"));
         std::fs::create_dir_all(&cache_dir)?;
 
         let embedding_model = resolve_model(&config.model_id);

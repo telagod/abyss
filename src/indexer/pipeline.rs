@@ -2,16 +2,16 @@ use std::path::Path;
 use std::time::Instant;
 
 use anyhow::Result;
-use tracing::{info, warn, debug};
+use tracing::{debug, info, warn};
 
-use crate::config::Config;
-use crate::embedding::Embedder;
-use crate::graph::languages;
-use crate::graph::extractor::RawReference;
-use crate::storage::Repository;
-use super::chunker::{Chunker, CodeChunk, ChunkKind};
+use super::chunker::{ChunkKind, Chunker, CodeChunk};
 use super::parser::{self, MultiParser};
 use super::walker::FileWalker;
+use crate::config::Config;
+use crate::embedding::Embedder;
+use crate::graph::extractor::RawReference;
+use crate::graph::languages;
+use crate::storage::Repository;
 
 struct FileOutput {
     rel_path: String,
@@ -66,25 +66,45 @@ impl IndexPipeline {
 
             let content = match std::fs::read(path) {
                 Ok(b) => b,
-                Err(e) => { debug!("skip {}: {e}", rel_path); stats.skipped += 1; continue; }
+                Err(e) => {
+                    debug!("skip {}: {e}", rel_path);
+                    stats.skipped += 1;
+                    continue;
+                }
             };
 
             let hash = blake3::hash(&content).to_hex().to_string();
             if let Some((_, eh)) = existing_map.get(&rel_path)
-                && *eh == hash { stats.unchanged += 1; continue; }
+                && *eh == hash
+            {
+                stats.unchanged += 1;
+                continue;
+            }
             to_index.push((path.clone(), rel_path));
         }
 
         // Deleted files
         let current_paths: std::collections::HashSet<String> = files
             .iter()
-            .filter_map(|p| p.strip_prefix(&self.config.workspace).ok().map(|r| r.to_string_lossy().to_string()))
+            .filter_map(|p| {
+                p.strip_prefix(&self.config.workspace)
+                    .ok()
+                    .map(|r| r.to_string_lossy().to_string())
+            })
             .collect();
         for (path, (id, _)) in &existing_map {
-            if !current_paths.contains(path) { repo.delete_file(*id)?; stats.deleted += 1; }
+            if !current_paths.contains(path) {
+                repo.delete_file(*id)?;
+                stats.deleted += 1;
+            }
         }
 
-        info!("to index: {}, unchanged: {}, deleted: {}", to_index.len(), stats.unchanged, stats.deleted);
+        info!(
+            "to index: {}, unchanged: {}, deleted: {}",
+            to_index.len(),
+            stats.unchanged,
+            stats.deleted
+        );
 
         // ═══ Launch git log parse in background (IO only, no DB) ═══
         let git_workspace = self.config.workspace.clone();
@@ -111,8 +131,15 @@ impl IndexPipeline {
         repo.begin_transaction()?;
         for output in &outputs {
             match self.insert_file_output(repo, output) {
-                Ok(r) => { stats.indexed += 1; stats.chunks += output.chunks.len() as u64; total_refs += r; }
-                Err(e) => { warn!("insert failed {}: {e}", output.rel_path); stats.errors += 1; }
+                Ok(r) => {
+                    stats.indexed += 1;
+                    stats.chunks += output.chunks.len() as u64;
+                    total_refs += r;
+                }
+                Err(e) => {
+                    warn!("insert failed {}: {e}", output.rel_path);
+                    stats.errors += 1;
+                }
             }
         }
         repo.commit()?;
@@ -126,7 +153,9 @@ impl IndexPipeline {
         let resolve_ms = start.elapsed().as_millis() as u64 - parse_ms - insert_ms;
 
         // ═══ Wait for git parse + write to DB + compute metrics ═══
-        let git_data = git_handle.join().map_err(|_| anyhow::anyhow!("git thread panicked"))??;
+        let git_data = git_handle
+            .join()
+            .map_err(|_| anyhow::anyhow!("git thread panicked"))??;
         let git_stats = crate::temporal::git_parser::write_git_data(repo, &git_data)?;
 
         crate::temporal::hotspot::compute_file_metrics(repo, 30, 90)?;
@@ -137,28 +166,33 @@ impl IndexPipeline {
         stats.total_symbols = repo.symbol_count()? as u64;
         stats.duration_ms = start.elapsed().as_millis() as u64;
 
-        info!("done in {}ms | parse {}ms | insert {}ms | resolve {}ms | git {} commits (overlapped)",
-            stats.duration_ms, parse_ms, insert_ms, resolve_ms, git_stats.commits_parsed);
+        info!(
+            "done in {}ms | parse {}ms | insert {}ms | resolve {}ms | git {} commits (overlapped)",
+            stats.duration_ms, parse_ms, insert_ms, resolve_ms, git_stats.commits_parsed
+        );
 
         Ok(stats)
     }
 
     /// Pure CPU work — no DB access, safe for parallel execution
-    fn process_file_parallel(
-        _workspace: &Path,
-        rel_path: &str,
-        path: &Path,
-    ) -> Result<FileOutput> {
+    fn process_file_parallel(_workspace: &Path, rel_path: &str, path: &Path) -> Result<FileOutput> {
         let source = std::fs::read_to_string(path)?;
         let hash = blake3::hash(source.as_bytes()).to_hex().to_string();
         let language = parser::detect_language(rel_path);
-        let mtime = std::fs::metadata(path)?.modified()?.duration_since(std::time::UNIX_EPOCH)?.as_secs() as i64;
+        let mtime = std::fs::metadata(path)?
+            .modified()?
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_secs() as i64;
         let size = source.len() as i64;
 
         // Parse once (thread-local parser)
         let parser = MultiParser::new();
         let tree = language.as_deref().and_then(|lang| {
-            if parser.supports(lang) { parser.parse(&source, lang).ok() } else { None }
+            if parser.supports(lang) {
+                parser.parse(&source, lang).ok()
+            } else {
+                None
+            }
         });
 
         // Chunks + symbols
@@ -167,9 +201,12 @@ impl IndexPipeline {
             chunker.chunk(&source, tree, language.as_deref().unwrap_or(""))
         } else {
             vec![CodeChunk {
-                content: source.clone(), kind: ChunkKind::Module,
-                start_line: 0, end_line: source.lines().count().saturating_sub(1) as u32,
-                scope: None, symbols: Vec::new(),
+                content: source.clone(),
+                kind: ChunkKind::Module,
+                start_line: 0,
+                end_line: source.lines().count().saturating_sub(1) as u32,
+                scope: None,
+                symbols: Vec::new(),
             }]
         };
 
@@ -182,13 +219,21 @@ impl IndexPipeline {
             if let Some(extractor) = languages::get_extractor(lang) {
                 refs = extractor.extract(tree, &source);
             }
-            complexity = crate::temporal::complexity::cyclomatic_complexity(tree, &source, lang) as f64;
+            complexity =
+                crate::temporal::complexity::cyclomatic_complexity(tree, &source, lang) as f64;
             max_func_lines = crate::temporal::complexity::max_function_lines(tree, &source, lang);
         }
 
         Ok(FileOutput {
             rel_path: rel_path.to_string(),
-            hash, language, mtime, size, chunks, refs, complexity, max_func_lines,
+            hash,
+            language,
+            mtime,
+            size,
+            chunks,
+            refs,
+            complexity,
+            max_func_lines,
         })
     }
 
@@ -200,7 +245,13 @@ impl IndexPipeline {
             repo.delete_file(old_id)?;
         }
 
-        let file_id = repo.upsert_file(&out.rel_path, &out.hash, out.language.as_deref(), out.mtime, out.size)?;
+        let file_id = repo.upsert_file(
+            &out.rel_path,
+            &out.hash,
+            out.language.as_deref(),
+            out.mtime,
+            out.size,
+        )?;
         let conn = repo.conn();
 
         // Prepared statements — compiled once, reused per file
@@ -213,13 +264,23 @@ impl IndexPipeline {
             for chunk in &out.chunks {
                 let tc = chunk.content.split_whitespace().count() as u32;
                 chunk_stmt.execute(rusqlite::params![
-                    file_id, &chunk.content, chunk.kind.as_str(),
-                    chunk.start_line, chunk.end_line, chunk.scope.as_deref(), tc
+                    file_id,
+                    &chunk.content,
+                    chunk.kind.as_str(),
+                    chunk.start_line,
+                    chunk.end_line,
+                    chunk.scope.as_deref(),
+                    tc
                 ])?;
                 let chunk_id = conn.last_insert_rowid();
                 for sym in &chunk.symbols {
                     sym_stmt.execute(rusqlite::params![
-                        chunk_id, file_id, &sym.name, sym.kind.as_str(), sym.line, chunk.scope.as_deref()
+                        chunk_id,
+                        file_id,
+                        &sym.name,
+                        sym.kind.as_str(),
+                        sym.line,
+                        chunk.scope.as_deref()
                     ])?;
                 }
             }
@@ -232,9 +293,13 @@ impl IndexPipeline {
                 "INSERT INTO refs(source_file_id,source_line,source_symbol,target_name,target_qualifier,kind,confidence) VALUES(?1,?2,?3,?4,?5,?6,?7)")?;
             for raw in &out.refs {
                 ref_stmt.execute(rusqlite::params![
-                    file_id, raw.line, raw.source_symbol.as_deref(),
-                    &raw.target_name, raw.target_qualifier.as_deref(),
-                    raw.kind.as_str(), 0.0f64
+                    file_id,
+                    raw.line,
+                    raw.source_symbol.as_deref(),
+                    &raw.target_name,
+                    raw.target_qualifier.as_deref(),
+                    raw.kind.as_str(),
+                    0.0f64
                 ])?;
             }
         }
@@ -315,8 +380,10 @@ impl IndexPipeline {
             [],
         )?;
 
-        info!("resolved: L1(same-file)={}, L2(same-pkg)={}, L3(global-unique)={}, L4(ambiguous)={}",
-            l1, l2, l3, l4);
+        info!(
+            "resolved: L1(same-file)={}, L2(same-pkg)={}, L3(global-unique)={}, L4(ambiguous)={}",
+            l1, l2, l3, l4
+        );
 
         Ok(())
     }
@@ -331,7 +398,12 @@ impl IndexPipeline {
 
         if total == 0 {
             info!("all chunks already embedded");
-            return Ok(EmbedStats { total: 0, embedded: 0, skipped: 0, duration_ms: 0 });
+            return Ok(EmbedStats {
+                total: 0,
+                embedded: 0,
+                skipped: 0,
+                duration_ms: 0,
+            });
         }
 
         // Filter: only embed code chunks, skip config/data
@@ -355,7 +427,10 @@ impl IndexPipeline {
         }
 
         let embed_count = to_embed.len();
-        info!("embedding {} chunks (skipping {} non-code/trivial)", embed_count, skipped);
+        info!(
+            "embedding {} chunks (skipping {} non-code/trivial)",
+            embed_count, skipped
+        );
 
         let batch_size = self.config.model.batch_size;
         let mut embedded = 0u64;
@@ -370,7 +445,8 @@ impl IndexPipeline {
             let vectors = embedder.embed_batch(&texts)?;
 
             repo.begin_transaction()?;
-            for ((chunk_id, _), vec) in to_embed[batch_start..batch_end].iter().zip(vectors.iter()) {
+            for ((chunk_id, _), vec) in to_embed[batch_start..batch_end].iter().zip(vectors.iter())
+            {
                 repo.insert_vector(*chunk_id, vec)?;
             }
             repo.commit()?;
@@ -379,8 +455,13 @@ impl IndexPipeline {
             if embedded.is_multiple_of(256) || batch_end == to_embed.len() {
                 let elapsed = start.elapsed().as_secs();
                 let rate = embedded.checked_div(elapsed).unwrap_or(embedded);
-                let remaining = (embed_count as u64 - embedded).checked_div(rate).unwrap_or(0);
-                info!("  embedded {}/{} ({}/s, ~{}s remaining)", embedded, embed_count, rate, remaining);
+                let remaining = (embed_count as u64 - embedded)
+                    .checked_div(rate)
+                    .unwrap_or(0);
+                info!(
+                    "  embedded {}/{} ({}/s, ~{}s remaining)",
+                    embedded, embed_count, rate, remaining
+                );
             }
         }
 
@@ -400,12 +481,7 @@ impl IndexPipeline {
         Ok(stats)
     }
 
-    fn index_file_structural(
-        &self,
-        repo: &Repository,
-        path: &Path,
-        rel_path: &str,
-    ) -> Result<u64> {
+    fn index_file_structural(&self, repo: &Repository, path: &Path, rel_path: &str) -> Result<u64> {
         let source = std::fs::read_to_string(path)?;
         let hash = blake3::hash(source.as_bytes()).to_hex().to_string();
         let language = parser::detect_language(rel_path);
@@ -428,13 +504,22 @@ impl IndexPipeline {
         for chunk in &chunks {
             let token_count = chunk.content.split_whitespace().count() as u32;
             let chunk_id = repo.insert_chunk(
-                file_id, &chunk.content, chunk.kind.as_str(),
-                chunk.start_line, chunk.end_line, chunk.scope.as_deref(), token_count,
+                file_id,
+                &chunk.content,
+                chunk.kind.as_str(),
+                chunk.start_line,
+                chunk.end_line,
+                chunk.scope.as_deref(),
+                token_count,
             )?;
 
             for sym in &chunk.symbols {
                 repo.insert_symbol(
-                    chunk_id, file_id, &sym.name, sym.kind.as_str(), sym.line,
+                    chunk_id,
+                    file_id,
+                    &sym.name,
+                    sym.kind.as_str(),
+                    sym.line,
                     chunk.scope.as_deref(),
                 )?;
             }
@@ -447,10 +532,13 @@ impl IndexPipeline {
     fn parse_and_chunk(&self, source: &str, language: Option<&str>) -> Vec<CodeChunk> {
         if let Some(lang) = language
             && self.parser.supports(lang)
-                && let Ok(tree) = self.parser.parse(source, lang) {
-                    let chunks = self.chunker.chunk(source, &tree, lang);
-                    if !chunks.is_empty() { return chunks; }
-                }
+            && let Ok(tree) = self.parser.parse(source, lang)
+        {
+            let chunks = self.chunker.chunk(source, &tree, lang);
+            if !chunks.is_empty() {
+                return chunks;
+            }
+        }
         vec![CodeChunk {
             content: source.to_string(),
             kind: ChunkKind::Module,
@@ -462,18 +550,24 @@ impl IndexPipeline {
     }
 
     pub fn index_file(
-        &self, repo: &Repository, embedder: &Embedder, path: &Path, rel_path: &str,
+        &self,
+        repo: &Repository,
+        embedder: &Embedder,
+        path: &Path,
+        rel_path: &str,
     ) -> Result<u64> {
         let count = self.index_file_structural(repo, path, rel_path)?;
 
         // Immediate embedding for single file (incremental update)
         if let Some(file_id) = repo.get_file_id(rel_path)? {
             let chunks = repo.chunks_for_file(file_id)?;
-            let embeddable: Vec<_> = chunks.iter()
+            let embeddable: Vec<_> = chunks
+                .iter()
                 .filter(|c| {
                     let lang = parser::detect_language(rel_path);
                     is_embeddable_language(lang.as_deref())
-                        && c.kind != "import" && c.token_count >= 8
+                        && c.kind != "import"
+                        && c.token_count >= 8
                 })
                 .collect();
 
@@ -490,21 +584,43 @@ impl IndexPipeline {
     }
 
     pub fn reindex_file(&self, repo: &Repository, embedder: &Embedder, path: &Path) -> Result<u64> {
-        let rel_path = path.strip_prefix(&self.config.workspace).unwrap_or(path)
-            .to_string_lossy().to_string();
+        let rel_path = path
+            .strip_prefix(&self.config.workspace)
+            .unwrap_or(path)
+            .to_string_lossy()
+            .to_string();
         self.index_file(repo, embedder, path, &rel_path)
     }
 
     pub fn remove_file(&self, repo: &Repository, path: &Path) -> Result<()> {
-        let rel_path = path.strip_prefix(&self.config.workspace).unwrap_or(path)
-            .to_string_lossy().to_string();
-        if let Some(id) = repo.get_file_id(&rel_path)? { repo.delete_file(id)?; }
+        let rel_path = path
+            .strip_prefix(&self.config.workspace)
+            .unwrap_or(path)
+            .to_string_lossy()
+            .to_string();
+        if let Some(id) = repo.get_file_id(&rel_path)? {
+            repo.delete_file(id)?;
+        }
         Ok(())
     }
 }
 
 fn is_embeddable_language(lang: Option<&str>) -> bool {
-    matches!(lang, Some("rust" | "python" | "javascript" | "typescript" | "tsx" | "go" | "java" | "c" | "cpp" | "bash"))
+    matches!(
+        lang,
+        Some(
+            "rust"
+                | "python"
+                | "javascript"
+                | "typescript"
+                | "tsx"
+                | "go"
+                | "java"
+                | "c"
+                | "cpp"
+                | "bash"
+        )
+    )
 }
 
 #[derive(Debug, Default, Clone, serde::Serialize)]

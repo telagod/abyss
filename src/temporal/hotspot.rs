@@ -41,7 +41,12 @@ pub fn compute_file_metrics(repo: &Repository, days_30: u32, days_90: u32) -> Re
     Ok(updated as u64)
 }
 
-pub fn update_complexity(repo: &Repository, file_id: i64, cyclomatic: f64, max_func_lines: u32) -> Result<()> {
+pub fn update_complexity(
+    repo: &Repository,
+    file_id: i64,
+    cyclomatic: f64,
+    max_func_lines: u32,
+) -> Result<()> {
     repo.conn().execute(
         "UPDATE file_metrics SET cyclomatic = ?1, max_func_lines = ?2,
             hotspot_score = change_count_30d * ?1
@@ -69,7 +74,8 @@ pub fn top_hotspots(repo: &Repository, limit: usize) -> Result<Vec<HotspotItem>>
          FROM file_metrics fm JOIN files f ON fm.file_id = f.id
          WHERE fm.hotspot_score > 0
          ORDER BY fm.hotspot_score DESC
-         LIMIT ?1")?;
+         LIMIT ?1",
+    )?;
     let rows = stmt.query_map([limit as i64], |row| {
         Ok(HotspotItem {
             file_path: row.get(0)?,

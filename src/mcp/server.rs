@@ -131,8 +131,12 @@ pub struct ImpactOutput {
     pub risk_factors: Vec<String>,
 }
 
-fn default_20() -> usize { 20 }
-fn default_30() -> usize { 30 }
+fn default_20() -> usize {
+    20
+}
+fn default_30() -> usize {
+    30
+}
 
 // --- Temporal tool types ---
 
@@ -146,7 +150,9 @@ pub struct CodeMapInput {
     pub limit: usize,
 }
 
-fn default_15() -> usize { 15 }
+fn default_15() -> usize {
+    15
+}
 
 #[derive(Serialize, schemars::JsonSchema)]
 pub struct CodeMapOutput {
@@ -295,13 +301,22 @@ impl McpServer {
     ) -> Json<FindCallersOutput> {
         let repo = self.repo.lock().unwrap();
         let gq = crate::graph::GraphQuery::new(&repo);
-        let callers = gq.find_callers(&input.symbol, input.limit).unwrap_or_default();
+        let callers = gq
+            .find_callers(&input.symbol, input.limit)
+            .unwrap_or_default();
 
         Json(FindCallersOutput {
-            callers: callers.into_iter().map(|c| CallerItem {
-                file_path: c.file_path, symbol: c.symbol, line: c.line,
-                depth: c.depth, confidence: c.confidence, is_test: c.is_test,
-            }).collect(),
+            callers: callers
+                .into_iter()
+                .map(|c| CallerItem {
+                    file_path: c.file_path,
+                    symbol: c.symbol,
+                    line: c.line,
+                    depth: c.depth,
+                    confidence: c.confidence,
+                    is_test: c.is_test,
+                })
+                .collect(),
         })
     }
 
@@ -309,28 +324,51 @@ impl McpServer {
         name = "impact_analysis",
         description = "Analyze the blast radius of changing a symbol. Returns direct/transitive callers, affected tests, uncovered call paths, and a risk score (0-10)."
     )]
-    fn impact_analysis(
-        &self,
-        Parameters(input): Parameters<ImpactInput>,
-    ) -> Json<ImpactOutput> {
+    fn impact_analysis(&self, Parameters(input): Parameters<ImpactInput>) -> Json<ImpactOutput> {
         let repo = self.repo.lock().unwrap();
         let gq = crate::graph::GraphQuery::new(&repo);
-        let result = gq.impact_analysis(&input.symbol, input.depth.unwrap_or(3)).unwrap();
+        let result = gq
+            .impact_analysis(&input.symbol, input.depth.unwrap_or(3))
+            .unwrap();
 
         Json(ImpactOutput {
             target: result.target,
-            direct_callers: result.direct_callers.into_iter().map(|c| CallerItem {
-                file_path: c.file_path, symbol: c.symbol, line: c.line,
-                depth: c.depth, confidence: c.confidence, is_test: c.is_test,
-            }).collect(),
-            transitive_callers: result.transitive_callers.into_iter().map(|c| CallerItem {
-                file_path: c.file_path, symbol: c.symbol, line: c.line,
-                depth: c.depth, confidence: c.confidence, is_test: c.is_test,
-            }).collect(),
-            affected_tests: result.affected_tests.into_iter().map(|c| CallerItem {
-                file_path: c.file_path, symbol: c.symbol, line: c.line,
-                depth: c.depth, confidence: c.confidence, is_test: c.is_test,
-            }).collect(),
+            direct_callers: result
+                .direct_callers
+                .into_iter()
+                .map(|c| CallerItem {
+                    file_path: c.file_path,
+                    symbol: c.symbol,
+                    line: c.line,
+                    depth: c.depth,
+                    confidence: c.confidence,
+                    is_test: c.is_test,
+                })
+                .collect(),
+            transitive_callers: result
+                .transitive_callers
+                .into_iter()
+                .map(|c| CallerItem {
+                    file_path: c.file_path,
+                    symbol: c.symbol,
+                    line: c.line,
+                    depth: c.depth,
+                    confidence: c.confidence,
+                    is_test: c.is_test,
+                })
+                .collect(),
+            affected_tests: result
+                .affected_tests
+                .into_iter()
+                .map(|c| CallerItem {
+                    file_path: c.file_path,
+                    symbol: c.symbol,
+                    line: c.line,
+                    depth: c.depth,
+                    confidence: c.confidence,
+                    is_test: c.is_test,
+                })
+                .collect(),
             uncovered_paths: result.uncovered_paths,
             risk_score: result.risk_score,
             risk_factors: result.risk_factors,
@@ -341,26 +379,36 @@ impl McpServer {
         name = "code_map",
         description = "Get a high-level codebase map: hotspots (high churn × complexity), change-coupled file pairs, and summary stats. Use to understand which areas are most risky or active."
     )]
-    fn code_map(
-        &self,
-        Parameters(input): Parameters<CodeMapInput>,
-    ) -> Json<CodeMapOutput> {
+    fn code_map(&self, Parameters(input): Parameters<CodeMapInput>) -> Json<CodeMapOutput> {
         let repo = self.repo.lock().unwrap();
-        let hotspots = crate::temporal::hotspot::top_hotspots(&repo, input.limit).unwrap_or_default();
-        let coupled = crate::temporal::coupling::top_coupled(&repo, input.limit).unwrap_or_default();
+        let hotspots =
+            crate::temporal::hotspot::top_hotspots(&repo, input.limit).unwrap_or_default();
+        let coupled =
+            crate::temporal::coupling::top_coupled(&repo, input.limit).unwrap_or_default();
         let total_files = repo.file_count().unwrap_or(0) as u64;
         let total_refs = repo.ref_count().unwrap_or(0) as u64;
 
         Json(CodeMapOutput {
-            hotspots: hotspots.into_iter().map(|h| HotspotMcpItem {
-                file_path: h.file_path, change_count: h.change_count,
-                complexity: h.complexity, hotspot_score: h.hotspot_score,
-                max_func_lines: h.max_func_lines, unique_authors: h.unique_authors,
-            }).collect(),
-            coupled_files: coupled.into_iter().map(|c| CoupledPairItem {
-                file_a: c.file_a, file_b: c.file_b,
-                co_changes: c.co_changes, coupling_score: c.coupling_score,
-            }).collect(),
+            hotspots: hotspots
+                .into_iter()
+                .map(|h| HotspotMcpItem {
+                    file_path: h.file_path,
+                    change_count: h.change_count,
+                    complexity: h.complexity,
+                    hotspot_score: h.hotspot_score,
+                    max_func_lines: h.max_func_lines,
+                    unique_authors: h.unique_authors,
+                })
+                .collect(),
+            coupled_files: coupled
+                .into_iter()
+                .map(|c| CoupledPairItem {
+                    file_a: c.file_a,
+                    file_b: c.file_b,
+                    co_changes: c.co_changes,
+                    coupling_score: c.coupling_score,
+                })
+                .collect(),
             total_files,
             total_refs,
         })
@@ -370,25 +418,39 @@ impl McpServer {
         name = "evolution",
         description = "Trace the history of a file or specific function/symbol. Returns commits, change-coupled files, churn rate, and authors. Use to understand why code looks the way it does."
     )]
-    fn evolution(
-        &self,
-        Parameters(input): Parameters<EvolutionInput>,
-    ) -> Json<EvolutionOutput> {
+    fn evolution(&self, Parameters(input): Parameters<EvolutionInput>) -> Json<EvolutionOutput> {
         let repo = self.repo.lock().unwrap();
         let result = crate::temporal::evolution::trace_evolution(
-            &self.config.workspace, &repo, &input.file, input.symbol.as_deref(),
-        ).unwrap();
+            &self.config.workspace,
+            &repo,
+            &input.file,
+            input.symbol.as_deref(),
+        )
+        .unwrap();
 
         Json(EvolutionOutput {
             file_path: result.file_path,
             symbol: result.symbol,
-            commits: result.commits.into_iter().map(|c| EvCommit {
-                hash: c.hash, author: c.author, date: c.date, message: c.message,
-            }).collect(),
-            coupled_files: result.coupled_files.into_iter().map(|c| CoupledPairItem {
-                file_a: c.path.clone(), file_b: String::new(),
-                co_changes: c.co_changes, coupling_score: c.coupling_score,
-            }).collect(),
+            commits: result
+                .commits
+                .into_iter()
+                .map(|c| EvCommit {
+                    hash: c.hash,
+                    author: c.author,
+                    date: c.date,
+                    message: c.message,
+                })
+                .collect(),
+            coupled_files: result
+                .coupled_files
+                .into_iter()
+                .map(|c| CoupledPairItem {
+                    file_a: c.path.clone(),
+                    file_b: String::new(),
+                    co_changes: c.co_changes,
+                    coupling_score: c.coupling_score,
+                })
+                .collect(),
             churn_rate: result.churn_rate,
             unique_authors: result.unique_authors,
             total_changes: result.total_changes,

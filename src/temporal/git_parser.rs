@@ -41,7 +41,10 @@ pub fn parse_git_log_to_memory(workspace: &Path, since_days: u32) -> Result<GitD
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         if stderr.contains("not a git repository") {
-            return Ok(GitData { commits: Vec::new(), file_changes: Vec::new() });
+            return Ok(GitData {
+                commits: Vec::new(),
+                file_changes: Vec::new(),
+            });
         }
         anyhow::bail!("git log failed: {stderr}");
     }
@@ -66,16 +69,22 @@ pub fn parse_git_log_to_memory(workspace: &Path, since_days: u32) -> Result<GitD
         } else if let Some(idx) = current_idx {
             let parts: Vec<&str> = line.split('\t').collect();
             if parts.len() == 3 && parts[0] != "-" {
-                file_changes.push((idx, FileChangeRecord {
-                    file_path: parts[2].to_string(),
-                    added: parts[0].parse().unwrap_or(0),
-                    deleted: parts[1].parse().unwrap_or(0),
-                }));
+                file_changes.push((
+                    idx,
+                    FileChangeRecord {
+                        file_path: parts[2].to_string(),
+                        added: parts[0].parse().unwrap_or(0),
+                        deleted: parts[1].parse().unwrap_or(0),
+                    },
+                ));
             }
         }
     }
 
-    Ok(GitData { commits, file_changes })
+    Ok(GitData {
+        commits,
+        file_changes,
+    })
 }
 
 /// Write pre-parsed git data into DB (must run on main thread)
@@ -90,7 +99,8 @@ pub fn write_git_data(repo: &Repository, data: &GitData) -> Result<GitStats> {
 
     {
         let mut stmt = conn.prepare_cached(
-            "INSERT OR IGNORE INTO commits(hash,author,ts,message) VALUES(?1,?2,?3,?4)")?;
+            "INSERT OR IGNORE INTO commits(hash,author,ts,message) VALUES(?1,?2,?3,?4)",
+        )?;
         for c in &data.commits {
             let changes = stmt.execute(params![&c.hash, &c.author, c.ts, &c.message])?;
             if changes > 0 {
@@ -98,8 +108,11 @@ pub fn write_git_data(repo: &Repository, data: &GitData) -> Result<GitStats> {
                 commits_parsed += 1;
             } else {
                 // Already exists
-                let id: Option<i64> = conn.query_row(
-                    "SELECT id FROM commits WHERE hash = ?1", [&c.hash], |r| r.get(0)).ok();
+                let id: Option<i64> = conn
+                    .query_row("SELECT id FROM commits WHERE hash = ?1", [&c.hash], |r| {
+                        r.get(0)
+                    })
+                    .ok();
                 commit_ids.push(id);
             }
         }
@@ -118,8 +131,14 @@ pub fn write_git_data(repo: &Repository, data: &GitData) -> Result<GitStats> {
 
     conn.execute_batch("COMMIT")?;
 
-    info!("git: {} new commits, {} file changes", commits_parsed, files_touched);
-    Ok(GitStats { commits_parsed, files_touched })
+    info!(
+        "git: {} new commits, {} file changes",
+        commits_parsed, files_touched
+    );
+    Ok(GitStats {
+        commits_parsed,
+        files_touched,
+    })
 }
 
 /// Legacy API — parse and write in one call

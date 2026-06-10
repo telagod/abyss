@@ -1,7 +1,7 @@
 pub mod go;
-pub mod typescript;
-pub mod rust_lang;
 pub mod python;
+pub mod rust_lang;
+pub mod typescript;
 
 use super::LanguageRefExtractor;
 

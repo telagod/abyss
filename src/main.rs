@@ -10,11 +10,15 @@ use code_abyss::config::Config;
 use code_abyss::embedding::Embedder;
 use code_abyss::indexer::IndexPipeline;
 use code_abyss::mcp::McpServer;
-use rmcp::ServiceExt;
 use code_abyss::storage::Repository;
+use rmcp::ServiceExt;
 
 #[derive(Parser)]
-#[command(name = "abyss", version, about = "Code relationship graph and temporal intelligence")]
+#[command(
+    name = "abyss",
+    version,
+    about = "Code relationship graph and temporal intelligence"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -98,8 +102,12 @@ fn main() -> Result<()> {
     let workspace = std::fs::canonicalize(&cli.workspace)?;
     let mut config = Config::new(&workspace);
 
-    if let Some(db) = cli.db { config.db_path = db; }
-    if let Some(model) = cli.model { config.model.model_id = model; }
+    if let Some(db) = cli.db {
+        config.db_path = db;
+    }
+    if let Some(model) = cli.model {
+        config.model.model_id = model;
+    }
 
     let json = cli.json;
 
@@ -128,8 +136,14 @@ fn cmd_index(config: Config, json: bool) -> Result<()> {
     if json {
         println!("{}", serde_json::to_string(&stats)?);
     } else {
-        eprintln!("✓ {} files, {} chunks, {} symbols, {} refs in {}ms",
-            stats.total_files, stats.total_chunks, stats.total_symbols, stats.refs, stats.duration_ms);
+        eprintln!(
+            "✓ {} files, {} chunks, {} symbols, {} refs in {}ms",
+            stats.total_files,
+            stats.total_chunks,
+            stats.total_symbols,
+            stats.refs,
+            stats.duration_ms
+        );
     }
     Ok(())
 }
@@ -145,7 +159,9 @@ fn cmd_embed(config: Config) -> Result<()> {
 
     eprintln!(
         "✓ embedded {} chunks, skipped {}, in {:.1}s",
-        stats.embedded, stats.skipped, stats.duration_ms as f64 / 1000.0
+        stats.embedded,
+        stats.skipped,
+        stats.duration_ms as f64 / 1000.0
     );
 
     Ok(())
@@ -162,7 +178,9 @@ fn cmd_index_all(config: Config, watch: bool) -> Result<()> {
 
     eprintln!(
         "✓ {} files, {} chunks, {} symbols in {:.1}s (embed: {:.1}s)",
-        stats.total_files, stats.total_chunks, stats.total_symbols,
+        stats.total_files,
+        stats.total_chunks,
+        stats.total_symbols,
         stats.duration_ms as f64 / 1000.0,
         stats.embed_duration_ms as f64 / 1000.0
     );
@@ -178,7 +196,11 @@ fn cmd_index_all(config: Config, watch: bool) -> Result<()> {
 fn cmd_search(config: Config, query: &str, limit: usize, json: bool) -> Result<()> {
     let repo = Repository::open(&config.db_path, config.model.dimensions)?;
     #[cfg(feature = "semantic")]
-    let embedder = if repo.has_vectors()? { Embedder::load(&config.model).ok() } else { None };
+    let embedder = if repo.has_vectors()? {
+        Embedder::load(&config.model).ok()
+    } else {
+        None
+    };
     #[cfg(not(feature = "semantic"))]
     let embedder: Option<code_abyss::embedding::Embedder> = None;
     let engine = code_abyss::search::SearchEngine::new(&repo, embedder.as_ref());
@@ -187,13 +209,27 @@ fn cmd_search(config: Config, query: &str, limit: usize, json: bool) -> Result<(
     if json {
         println!("{}", serde_json::to_string(&results)?);
     } else {
-        if results.is_empty() { eprintln!("no results"); return Ok(()); }
+        if results.is_empty() {
+            eprintln!("no results");
+            return Ok(());
+        }
         for (i, r) in results.iter().enumerate() {
-            println!("{}. {} (L{}-L{}) [{}] score={:.4}",
-                i + 1, r.file_path, r.start_line + 1, r.end_line + 1, r.kind, r.score);
+            println!(
+                "{}. {} (L{}-L{}) [{}] score={:.4}",
+                i + 1,
+                r.file_path,
+                r.start_line + 1,
+                r.end_line + 1,
+                r.kind,
+                r.score
+            );
             let preview: Vec<&str> = r.content.lines().take(3).collect();
-            for line in &preview { println!("   {line}"); }
-            if r.content.lines().count() > 3 { println!("   ..."); }
+            for line in &preview {
+                println!("   {line}");
+            }
+            if r.content.lines().count() > 3 {
+                println!("   ...");
+            }
             println!();
         }
     }
@@ -208,12 +244,21 @@ fn cmd_callers(config: Config, symbol: &str, limit: usize, json: bool) -> Result
     if json {
         println!("{}", serde_json::to_string(&callers)?);
     } else {
-        if callers.is_empty() { eprintln!("no callers found for '{symbol}'"); return Ok(()); }
+        if callers.is_empty() {
+            eprintln!("no callers found for '{symbol}'");
+            return Ok(());
+        }
         println!("callers of '{symbol}' ({} found):\n", callers.len());
         for (i, c) in callers.iter().enumerate() {
             let t = if c.is_test { " [test]" } else { "" };
-            println!("  {}. {}:{} → {}(){t}  ({:.0}%)",
-                i + 1, c.file_path, c.line + 1, c.symbol, c.confidence * 100.0);
+            println!(
+                "  {}. {}:{} → {}(){t}  ({:.0}%)",
+                i + 1,
+                c.file_path,
+                c.line + 1,
+                c.symbol,
+                c.confidence * 100.0
+            );
         }
     }
     Ok(())
@@ -227,10 +272,18 @@ fn cmd_impact(config: Config, symbol: &str, depth: u32, json: bool) -> Result<()
     if json {
         println!("{}", serde_json::to_string(&result)?);
     } else {
-        println!("impact: {}  direct={}  transitive={}  tests={}  uncovered={}  risk={:.1}/10",
-            result.target, result.direct_callers.len(), result.transitive_callers.len(),
-            result.affected_tests.len(), result.uncovered_paths.len(), result.risk_score);
-        for f in &result.risk_factors { println!("  ⚠ {f}"); }
+        println!(
+            "impact: {}  direct={}  transitive={}  tests={}  uncovered={}  risk={:.1}/10",
+            result.target,
+            result.direct_callers.len(),
+            result.transitive_callers.len(),
+            result.affected_tests.len(),
+            result.uncovered_paths.len(),
+            result.risk_score
+        );
+        for f in &result.risk_factors {
+            println!("  ⚠ {f}");
+        }
         for c in result.direct_callers.iter().take(10) {
             let t = if c.is_test { " [test]" } else { "" };
             println!("  {}:{} → {}(){t}", c.file_path, c.line + 1, c.symbol);
@@ -241,18 +294,26 @@ fn cmd_impact(config: Config, symbol: &str, depth: u32, json: bool) -> Result<()
 
 fn cmd_history(config: Config, file: &str, symbol: Option<&str>, json: bool) -> Result<()> {
     let repo = Repository::open(&config.db_path, config.model.dimensions)?;
-    let result = code_abyss::temporal::evolution::trace_evolution(&config.workspace, &repo, file, symbol)?;
+    let result =
+        code_abyss::temporal::evolution::trace_evolution(&config.workspace, &repo, file, symbol)?;
 
     if json {
         println!("{}", serde_json::to_string(&result)?);
     } else {
-        println!("evolution: {}  changes={}  authors={}  churn={:.1}x",
-            result.file_path, result.total_changes, result.unique_authors, result.churn_rate);
+        println!(
+            "evolution: {}  changes={}  authors={}  churn={:.1}x",
+            result.file_path, result.total_changes, result.unique_authors, result.churn_rate
+        );
         for c in result.commits.iter().take(10) {
             println!("  {} {} {:<16} {}", c.hash, c.date, c.author, c.message);
         }
         for c in result.coupled_files.iter().take(5) {
-            println!("  ↔ {} ({}×, {:.0}%)", c.path, c.co_changes, c.coupling_score * 100.0);
+            println!(
+                "  ↔ {} ({}×, {:.0}%)",
+                c.path,
+                c.co_changes,
+                c.coupling_score * 100.0
+            );
         }
     }
     Ok(())
@@ -269,7 +330,10 @@ fn cmd_context(config: Config, file: &str, json: bool) -> Result<()> {
         |r| r.get(0),
     ) {
         Ok(id) => id,
-        Err(_) => { eprintln!("file not found: {file}"); return Ok(()); }
+        Err(_) => {
+            eprintln!("file not found: {file}");
+            return Ok(());
+        }
     };
 
     let file_path: String = repo.get_file_path(file_id)?.unwrap_or_default();
@@ -281,7 +345,8 @@ fn cmd_context(config: Config, file: &str, json: bool) -> Result<()> {
     let mut sym_callers: Vec<serde_json::Value> = Vec::new();
     for sym in &symbols {
         let callers = repo.find_callers_of(&sym.name, Some(file_id), 10)?;
-        let external: Vec<_> = callers.iter()
+        let external: Vec<_> = callers
+            .iter()
             .filter(|c| c.source_file_id != file_id)
             .collect();
         if !external.is_empty() {
@@ -307,14 +372,18 @@ fn cmd_context(config: Config, file: &str, json: bool) -> Result<()> {
          FROM refs r LEFT JOIN files f ON r.target_file_id = f.id
          WHERE r.source_file_id = ?1 AND r.kind IN ('call','type_ref')
          AND r.target_file_id IS NOT NULL AND r.target_file_id != ?1
-         LIMIT 20")?;
-    let deps: Vec<serde_json::Value> = deps_stmt.query_map([file_id], |row| {
-        Ok(serde_json::json!({
-            "name": row.get::<_, String>(0)?,
-            "file": row.get::<_, String>(1)?,
-            "kind": row.get::<_, String>(2)?,
-        }))
-    })?.filter_map(|r| r.ok()).collect();
+         LIMIT 20",
+    )?;
+    let deps: Vec<serde_json::Value> = deps_stmt
+        .query_map([file_id], |row| {
+            Ok(serde_json::json!({
+                "name": row.get::<_, String>(0)?,
+                "file": row.get::<_, String>(1)?,
+                "kind": row.get::<_, String>(2)?,
+            }))
+        })?
+        .filter_map(|r| r.ok())
+        .collect();
 
     // Hotspot info
     let hotspot: Option<(f64, i64, f64)> = conn.query_row(
@@ -326,14 +395,18 @@ fn cmd_context(config: Config, file: &str, json: bool) -> Result<()> {
     let mut coupling_stmt = conn.prepare(
         "SELECT file_b, co_changes, coupling_score FROM change_coupling WHERE file_a = ?1
          UNION SELECT file_a, co_changes, coupling_score FROM change_coupling WHERE file_b = ?1
-         ORDER BY coupling_score DESC LIMIT 5")?;
-    let coupled: Vec<serde_json::Value> = coupling_stmt.query_map([&file_path], |row| {
-        Ok(serde_json::json!({
-            "file": row.get::<_, String>(0)?,
-            "co_changes": row.get::<_, i64>(1)?,
-            "coupling": format!("{:.0}%", row.get::<_, f64>(2)? * 100.0),
-        }))
-    })?.filter_map(|r| r.ok()).collect();
+         ORDER BY coupling_score DESC LIMIT 5",
+    )?;
+    let coupled: Vec<serde_json::Value> = coupling_stmt
+        .query_map([&file_path], |row| {
+            Ok(serde_json::json!({
+                "file": row.get::<_, String>(0)?,
+                "co_changes": row.get::<_, i64>(1)?,
+                "coupling": format!("{:.0}%", row.get::<_, f64>(2)? * 100.0),
+            }))
+        })?
+        .filter_map(|r| r.ok())
+        .collect();
 
     let output = serde_json::json!({
         "file": file_path,
@@ -350,36 +423,58 @@ fn cmd_context(config: Config, file: &str, json: bool) -> Result<()> {
         println!("{}", serde_json::to_string_pretty(&output)?);
     } else {
         println!("=== {} ===\n", file_path);
-        println!("{} symbols defined, {} with external callers\n",
-            symbols.len(), sym_callers.len());
+        println!(
+            "{} symbols defined, {} with external callers\n",
+            symbols.len(),
+            sym_callers.len()
+        );
 
         for sc in &sym_callers {
             let sym = sc["symbol"].as_str().unwrap_or("");
             let callers = sc["external_callers"].as_array().unwrap();
             println!("  {}() ← {} callers", sym, callers.len());
             for c in callers.iter().take(5) {
-                let t = if c["is_test"].as_bool().unwrap_or(false) { " [test]" } else { "" };
-                println!("    {}:{} → {}(){t}",
-                    c["file"].as_str().unwrap_or(""), c["line"], c["caller"].as_str().unwrap_or(""));
+                let t = if c["is_test"].as_bool().unwrap_or(false) {
+                    " [test]"
+                } else {
+                    ""
+                };
+                println!(
+                    "    {}:{} → {}(){t}",
+                    c["file"].as_str().unwrap_or(""),
+                    c["line"],
+                    c["caller"].as_str().unwrap_or("")
+                );
             }
         }
 
         if !deps.is_empty() {
             println!("\n  depends on:");
             for d in &deps {
-                println!("    → {} ({})", d["name"].as_str().unwrap_or(""), d["file"].as_str().unwrap_or(""));
+                println!(
+                    "    → {} ({})",
+                    d["name"].as_str().unwrap_or(""),
+                    d["file"].as_str().unwrap_or("")
+                );
             }
         }
 
         if let Some(h) = &hotspot {
-            println!("\n  hotspot: score={:.0}  changes={}  cc={:.0}", h.0, h.1, h.2);
+            println!(
+                "\n  hotspot: score={:.0}  changes={}  cc={:.0}",
+                h.0, h.1, h.2
+            );
         }
 
         if !coupled.is_empty() {
             println!("\n  coupled files:");
             for c in &coupled {
-                println!("    ↔ {} ({}×, {})", c["file"].as_str().unwrap_or(""),
-                    c["co_changes"], c["coupling"].as_str().unwrap_or(""));
+                println!(
+                    "    ↔ {} ({}×, {})",
+                    c["file"].as_str().unwrap_or(""),
+                    c["co_changes"],
+                    c["coupling"].as_str().unwrap_or("")
+                );
             }
         }
     }
@@ -392,20 +487,36 @@ fn cmd_map(config: Config, limit: usize, json: bool) -> Result<()> {
     let coupled = code_abyss::temporal::coupling::top_coupled(&repo, limit)?;
 
     if json {
-        println!("{}", serde_json::to_string(&serde_json::json!({
-            "hotspots": hotspots, "coupling": coupled
-        }))?);
+        println!(
+            "{}",
+            serde_json::to_string(&serde_json::json!({
+                "hotspots": hotspots, "coupling": coupled
+            }))?
+        );
     } else {
         println!("═══ Hotspots ═══");
         for (i, h) in hotspots.iter().enumerate() {
-            println!("  {:2}. {:<55} score={:.0}  Δ{}  cc={:.0}  👤{}",
-                i + 1, h.file_path, h.hotspot_score, h.change_count, h.complexity, h.unique_authors);
+            println!(
+                "  {:2}. {:<55} score={:.0}  Δ{}  cc={:.0}  👤{}",
+                i + 1,
+                h.file_path,
+                h.hotspot_score,
+                h.change_count,
+                h.complexity,
+                h.unique_authors
+            );
         }
         if !coupled.is_empty() {
             println!("\n═══ Coupling ═══");
             for (i, c) in coupled.iter().take(10).enumerate() {
-                println!("  {:2}. {} ↔ {}  ({}×, {:.0}%)",
-                    i + 1, c.file_a, c.file_b, c.co_changes, c.coupling_score * 100.0);
+                println!(
+                    "  {:2}. {} ↔ {}  ({}×, {:.0}%)",
+                    i + 1,
+                    c.file_a,
+                    c.file_b,
+                    c.co_changes,
+                    c.coupling_score * 100.0
+                );
             }
         }
     }
@@ -425,8 +536,10 @@ fn cmd_stats(config: Config, json: bool) -> Result<()> {
     if json {
         println!("{}", serde_json::to_string(&s)?);
     } else {
-        println!("abyss: {} files, {} chunks, {} symbols, {} refs",
-            s["files"], s["chunks"], s["symbols"], s["refs"]);
+        println!(
+            "abyss: {} files, {} chunks, {} symbols, {} refs",
+            s["files"], s["chunks"], s["symbols"], s["refs"]
+        );
     }
     Ok(())
 }
@@ -441,7 +554,10 @@ fn cmd_mcp(config: Config) -> Result<()> {
 
         // Fast structural index on startup
         let stats = pipeline.run_structural(&repo)?;
-        info!("index ready: {} files, {} chunks", stats.total_files, stats.total_chunks);
+        info!(
+            "index ready: {} files, {} chunks",
+            stats.total_files, stats.total_chunks
+        );
 
         // Load embedding model (semantic builds only)
         #[cfg(feature = "semantic")]
@@ -473,13 +589,18 @@ fn cmd_mcp(config: Config) -> Result<()> {
                 info!("background embedding started");
                 let bg_repo = match Repository::open(&bg_repo_path, bg_config.model.dimensions) {
                     Ok(r) => r,
-                    Err(e) => { info!("background embedding failed to open db: {e}"); return; }
+                    Err(e) => {
+                        info!("background embedding failed to open db: {e}");
+                        return;
+                    }
                 };
                 if let Some(ref emb) = *bg_embedder {
                     match bg_pipeline.run_embedding(&bg_repo, emb) {
                         Ok(stats) => info!(
                             "background embedding done: {} embedded, {} skipped in {:.1}s",
-                            stats.embedded, stats.skipped, stats.duration_ms as f64 / 1000.0
+                            stats.embedded,
+                            stats.skipped,
+                            stats.duration_ms as f64 / 1000.0
                         ),
                         Err(e) => info!("background embedding error: {e}"),
                     }
