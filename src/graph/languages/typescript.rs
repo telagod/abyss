@@ -196,16 +196,62 @@ fn collect_refs(
         }
         "import_statement" => {
             if let Some(src) = node.child_by_field_name("source") {
+                let module = text(&src, source)
+                    .trim_matches(|c| c == '\'' || c == '"')
+                    .to_string();
                 refs.push(RawReference {
                     line,
                     source_symbol: None,
-                    target_name: text(&src, source)
-                        .trim_matches(|c| c == '\'' || c == '"')
-                        .to_string(),
+                    target_name: module.clone(),
                     target_qualifier: None,
                     receiver_type: None,
                     kind: RefKind::Import,
                 });
+                // Named/default bindings: `import d, { a, b as c } from './x'`.
+                // Each local name becomes an ImportBinding pointing at the
+                // module — the strongest evidence a bare call can have.
+                let mut cursor = node.walk();
+                if let Some(clause) = node
+                    .children(&mut cursor)
+                    .find(|c| c.kind() == "import_clause")
+                {
+                    collect_import_bindings(&clause, source, &module, line, refs);
+                }
+            }
+        }
+        // Re-export: `export { a, b as c } from './x'` — a binding in THIS
+        // file under the EXPORTED name, so importer→barrel chains can be
+        // chased to the defining file.
+        "export_statement" => {
+            if let Some(src) = node.child_by_field_name("source") {
+                let module = text(&src, source)
+                    .trim_matches(|c| c == '\'' || c == '"')
+                    .to_string();
+                let mut cursor = node.walk();
+                if let Some(clause) = node
+                    .children(&mut cursor)
+                    .find(|c| c.kind() == "export_clause")
+                {
+                    let mut ec = clause.walk();
+                    for spec in clause.named_children(&mut ec) {
+                        if spec.kind() != "export_specifier" {
+                            continue;
+                        }
+                        let exported = spec
+                            .child_by_field_name("alias")
+                            .or_else(|| spec.child_by_field_name("name"));
+                        if let Some(n) = exported {
+                            refs.push(RawReference {
+                                line,
+                                source_symbol: None,
+                                target_name: text(&n, source),
+                                target_qualifier: Some(module.clone()),
+                                receiver_type: None,
+                                kind: RefKind::ImportBinding,
+                            });
+                        }
+                    }
+                }
             }
         }
         _ => {}
@@ -214,6 +260,50 @@ fn collect_refs(
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
         collect_refs(&child, source, scope_map, var_types, current_class, refs);
+    }
+}
+
+/// Bindings out of an import_clause: default import (`import d from`),
+/// named imports (`{ a, b as c }`). Namespace imports (`* as ns`) are
+/// qualifier territory (L3), not bare-call bindings — skipped.
+fn collect_import_bindings(
+    clause: &Node,
+    source: &str,
+    module: &str,
+    line: u32,
+    refs: &mut Vec<RawReference>,
+) {
+    let mut push = |name: String| {
+        refs.push(RawReference {
+            line,
+            source_symbol: None,
+            target_name: name,
+            target_qualifier: Some(module.to_string()),
+            receiver_type: None,
+            kind: RefKind::ImportBinding,
+        });
+    };
+    let mut cursor = clause.walk();
+    for child in clause.named_children(&mut cursor) {
+        match child.kind() {
+            "identifier" => push(text(&child, source)), // default import
+            "named_imports" => {
+                let mut nc = child.walk();
+                for spec in child.named_children(&mut nc) {
+                    if spec.kind() != "import_specifier" {
+                        continue;
+                    }
+                    // local name = alias if present, else the imported name
+                    let local = spec
+                        .child_by_field_name("alias")
+                        .or_else(|| spec.child_by_field_name("name"));
+                    if let Some(n) = local {
+                        push(text(&n, source));
+                    }
+                }
+            }
+            _ => {}
+        }
     }
 }
 

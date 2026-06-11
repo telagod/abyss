@@ -99,6 +99,10 @@ pub fn init_db(conn: &Connection) -> Result<()> {
         CREATE INDEX IF NOT EXISTS idx_refs_target_file ON refs(target_file_id);
         CREATE INDEX IF NOT EXISTS idx_refs_target_name ON refs(target_name);
         CREATE INDEX IF NOT EXISTS idx_refs_kind ON refs(kind);
+        -- Binding-tier lookups: (source_file, name) → binding, correlated per
+        -- unresolved ref; partial index keeps it tiny.
+        CREATE INDEX IF NOT EXISTS idx_refs_binding ON refs(source_file_id, target_name)
+            WHERE kind = 'import_binding';
 
         -- ═══ v0.2: Temporal ═══
 

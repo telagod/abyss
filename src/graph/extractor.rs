@@ -19,6 +19,11 @@ pub enum RefKind {
     Call,
     TypeRef,
     Import,
+    /// Named import/re-export binding: `import { a, b as c } from './x'`,
+    /// `export { y } from './z'`. `target_name` = the LOCAL bound name,
+    /// `target_qualifier` = the module path. Resolved to a file before the
+    /// confidence tiers run; bare calls matching a binding resolve through it.
+    ImportBinding,
     Inherit,
     FieldAccess,
 }
@@ -29,6 +34,7 @@ impl RefKind {
             RefKind::Call => "call",
             RefKind::TypeRef => "type_ref",
             RefKind::Import => "import",
+            RefKind::ImportBinding => "import_binding",
             RefKind::Inherit => "inherit",
             RefKind::FieldAccess => "field_access",
         }

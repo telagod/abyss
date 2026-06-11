@@ -17,7 +17,7 @@ only in-repo symbols count (abyss does not resolve into dependencies).
 | Corpus | Language | Truth pairs | Gated precision | Gated recall | All precision | All recall |
 |--------|----------|------------:|----------------:|-------------:|--------------:|-----------:|
 | gin v1.10.0 | Go | 2,968 | **99.2%** | **82.6%** | 89.1% | 87.2% |
-| hono v4.6.14 | TypeScript | 5,611 | **95.3%** | **51.3%** | 71.3% | 66.0% |
+| hono v4.6.14 | TypeScript | 5,611 | **98.5%** | **58.5%** | 77.1% | 73.1% |
 | click 8.1.8 | Python | 573 | **98.1%** | **90.8%** | 95.5% | 92.5% |
 
 Gated = `--min-confidence 0.7` (the default). abyss index time per corpus:
@@ -37,11 +37,11 @@ Gated = `--min-confidence 0.7` (the default). abyss index time per corpus:
 
 | Tier | Strategy | Correct | Wrong | Precision |
 |------|----------|--------:|------:|----------:|
-| 1.0 | same file (bare + self-like calls) | 301 | 3 | **99.0%** |
-| 0.95 | receiver-type match + same-package unique | 2,045 | 40 | 98.1% |
+| 1.0 | same file (bare + self-like calls) | 301 | 2 | **99.3%** |
+| 0.95 | receiver-type + named-import binding + same-package unique | 2,795 | 30 | 98.9% |
 | 0.9 | import qualifier, unique candidate | 2 | 0 | 100% |
-| 0.8 | global unique | 533 | 98 | 84.5% |
-| 0.6 / 0.5 | demoted / ambiguous | 820 | 1,352 | 37.8% |
+| 0.8 | global unique (member-shaped for qualified calls) | 185 | 18 | 91.1% |
+| 0.6 / 0.5 | demoted / ambiguous | 821 | 1,171 | 41.2% |
 
 ### click (Python) — scip-python
 
@@ -53,6 +53,37 @@ Gated = `--min-confidence 0.7` (the default). abyss index time per corpus:
 | 0.6 / 0.5 | demoted / ambiguous | 10 | 15 | 40.0% |
 
 ## How the eval drove the resolver (chronicle)
+
+### Round 5 — 2026-06-11: named-import bindings (TypeScript)
+
+The 0.8 global-unique tier was hono's worst gated tier (84.5%, 98 wrong).
+Dissection found two distinct lies:
+
+1. **47× `app.use()` → the JSX `use` hook.** hono-base assigns router verbs
+   at runtime, so the only *static* `use` in the repo is the unrelated hook —
+   "globally unique" picked it confidently. Measured: a qualified call
+   resolving to an unscoped free function was 6% precision, vs 96.7% for
+   member-shaped candidates. L4 now requires qualified calls to take only
+   method/owner-scoped candidates.
+2. **45× bare calls that were *named imports*.** `import { css } from
+   '../helper/css'` then `css(...)` — the definition shape
+   (`export const css = defaultContext.css`) is invisible to the chunker, so
+   the name looked globally unique elsewhere. The extractor recorded the
+   module path but threw the bindings away; `resolve_import` was dead code.
+
+The fix is the new **L0b named-import binding tier**: the TS extractor
+records `import { a, b as c } from './x'` (and `export { y } from './z'`
+re-exports) as binding refs; the pipeline resolves module paths against the
+files table (extension + index-file candidates, ESM `.js`→`.ts` rewrites, no
+disk probing) and chases barrel chains to the defining file; bare calls
+matching a binding resolve at 0.95, *before* the same-file tier. A partial
+index (`refs(source_file_id, target_name) WHERE kind='import_binding'`)
+keeps resolve time at ~600ms on hono's 41k refs.
+
+Net (hono): gated 95.3/51.3 → **98.5% / 58.5%** — the binding tier absorbed
+~750 correct resolutions at 98.9% precision, unresolved dropped 417 → 286,
+and all-recall rose 66.0 → 73.1%. gin and click: zero change (no TS
+bindings), zero regression. 62 tests.
 
 ### Round 4 — 2026-06-11: the 1.0 tier earns its name
 
@@ -153,8 +184,9 @@ matched the *file* `json.go`). Net: 85.6% → 97.2% gated precision.
 2. **Interface dispatch** (Go): interface-typed receivers stay demoted at
    0.6 by design (`tier0_unknown_receiver_stays_demoted`). Resolving them
    needs interface-satisfaction analysis — compiler territory.
-3. **JSX/general TS noise**: hono's 0.5 tier is large (1,219 joined pairs);
-   re-exports, barrel files, and JSX runtime calls dilute global tiers.
+3. **JSX/general TS noise**: hono's 0.5 tier is still large (1,161 joined
+   pairs); JSX runtime calls and non-imported common names dilute global
+   tiers. Named-import bindings (round 5) cleared the re-export/barrel slice.
 4. Java ground truth: TODO (scip-java needs a build; planned).
 
 ## Corpus

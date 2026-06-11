@@ -213,6 +213,79 @@ func Out() int { return Render() }
     assert!(refs[0].target_path.is_some(), "still offered as a hint");
 }
 
+// ═══ L0b: named-import binding tier (v0.3.3) ═══
+
+#[test]
+fn ts_named_import_binding_beats_global_unique() {
+    // `css` is imported from helper/index.ts whose definition shape
+    // (`export const css = ctx.css`) is invisible to the chunker, while an
+    // unrelated file defines a `css` symbol — global-unique used to claim
+    // the wrong file. The import binding must win.
+    let fx = index_fixture(&[
+        ("jsx/css.ts", "export const css = (s: string) => s\n"),
+        (
+            "helper/index.ts",
+            "const ctx = { css: (s: string) => s }\nexport const css = ctx.css\n",
+        ),
+        (
+            "app/main.ts",
+            "import { css } from '../helper/index'\nexport const go = () => css('x')\n",
+        ),
+    ]);
+    let refs: Vec<_> = call_refs_to(&fx.repo, "css")
+        .into_iter()
+        .filter(|r| r.source_path == "app/main.ts")
+        .collect();
+    assert_eq!(refs.len(), 1, "{refs:?}");
+    assert_eq!(refs[0].confidence, 0.95);
+    assert_eq!(refs[0].target_path.as_deref(), Some("helper/index.ts"));
+}
+
+#[test]
+fn ts_barrel_reexport_chain_resolves_to_definition() {
+    // app imports from a barrel (`export { css } from './css'`) — the
+    // binding must be chased through the barrel to the defining file.
+    let fx = index_fixture(&[
+        ("lib/css.ts", "export const css = (s: string) => s\n"),
+        ("lib/index.ts", "export { css } from './css'\n"),
+        (
+            "app/main.ts",
+            "import { css } from '../lib/index'\nexport const go = () => css('x')\n",
+        ),
+    ]);
+    let refs: Vec<_> = call_refs_to(&fx.repo, "css")
+        .into_iter()
+        .filter(|r| r.source_path == "app/main.ts")
+        .collect();
+    assert_eq!(refs.len(), 1, "{refs:?}");
+    assert_eq!(refs[0].confidence, 0.95);
+    assert_eq!(
+        refs[0].target_path.as_deref(),
+        Some("lib/css.ts"),
+        "barrel must be chased to the definition: {refs:?}"
+    );
+}
+
+#[test]
+fn qualified_call_never_takes_unscoped_global_unique() {
+    // app.use('/') with an unknown receiver must not resolve to a free
+    // function `use` in another file just because the name is globally
+    // unique (hono: the JSX hook claimed app.use 47×, 6% precision).
+    let fx = index_fixture(&[
+        ("hooks/index.ts", "export const use = (x: string) => x\n"),
+        ("app/main.ts", "export const t = (app) => app.use('/')\n"),
+    ]);
+    let refs: Vec<_> = call_refs_to(&fx.repo, "use")
+        .into_iter()
+        .filter(|r| r.source_path == "app/main.ts")
+        .collect();
+    assert_eq!(refs.len(), 1, "{refs:?}");
+    assert!(
+        refs[0].confidence < 0.7,
+        "qualified call to unscoped free function must stay below the gate: {refs:?}"
+    );
+}
+
 // ═══ L0: receiver-type tier (v0.3.2) ═══
 
 #[test]

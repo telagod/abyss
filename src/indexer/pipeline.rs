@@ -148,6 +148,7 @@ impl IndexPipeline {
         let insert_ms = start.elapsed().as_millis() as u64 - parse_ms;
 
         // ═══ Batch resolve refs ═══
+        self.resolve_import_bindings(repo)?;
         self.batch_resolve_refs(repo)?;
         stats.refs = total_refs;
 
@@ -317,6 +318,89 @@ impl IndexPipeline {
         Ok(ref_count)
     }
 
+    /// Resolve `import_binding` refs to file ids, entirely against the files
+    /// table (no disk probing): relative module paths are normalized against
+    /// the importing file's dir and matched with the usual TS/JS extension
+    /// and index-file candidates. Then barrel chains are chased: a binding
+    /// that lands on a file with no same-named symbol but a same-named
+    /// binding (re-export / import-then-export) is retargeted to where that
+    /// binding points, up to a fixed depth.
+    fn resolve_import_bindings(&self, repo: &Repository) -> Result<()> {
+        let conn = repo.conn();
+
+        let mut paths: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
+        {
+            let mut stmt = conn.prepare("SELECT path, id FROM files")?;
+            let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?;
+            for row in rows {
+                let (p, id) = row?;
+                paths.insert(p, id);
+            }
+        }
+
+        let bindings: Vec<(i64, String, String)> = {
+            let mut stmt = conn.prepare(
+                "SELECT r.id, f.dir, r.target_qualifier FROM refs r
+                 JOIN files f ON r.source_file_id = f.id
+                 WHERE r.kind = 'import_binding' AND r.target_file_id IS NULL
+                   AND r.target_qualifier IS NOT NULL",
+            )?;
+            let rows = stmt.query_map([], |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                ))
+            })?;
+            rows.collect::<std::result::Result<_, _>>()?
+        };
+
+        conn.execute_batch("BEGIN")?;
+        {
+            let mut update = conn.prepare("UPDATE refs SET target_file_id = ?1 WHERE id = ?2")?;
+            for (id, dir, module) in bindings {
+                // Only relative imports resolve in-repo; package imports stay NULL.
+                if !module.starts_with('.') {
+                    continue;
+                }
+                let base = normalize_rel_path(&format!("{dir}{module}"));
+                if let Some(fid) = resolve_module_file(&base, &paths) {
+                    update.execute(rusqlite::params![fid, id])?;
+                }
+            }
+        }
+        conn.execute_batch("COMMIT")?;
+
+        // Barrel chase: bounded fixpoint, each pass follows one re-export hop.
+        for _ in 0..5 {
+            let changed = conn.execute(
+                "UPDATE refs SET target_file_id = (
+                     SELECT ib.target_file_id FROM refs ib
+                     WHERE ib.source_file_id = refs.target_file_id
+                       AND ib.kind = 'import_binding'
+                       AND ib.target_name = refs.target_name
+                       AND ib.target_file_id IS NOT NULL
+                       AND ib.target_file_id != refs.target_file_id
+                     LIMIT 1)
+                 WHERE kind = 'import_binding' AND target_file_id IS NOT NULL
+                   AND NOT EXISTS (SELECT 1 FROM symbols s
+                       WHERE s.file_id = refs.target_file_id AND s.name = refs.target_name)
+                   AND EXISTS (SELECT 1 FROM refs ib
+                       WHERE ib.source_file_id = refs.target_file_id
+                         AND ib.kind = 'import_binding'
+                         AND ib.target_name = refs.target_name
+                         AND ib.target_file_id IS NOT NULL
+                         AND ib.target_file_id != refs.target_file_id)",
+                [],
+            )?;
+            if changed == 0 {
+                break;
+            }
+        }
+
+        Ok(())
+    }
+
     fn batch_resolve_refs(&self, repo: &Repository) -> Result<()> {
         let conn = repo.conn();
 
@@ -336,10 +420,43 @@ impl IndexPipeline {
                  target_symbol_id = (SELECT s.id FROM symbols s
                      WHERE s.name = refs.target_name AND s.scope = refs.receiver_type LIMIT 1),
                  confidence = 0.95
-             WHERE confidence = 0.0 AND kind != 'import'
+             WHERE confidence = 0.0 AND kind NOT IN ('import', 'import_binding')
                AND receiver_type IS NOT NULL
                AND (SELECT COUNT(DISTINCT s.file_id) FROM symbols s
                    WHERE s.name = refs.target_name AND s.scope = refs.receiver_type) = 1",
+            [],
+        )?;
+
+        // Level 0b: Named-import binding (confidence = 0.95). A bare call
+        // whose name is bound by `import { x } from './mod'` resolves to the
+        // module's file — the strongest evidence short of a compiler, and it
+        // runs BEFORE same-file: hono's `css()` is imported from helper/css
+        // while an unrelated `css` symbol lives elsewhere; global-unique
+        // claimed the wrong file 45×. Barrel chains were already chased at
+        // binding-resolution time.
+        let l0b = conn.execute(
+            "UPDATE refs SET
+                 target_file_id = (SELECT ib.target_file_id FROM refs ib
+                     WHERE ib.source_file_id = refs.source_file_id
+                       AND ib.kind = 'import_binding'
+                       AND ib.target_name = refs.target_name
+                       AND ib.target_file_id IS NOT NULL LIMIT 1),
+                 target_symbol_id = (SELECT s.id FROM symbols s
+                     WHERE s.name = refs.target_name
+                       AND s.file_id = (SELECT ib.target_file_id FROM refs ib
+                           WHERE ib.source_file_id = refs.source_file_id
+                             AND ib.kind = 'import_binding'
+                             AND ib.target_name = refs.target_name
+                             AND ib.target_file_id IS NOT NULL LIMIT 1)
+                     LIMIT 1),
+                 confidence = 0.95
+             WHERE confidence = 0.0 AND kind NOT IN ('import', 'import_binding')
+               AND target_qualifier IS NULL
+               AND EXISTS (SELECT 1 FROM refs ib
+                   WHERE ib.source_file_id = refs.source_file_id
+                     AND ib.kind = 'import_binding'
+                     AND ib.target_name = refs.target_name
+                     AND ib.target_file_id IS NOT NULL)",
             [],
         )?;
 
@@ -368,7 +485,7 @@ impl IndexPipeline {
                  target_symbol_id = (SELECT s.id FROM symbols s
                      WHERE s.name = refs.target_name AND s.file_id = refs.source_file_id LIMIT 1),
                  confidence = 1.0
-             WHERE confidence = 0.0 AND kind != 'import'
+             WHERE confidence = 0.0 AND kind NOT IN ('import', 'import_binding')
                AND ((receiver_type IS NULL AND target_qualifier IS NULL)
                     OR target_qualifier IN ('this', 'self', 'cls', 'super')
                     OR target_qualifier GLOB 'super(*')
@@ -398,7 +515,7 @@ impl IndexPipeline {
                        AND s.file_id != refs.source_file_id
                      LIMIT 1),
                  confidence = 0.95
-             WHERE confidence = 0.0 AND kind != 'import'
+             WHERE confidence = 0.0 AND kind NOT IN ('import', 'import_binding')
                AND receiver_type IS NULL
                AND (SELECT COUNT(DISTINCT s.file_id) FROM symbols s JOIN files f ON s.file_id = f.id
                    WHERE s.name = refs.target_name
@@ -428,7 +545,7 @@ impl IndexPipeline {
                             OR f.path GLOB refs.target_qualifier || '.*')
                      LIMIT 1),
                  confidence = 0.9
-             WHERE confidence = 0.0 AND kind != 'import'
+             WHERE confidence = 0.0 AND kind NOT IN ('import', 'import_binding')
                AND target_qualifier IS NOT NULL
                AND EXISTS (SELECT 1 FROM refs ir
                    WHERE ir.source_file_id = refs.source_file_id AND ir.kind = 'import'
@@ -443,15 +560,24 @@ impl IndexPipeline {
             [],
         )?;
 
-        // Level 4: Global unique (confidence = 0.8)
+        // Level 4: Global unique (confidence = 0.8).
+        // Qualified calls (x.foo()) may only take a global-unique candidate
+        // that looks like a member (a method, or scoped to an owner type):
+        // measured on hono, x.foo() resolving to an unscoped free function
+        // was 6% precision (app.use() → the JSX `use` hook, 47×), while
+        // member-shaped candidates were 96.7%.
         let l3 = conn.execute(
             "UPDATE refs SET
                  target_file_id = (SELECT s.file_id FROM symbols s WHERE s.name = refs.target_name LIMIT 1),
                  target_symbol_id = (SELECT s.id FROM symbols s WHERE s.name = refs.target_name LIMIT 1),
                  confidence = 0.8
-             WHERE confidence = 0.0 AND kind != 'import'
+             WHERE confidence = 0.0 AND kind NOT IN ('import', 'import_binding')
                AND receiver_type IS NULL
-               AND (SELECT COUNT(DISTINCT file_id) FROM symbols WHERE name = refs.target_name) = 1",
+               AND (SELECT COUNT(DISTINCT file_id) FROM symbols WHERE name = refs.target_name) = 1
+               AND (target_qualifier IS NULL
+                    OR EXISTS (SELECT 1 FROM symbols s
+                        WHERE s.name = refs.target_name
+                          AND (s.scope IS NOT NULL OR s.kind = 'method')))",
             [],
         )?;
 
@@ -466,7 +592,7 @@ impl IndexPipeline {
                  target_symbol_id = (SELECT s.id FROM symbols s
                      WHERE s.name = refs.target_name AND s.file_id = refs.source_file_id LIMIT 1),
                  confidence = 0.6
-             WHERE confidence = 0.0 AND kind != 'import'
+             WHERE confidence = 0.0 AND kind NOT IN ('import', 'import_binding')
                AND EXISTS (SELECT 1 FROM symbols s
                    WHERE s.name = refs.target_name AND s.file_id = refs.source_file_id)",
             [],
@@ -489,7 +615,7 @@ impl IndexPipeline {
                        AND s.file_id != refs.source_file_id
                      LIMIT 1),
                  confidence = 0.6
-             WHERE confidence = 0.0 AND kind != 'import'
+             WHERE confidence = 0.0 AND kind NOT IN ('import', 'import_binding')
                AND EXISTS (SELECT 1 FROM symbols s JOIN files f ON s.file_id = f.id
                    WHERE s.name = refs.target_name
                      AND f.dir = (SELECT dir FROM files WHERE id = refs.source_file_id)
@@ -503,7 +629,7 @@ impl IndexPipeline {
                  target_file_id = (SELECT s.file_id FROM symbols s WHERE s.name = refs.target_name LIMIT 1),
                  target_symbol_id = (SELECT s.id FROM symbols s WHERE s.name = refs.target_name LIMIT 1),
                  confidence = 0.5
-             WHERE confidence = 0.0 AND kind != 'import'
+             WHERE confidence = 0.0 AND kind NOT IN ('import', 'import_binding')
                AND EXISTS (SELECT 1 FROM symbols WHERE name = refs.target_name)",
             [],
         )?;
@@ -765,4 +891,52 @@ pub struct EmbedStats {
     pub embedded: u64,
     pub skipped: u64,
     pub duration_ms: u64,
+}
+
+/// Collapse `.` / `..` segments in a repo-relative path (no filesystem).
+fn normalize_rel_path(p: &str) -> String {
+    let mut parts: Vec<&str> = Vec::new();
+    for seg in p.split('/') {
+        match seg {
+            "" | "." => {}
+            ".." => {
+                parts.pop();
+            }
+            s => parts.push(s),
+        }
+    }
+    parts.join("/")
+}
+
+/// Match a normalized module base against indexed file paths, trying the
+/// TS/JS resolution candidates: exact, with extensions, ESM `.js`→`.ts`
+/// rewrites, and directory index files.
+fn resolve_module_file(base: &str, paths: &std::collections::HashMap<String, i64>) -> Option<i64> {
+    if let Some(&id) = paths.get(base) {
+        return Some(id);
+    }
+    // ESM-style `./x.js` source written in TS → x.ts / x.tsx
+    for (from, to) in [
+        (".js", ".ts"),
+        (".js", ".tsx"),
+        (".jsx", ".tsx"),
+        (".mjs", ".mts"),
+    ] {
+        if let Some(stem) = base.strip_suffix(from)
+            && let Some(&id) = paths.get(&format!("{stem}{to}"))
+        {
+            return Some(id);
+        }
+    }
+    for ext in [".ts", ".tsx", ".js", ".jsx", ".mts", ".cts"] {
+        if let Some(&id) = paths.get(&format!("{base}{ext}")) {
+            return Some(id);
+        }
+    }
+    for idx in ["/index.ts", "/index.tsx", "/index.js", "/index.jsx"] {
+        if let Some(&id) = paths.get(&format!("{base}{idx}")) {
+            return Some(id);
+        }
+    }
+    None
 }

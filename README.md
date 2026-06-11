@@ -123,7 +123,7 @@ This is not a compiler. Measured against SCIP (compiler-grade) ground truth — 
 | Corpus | Language | Gated precision | Gated recall |
 |--------|----------|----------------:|-------------:|
 | gin v1.10.0 | Go | **99.2%** | **82.6%** |
-| hono v4.6.14 | TypeScript | **95.3%** | 51.3%* |
+| hono v4.6.14 | TypeScript | **98.5%** | 58.5%* |
 | click 8.1.8 | Python | **98.1%** | **90.8%** |
 
 \* hono assigns router verbs (`app.get/post/use`) at runtime — statically
