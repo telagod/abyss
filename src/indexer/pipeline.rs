@@ -635,8 +635,8 @@ impl IndexPipeline {
         )?;
 
         info!(
-            "resolved: L0(receiver-type)={}, L1(same-file)={}, L2(same-pkg-unique)={}, L3(qualifier)={}, L4(global-unique)={}, L4a(same-file-qual)={}, L4b(same-pkg-multi)={}, L5(ambiguous)={}",
-            l0, l1, l2, l3q, l3, l4a, l2b, l4
+            "resolved: L0(receiver-type)={}, L0b(import-binding)={}, L1(same-file)={}, L2(same-pkg-unique)={}, L3(qualifier)={}, L4(global-unique)={}, L4a(same-file-qual)={}, L4b(same-pkg-multi)={}, L5(ambiguous)={}",
+            l0, l0b, l1, l2, l3q, l3, l4a, l2b, l4
         );
 
         Ok(())
