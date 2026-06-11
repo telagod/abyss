@@ -12,13 +12,13 @@ only in-repo symbols count (abyss does not resolve into dependencies).
 - **precision** — when abyss commits to an answer, how often is it right
 - **recall** — how much of the SCIP-known call graph abyss resolves correctly
 
-## Results — 2026-06-11, abyss v0.3.2-dev (three languages)
+## Results — 2026-06-11, abyss v0.3.3-dev (three languages)
 
 | Corpus | Language | Truth pairs | Gated precision | Gated recall | All precision | All recall |
 |--------|----------|------------:|----------------:|-------------:|--------------:|-----------:|
-| gin v1.10.0 | Go | 2,968 | **98.2%** | **82.7%** | 89.1% | 87.2% |
-| hono v4.6.14 | TypeScript | 5,611 | **93.4%** | **51.0%** | 70.8% | 65.6% |
-| click 8.1.8 | Python | 573 | **97.8%** | **92.8%** | 96.0% | 93.0% |
+| gin v1.10.0 | Go | 2,968 | **99.2%** | **82.6%** | 89.1% | 87.2% |
+| hono v4.6.14 | TypeScript | 5,611 | **95.3%** | **51.3%** | 71.3% | 66.0% |
+| click 8.1.8 | Python | 573 | **98.1%** | **90.8%** | 95.5% | 92.5% |
 
 Gated = `--min-confidence 0.7` (the default). abyss index time per corpus:
 ~150–900ms; the SCIP indexers take 40s–4min on the same machines.
@@ -27,31 +27,75 @@ Gated = `--min-confidence 0.7` (the default). abyss index time per corpus:
 
 | Tier | Strategy | Correct | Wrong | Precision |
 |------|----------|--------:|------:|----------:|
-| 1.0 | same file (untyped receivers only) | 666 | 31 | 95.6% |
-| 0.95 | receiver-type match + same-package unique | 1,785 | 12 | **99.3%** |
+| 1.0 | same file (bare + self-like calls) | 656 | 0 | **100%** |
+| 0.95 | receiver-type match + same-package unique | 1,788 | 16 | 99.1% |
 | 0.9 | import qualifier, unique candidate | 1 | 0 | 100% |
-| 0.8 | global unique | 1 | 2 | 33.3% |
-| 0.6 / 0.5 | demoted / ambiguous | 136 | 273 | 33.3% |
+| 0.8 | global unique | 6 | 3 | 66.7% |
+| 0.6 / 0.5 | demoted / ambiguous | 138 | 299 | 31.6% |
 
 ### hono (TypeScript) — scip-typescript
 
 | Tier | Strategy | Correct | Wrong | Precision |
 |------|----------|--------:|------:|----------:|
-| 1.0 | same file (untyped receivers only) | 312 | 69 | 81.9% |
-| 0.95 | receiver-type match + same-package unique | 2,020 | 35 | **98.3%** |
+| 1.0 | same file (bare + self-like calls) | 301 | 3 | **99.0%** |
+| 0.95 | receiver-type match + same-package unique | 2,045 | 40 | 98.1% |
 | 0.9 | import qualifier, unique candidate | 2 | 0 | 100% |
-| 0.8 | global unique | 526 | 98 | 84.3% |
-| 0.6 / 0.5 | demoted / ambiguous | 819 | 1,313 | 38.4% |
+| 0.8 | global unique | 533 | 98 | 84.5% |
+| 0.6 / 0.5 | demoted / ambiguous | 820 | 1,352 | 37.8% |
 
 ### click (Python) — scip-python
 
 | Tier | Strategy | Correct | Wrong | Precision |
 |------|----------|--------:|------:|----------:|
-| 1.0 | same file | 363 | 9 | 97.6% |
-| 0.95 | same-package unique | 169 | 2 | **98.8%** |
-| 0.6 / 0.5 | demoted / ambiguous | 1 | 11 | 8.3% |
+| 1.0 | same file (bare + self-like calls) | 189 | 4 | **97.9%** |
+| 0.95 | receiver-type match + same-package unique | 313 | 6 | 98.1% |
+| 0.8 | global unique | 18 | 0 | 100% |
+| 0.6 / 0.5 | demoted / ambiguous | 10 | 15 | 40.0% |
 
 ## How the eval drove the resolver (chronicle)
+
+### Round 4 — 2026-06-11: the 1.0 tier earns its name
+
+The 1.0 tier was the *least* precise confident tier on hono (81.9%) — worse
+than 0.95 and 0.9. Dissection by receiver shape across all three corpora
+showed exactly where the lies lived:
+
+| Call shape at 1.0 | Correct | Wrong | Precision |
+|-------------------|--------:|------:|----------:|
+| bare `foo()` | 1,086 | 4 | 99.6% |
+| self-like `this/self/cls/super()` | 185 | 3 | 98.4% |
+| qualified `x.foo()`, globally-unique name | 39 | 1 | 97.5% |
+| qualified `x.foo()`, common name | 31 | 101 | **23.5%** |
+
+Common-name qualified calls were being claimed by unrelated same-file
+symbols: hono's `app.get()` matched a `new Proxy(...)` trap method named
+`get`; gin's `x.Foo()` matched same-file free functions. Three fixes,
+each verified on all corpora:
+
+1. **L1 qualifier guard** — same-file 1.0 now only for bare calls and
+   self-like receivers. Qualified leftovers fall to the qualifier/global
+   tiers; a new L4a same-file fallback at 0.6 keeps them visible as
+   possibles. Globally-unique names re-resolve via L4 at 0.8 — no loss.
+2. **Python receiver lite inference** (mirror of Go/TS): annotated
+   parameters (`ctx: Context`, incl. `"Context"` forward refs), `x = Type()`
+   CapWord constructor assignments, `x: Type = ...`, and `self`/`cls` →
+   enclosing class.
+3. **Methods in small classes kept their owner** — a function nested in a
+   class-like node is now a Method symbol with `scope` = the class. Before,
+   Python/Rust methods only got a scope when the class was big enough to be
+   split into per-method chunks (the chunk-scope backfill), so L0 was blind
+   to every class that fit in one chunk.
+
+The self-like exemption matters for inheritance: `self.fail()` inside
+click's `Choice` has an inferred receiver type but no `Choice`-owned `fail`
+(it lives on the base class `ParamType`, same file) — same-file 1.0 is the
+right call, measured 98.4%.
+
+Net: tier 1.0 is now 97.9–100% everywhere (was 81.9% on hono). Gated:
+gin 98.2→**99.2%** P; hono 93.4→**95.3%** P, recall +0.3pp; click
+97.8→**98.1%** P, recall 92.8→90.8% — the 2pp recall trade is calls whose
+receiver genuinely cannot be typed statically (loop variables, factory
+returns); they now sit at 0.6 as possibles instead of posing as facts.
 
 ### Round 3 — 2026-06-11: TypeScript corpus exposed two structural gaps
 

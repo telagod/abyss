@@ -349,6 +349,19 @@ impl IndexPipeline {
         // unindexed owners), proximity is a measured-bad guess — demote
         // instead. Eval on hono: app.get() (runtime-assigned method) was
         // claimed same-file 185×.
+        //
+        // Qualified calls (x.foo() with an unknown receiver) are excluded too:
+        // measured across gin/hono/click, qualified same-file matches with a
+        // non-unique name were 23.5% precision (31 correct / 101 wrong) —
+        // common names (get/route) get claimed by unrelated same-file symbols
+        // (object-literal Proxy traps, other classes' methods). Bare calls are
+        // 99.6% and self-like receivers (this/self/cls/super()) 98.4% — only
+        // those keep the 1.0 tier. Self-like receivers are exempt from the
+        // typed-receiver exclusion: self.m() where L0 found no owned symbol
+        // is usually an INHERITED method (click: ParamType.fail called from
+        // every subclass), and base + subclass overwhelmingly share a file.
+        // Qualified leftovers fall through to the qualifier/global tiers and,
+        // failing those, the 0.6 same-file fallback below the gate.
         let l1 = conn.execute(
             "UPDATE refs SET
                  target_file_id = source_file_id,
@@ -356,7 +369,9 @@ impl IndexPipeline {
                      WHERE s.name = refs.target_name AND s.file_id = refs.source_file_id LIMIT 1),
                  confidence = 1.0
              WHERE confidence = 0.0 AND kind != 'import'
-               AND receiver_type IS NULL
+               AND ((receiver_type IS NULL AND target_qualifier IS NULL)
+                    OR target_qualifier IN ('this', 'self', 'cls', 'super')
+                    OR target_qualifier GLOB 'super(*')
                AND EXISTS (SELECT 1 FROM symbols s
                    WHERE s.name = refs.target_name AND s.file_id = refs.source_file_id)",
             [],
@@ -440,6 +455,23 @@ impl IndexPipeline {
             [],
         )?;
 
+        // Level 4a: Same-file fallback for qualified calls (confidence = 0.6).
+        // x.foo() with an unknown receiver and a same-file candidate that the
+        // earlier tiers didn't claim: still the best single guess, but
+        // measured-bad (23.5% on common names) — surfaced as a possible, not
+        // a fact, below the 0.7 gate.
+        let l4a = conn.execute(
+            "UPDATE refs SET
+                 target_file_id = source_file_id,
+                 target_symbol_id = (SELECT s.id FROM symbols s
+                     WHERE s.name = refs.target_name AND s.file_id = refs.source_file_id LIMIT 1),
+                 confidence = 0.6
+             WHERE confidence = 0.0 AND kind != 'import'
+               AND EXISTS (SELECT 1 FROM symbols s
+                   WHERE s.name = refs.target_name AND s.file_id = refs.source_file_id)",
+            [],
+        )?;
+
         // Level 4b: Same-package, multiple candidates (confidence = 0.6).
         // Below the default 0.7 gate: surfaced as possible_callers, not facts.
         let l2b = conn.execute(
@@ -477,8 +509,8 @@ impl IndexPipeline {
         )?;
 
         info!(
-            "resolved: L0(receiver-type)={}, L1(same-file)={}, L2(same-pkg-unique)={}, L3(qualifier)={}, L4(global-unique)={}, L4b(same-pkg-multi)={}, L5(ambiguous)={}",
-            l0, l1, l2, l3q, l3, l2b, l4
+            "resolved: L0(receiver-type)={}, L1(same-file)={}, L2(same-pkg-unique)={}, L3(qualifier)={}, L4(global-unique)={}, L4a(same-file-qual)={}, L4b(same-pkg-multi)={}, L5(ambiguous)={}",
+            l0, l1, l2, l3q, l3, l4a, l2b, l4
         );
 
         Ok(())

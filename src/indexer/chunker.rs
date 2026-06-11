@@ -333,8 +333,16 @@ impl Chunker {
         let kind = node.kind();
 
         let symbol_kind = match kind {
+            // A function nested in a class-like owner is a method: Python and
+            // Rust have no dedicated method node kind, so without this the
+            // owner scope is lost for small classes that fit in one chunk
+            // (the chunk-scope backfill only fires when the class is split).
             "function_definition" | "function_declaration" | "function_item" => {
-                Some(SymbolKind::Function)
+                Some(if owner.is_some() {
+                    SymbolKind::Method
+                } else {
+                    SymbolKind::Function
+                })
             }
             "method_definition" | "method_declaration" => Some(SymbolKind::Method),
             // TS/JS method-as-class-field: `text = (...) => {...}`. Data fields

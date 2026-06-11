@@ -13,7 +13,9 @@ Metrics (per confidence tier and overall):
   precision = correct / predicted          (when abyss commits to an answer)
   recall    = correct / ground-truth pairs (how much of the known graph we get)
 
-Usage: compare.py <repo_dir> [--json]
+Usage: compare.py <repo_dir> [--json] [--dump TIER]
+  --dump TIER   print every joined pair at that confidence tier (e.g. 1.0,
+                0.6) as TSV: verdict, src:line, name, predicted, truth
 """
 
 import json
@@ -78,6 +80,9 @@ def load_abyss(db_path: str):
 def main():
     repo = sys.argv[1].rstrip("/")
     as_json = "--json" in sys.argv
+    dump_tier = None
+    if "--dump" in sys.argv:
+        dump_tier = float(sys.argv[sys.argv.index("--dump") + 1])
 
     defs, scip_refs = load_scip(f"{repo}/scip.json")
     abyss_refs = load_abyss(f"{repo}/.code-abyss/index.db")
@@ -106,8 +111,12 @@ def main():
         tier = min(tiers, key=lambda t: abs(t - conf))
         if target == gt_file:
             stats[tier]["correct"] += 1
+            verdict = "OK"
         else:
             stats[tier]["wrong"] += 1
+            verdict = "WRONG"
+        if dump_tier is not None and tier == dump_tier:
+            print(f"{verdict}\t{src}:{line}\t{name}\t{target}\t{gt_file}")
 
     def agg(min_conf):
         c = sum(s["correct"] for t, s in stats.items() if t >= min_conf)

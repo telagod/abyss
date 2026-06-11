@@ -111,17 +111,20 @@ References resolve through tiered heuristics, each tagged with a confidence scor
 | 6 | Ambiguous (first candidate) | 0.5 |
 
 Receiver types are inferred lite — method receivers, typed parameters,
-`x := T{}` / `new T()` / `NewT()` declarations, `this` — no data-flow, no
-interface resolution. When a receiver's type is known, only type-consistent
-evidence may resolve the call; name-only proximity guesses demote instead.
+`x := T{}` / `new T()` / `NewT()` / `x = Type()` declarations, `this`/`self` —
+no data-flow, no interface resolution. When a receiver's type is known, only
+type-consistent evidence may resolve the call; name-only proximity guesses
+demote instead. Full confidence is reserved for call shapes measured ≥98%
+correct (bare and self-like calls); qualified calls with an unknown receiver
+never pose as facts.
 
 This is not a compiler. Measured against SCIP (compiler-grade) ground truth — published whatever the numbers say:
 
 | Corpus | Language | Gated precision | Gated recall |
 |--------|----------|----------------:|-------------:|
-| gin v1.10.0 | Go | **98.2%** | **82.7%** |
-| hono v4.6.14 | TypeScript | **93.4%** | 51.0%* |
-| click 8.1.8 | Python | **97.8%** | **92.8%** |
+| gin v1.10.0 | Go | **99.2%** | **82.6%** |
+| hono v4.6.14 | TypeScript | **95.3%** | 51.3%* |
+| click 8.1.8 | Python | **98.1%** | **90.8%** |
 
 \* hono assigns router verbs (`app.get/post/use`) at runtime — statically
 unresolvable by design; they surface as `possible_callers`.

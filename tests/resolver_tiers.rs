@@ -381,6 +381,100 @@ fn tier0_ts_class_field_method_and_new_inference() {
     assert_eq!(refs[0].target_path.as_deref(), Some("src/context.ts"));
 }
 
+// ═══ L1 qualifier guard + L4a same-file fallback (v0.3.3) ═══
+
+#[test]
+fn qualified_unknown_receiver_same_file_demotes_to_0_6() {
+    // x.Foo() where the receiver type is unknown and a free function Foo
+    // happens to live in the same file: measured 23.5% precision across
+    // corpora — must NOT be claimed at 1.0; falls to the 0.6 same-file
+    // fallback below the gate.
+    let fx = index_fixture(&[(
+        "app/a.go",
+        "package app\n\nfunc Handle() int { return 1 }\n\nfunc Use(x SomeIface) int { return x.Handle() }\n",
+    )]);
+    let refs = call_refs_to(&fx.repo, "Handle");
+    assert_eq!(refs.len(), 1, "{refs:?}");
+    assert_eq!(
+        refs[0].confidence, 0.6,
+        "qualified call must not get same-file 1.0"
+    );
+    assert_eq!(refs[0].target_path.as_deref(), Some("app/a.go"));
+}
+
+#[test]
+fn python_self_inherited_method_resolves_same_file_at_1_0() {
+    // self.fail() inside Choice where fail is defined on the BASE class
+    // ParamType in the same file (the click pattern): L0 finds no
+    // Choice-owned `fail`, but the self-like exemption keeps same-file 1.0.
+    let fx = index_fixture(&[(
+        "types.py",
+        "class ParamType:\n    def fail(self, msg):\n        raise ValueError(msg)\n\nclass Choice(ParamType):\n    def convert(self, value):\n        self.fail('bad')\n",
+    )]);
+    let refs = call_refs_to(&fx.repo, "fail");
+    assert_eq!(refs.len(), 1, "{refs:?}");
+    assert_eq!(
+        refs[0].confidence, 1.0,
+        "self-like inherited call keeps 1.0: {refs:?}"
+    );
+    assert_eq!(refs[0].target_path.as_deref(), Some("types.py"));
+}
+
+// ═══ L0 receiver tier: Python (v0.3.3) ═══
+
+#[test]
+fn tier0_python_annotated_parameter_resolves_cross_file() {
+    // def run(ctx: Context) → ctx.invoke() resolves to Context's file even
+    // though `invoke` exists on two classes in the package.
+    let fx = index_fixture(&[
+        (
+            "pkg/core.py",
+            "class Context:\n    def invoke(self):\n        return 1\n",
+        ),
+        (
+            "pkg/other.py",
+            "class Runner:\n    def invoke(self):\n        return 2\n",
+        ),
+        (
+            "pkg/use.py",
+            "def run(ctx: Context):\n    return ctx.invoke()\n",
+        ),
+    ]);
+    let refs: Vec<_> = call_refs_to(&fx.repo, "invoke")
+        .into_iter()
+        .filter(|r| r.source_path == "pkg/use.py")
+        .collect();
+    assert_eq!(refs.len(), 1, "{refs:?}");
+    assert_eq!(refs[0].confidence, 0.95);
+    assert_eq!(refs[0].target_path.as_deref(), Some("pkg/core.py"));
+}
+
+#[test]
+fn tier0_python_constructor_assignment_inference() {
+    // ed = Editor() → ed: Editor by the CapWord constructor convention.
+    let fx = index_fixture(&[
+        (
+            "pkg/editor.py",
+            "class Editor:\n    def edit_file(self, name):\n        return name\n",
+        ),
+        (
+            "pkg/pager.py",
+            "class Pager:\n    def edit_file(self, name):\n        return name\n",
+        ),
+        (
+            "pkg/use.py",
+            "def open_editor():\n    ed = Editor()\n    return ed.edit_file('x')\n",
+        ),
+    ]);
+    let refs: Vec<_> = call_refs_to(&fx.repo, "edit_file")
+        .into_iter()
+        .filter(|r| r.source_path == "pkg/use.py")
+        .collect();
+    assert_eq!(refs.len(), 1, "{refs:?}");
+    assert_eq!(refs[0].confidence, 0.95);
+    assert_eq!(refs[0].target_path.as_deref(), Some("pkg/editor.py"));
+}
+
 #[test]
 fn tier0_ts_typed_receiver_without_definition_demotes() {
     // Receiver type known but the method has no static definition anywhere
