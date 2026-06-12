@@ -160,14 +160,41 @@ fn collect_refs(
         }
         "import_from_statement" => {
             if let Some(module) = node.child_by_field_name("module_name") {
+                let module_path = text(&module, source);
                 refs.push(RawReference {
                     line,
                     source_symbol: None,
-                    target_name: text(&module, source),
+                    target_name: module_path.clone(),
                     target_qualifier: None,
                     receiver_type: None,
                     kind: RefKind::Import,
                 });
+                // `from .mod import a, b as c` — each LOCAL name becomes an
+                // ImportBinding pointing at the module. Wildcards bind
+                // nothing nameable.
+                let mut cursor = node.walk();
+                for name in node.children_by_field_name("name", &mut cursor) {
+                    let local = match name.kind() {
+                        "dotted_name" => Some(text(&name, source)),
+                        "aliased_import" => {
+                            name.child_by_field_name("alias").map(|a| text(&a, source))
+                        }
+                        _ => None,
+                    };
+                    if let Some(local) = local
+                        && !local.contains('.')
+                        && !local.is_empty()
+                    {
+                        refs.push(RawReference {
+                            line,
+                            source_symbol: None,
+                            target_name: local,
+                            target_qualifier: Some(module_path.clone()),
+                            receiver_type: None,
+                            kind: RefKind::ImportBinding,
+                        });
+                    }
+                }
             }
         }
         "import_statement" => {

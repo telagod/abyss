@@ -338,9 +338,9 @@ impl IndexPipeline {
             }
         }
 
-        let bindings: Vec<(i64, String, String)> = {
+        let bindings: Vec<(i64, String, String, Option<String>)> = {
             let mut stmt = conn.prepare(
-                "SELECT r.id, f.dir, r.target_qualifier FROM refs r
+                "SELECT r.id, f.dir, r.target_qualifier, f.language FROM refs r
                  JOIN files f ON r.source_file_id = f.id
                  WHERE r.kind = 'import_binding' AND r.target_file_id IS NULL
                    AND r.target_qualifier IS NOT NULL",
@@ -350,6 +350,7 @@ impl IndexPipeline {
                     r.get::<_, i64>(0)?,
                     r.get::<_, String>(1)?,
                     r.get::<_, String>(2)?,
+                    r.get::<_, Option<String>>(3)?,
                 ))
             })?;
             rows.collect::<std::result::Result<_, _>>()?
@@ -358,13 +359,19 @@ impl IndexPipeline {
         conn.execute_batch("BEGIN")?;
         {
             let mut update = conn.prepare("UPDATE refs SET target_file_id = ?1 WHERE id = ?2")?;
-            for (id, dir, module) in bindings {
-                // Only relative imports resolve in-repo; package imports stay NULL.
-                if !module.starts_with('.') {
-                    continue;
-                }
-                let base = normalize_rel_path(&format!("{dir}{module}"));
-                if let Some(fid) = resolve_module_file(&base, &paths) {
+            for (id, dir, module, language) in bindings {
+                let fid = match language.as_deref() {
+                    Some("python") => resolve_py_module(&dir, &module, &paths),
+                    Some("java") => resolve_java_class(&module, &paths),
+                    // TS/JS: only relative imports resolve in-repo; package
+                    // imports stay NULL.
+                    _ if module.starts_with('.') => {
+                        let base = normalize_rel_path(&format!("{dir}{module}"));
+                        resolve_module_file(&base, &paths)
+                    }
+                    _ => None,
+                };
+                if let Some(fid) = fid {
                     update.execute(rusqlite::params![fid, id])?;
                 }
             }
@@ -906,6 +913,83 @@ fn normalize_rel_path(p: &str) -> String {
         }
     }
     parts.join("/")
+}
+
+/// Python module → file: relative (`.mod`, `..pkg.mod`) resolves against the
+/// importing file's dir (one leading dot = current package, each extra dot =
+/// one level up); absolute dotted paths (`click.types`) match exactly or by
+/// unique path suffix (handles `src/` layouts). Candidates: `<base>.py`,
+/// `<base>/__init__.py`.
+fn resolve_py_module(
+    dir: &str,
+    module: &str,
+    paths: &std::collections::HashMap<String, i64>,
+) -> Option<i64> {
+    let base = if module.starts_with('.') {
+        let dots = module.len() - module.trim_start_matches('.').len();
+        let rest = module.trim_start_matches('.');
+        let mut d = dir.trim_end_matches('/');
+        for _ in 1..dots {
+            d = match d.rfind('/') {
+                Some(pos) => &d[..pos],
+                None => "",
+            };
+        }
+        match (d.is_empty(), rest.is_empty()) {
+            (true, _) => rest.replace('.', "/"),
+            (false, true) => d.to_string(),
+            (false, false) => format!("{d}/{}", rest.replace('.', "/")),
+        }
+    } else {
+        module.replace('.', "/")
+    };
+    if base.is_empty() {
+        return None;
+    }
+    for cand in [format!("{base}.py"), format!("{base}/__init__.py")] {
+        if let Some(&id) = paths.get(&cand) {
+            return Some(id);
+        }
+        // src-layout etc.: unique suffix match only — ambiguity stays NULL.
+        let suffix = format!("/{cand}");
+        let mut hit = None;
+        for (p, &id) in paths {
+            if p.ends_with(&suffix) {
+                if hit.is_some() {
+                    hit = None;
+                    break;
+                }
+                hit = Some(id);
+            }
+        }
+        if hit.is_some() {
+            return hit;
+        }
+    }
+    None
+}
+
+/// Java `import com.foo.Bar` → the unique file whose path ends with
+/// `/com/foo/Bar.java` (or equals `com/foo/Bar.java`). Ambiguity stays NULL.
+fn resolve_java_class(
+    import_path: &str,
+    paths: &std::collections::HashMap<String, i64>,
+) -> Option<i64> {
+    let cand = format!("{}.java", import_path.replace('.', "/"));
+    if let Some(&id) = paths.get(&cand) {
+        return Some(id);
+    }
+    let suffix = format!("/{cand}");
+    let mut hit = None;
+    for (p, &id) in paths {
+        if p.ends_with(&suffix) {
+            if hit.is_some() {
+                return None;
+            }
+            hit = Some(id);
+        }
+    }
+    hit
 }
 
 /// Match a normalized module base against indexed file paths, trying the

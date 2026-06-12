@@ -18,7 +18,7 @@ only in-repo symbols count (abyss does not resolve into dependencies).
 |--------|----------|------------:|----------------:|-------------:|--------------:|-----------:|
 | gin v1.10.0 | Go | 2,968 | **99.2%** | **82.6%** | 89.1% | 87.2% |
 | hono v4.6.14 | TypeScript | 5,611 | **98.5%** | **58.5%** | 77.1% | 73.1% |
-| click 8.1.8 | Python | 573 | **98.1%** | **90.8%** | 95.5% | 92.5% |
+| click 8.1.8 | Python | 573 | **98.7%** | **94.2%** | 97.5% | 95.8% |
 
 Gated = `--min-confidence 0.7` (the default). abyss index time per corpus:
 ~150–900ms; the SCIP indexers take 40s–4min on the same machines.
@@ -47,12 +47,30 @@ Gated = `--min-confidence 0.7` (the default). abyss index time per corpus:
 
 | Tier | Strategy | Correct | Wrong | Precision |
 |------|----------|--------:|------:|----------:|
-| 1.0 | same file (bare + self-like calls) | 189 | 4 | **97.9%** |
-| 0.95 | receiver-type match + same-package unique | 313 | 6 | 98.1% |
+| 1.0 | same file (bare + self-like calls) | 189 | 1 | **99.5%** |
+| 0.95 | receiver-type + named-import binding + same-package unique | 333 | 6 | 98.2% |
 | 0.8 | global unique | 18 | 0 | 100% |
-| 0.6 / 0.5 | demoted / ambiguous | 10 | 15 | 40.0% |
+| 0.6 / 0.5 | demoted / ambiguous | 9 | 7 | 56.3% |
 
 ## How the eval drove the resolver (chronicle)
+
+### Round 6 — 2026-06-11: bindings for Python and Java
+
+The TS binding tier (round 5) ported in one sitting:
+
+- **Python**: `from .mod import a, b as c` → per-name bindings; relative
+  modules resolve against the importing file's package (one leading dot =
+  current package, each extra dot = one level up), absolute dotted paths
+  match exactly or by *unique* path suffix (src-layouts). Candidates:
+  `<base>.py`, `<base>/__init__.py`.
+- **Java**: `import com.foo.Bar` binds the simple name `Bar` to the unique
+  file ending `/com/foo/Bar.java` — disambiguates same-named classes across
+  packages for constructor calls and type refs.
+
+click: gated 98.1/90.8 → **98.7% / 94.2%** (both up; recall now above the
+pre-round-4 92.8 with precision +0.9pp on top), all-metrics 97.5/95.8,
+unresolved 18 → 10, tier 1.0 at 99.5%. gin/hono: zero change. Java has no
+SCIP ground truth yet — bindings there are covered by contract tests only.
 
 ### Round 5 — 2026-06-11: named-import bindings (TypeScript)
 

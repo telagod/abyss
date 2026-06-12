@@ -103,12 +103,13 @@ References resolve through tiered heuristics, each tagged with a confidence scor
 | Tier | Strategy | Confidence |
 |------|----------|-----------|
 | 0 | Receiver-type match (`x.M()` where `x: T` is statically inferrable) | 0.95 |
-| 1 | Same file | 1.0 |
+| 0b | Named-import binding (`import { x } from './m'`, `from m import x`, `import com.f.X`; barrel re-export chains chased) | 0.95 |
+| 1 | Same file (bare + self-like calls only) | 1.0 |
 | 2 | Same package/directory, unique candidate | 0.95 |
 | 3 | Import-qualifier match, unique candidate | 0.9 |
-| 4 | Globally unique symbol | 0.8 |
+| 4 | Globally unique symbol (member-shaped for qualified calls) | 0.8 |
 | 5 | Same package, multiple candidates (demoted) | 0.6 |
-| 6 | Ambiguous (first candidate) | 0.5 |
+| 6 | Same-file fallback for qualified calls / ambiguous | 0.6 / 0.5 |
 
 Receiver types are inferred lite — method receivers, typed parameters,
 `x := T{}` / `new T()` / `NewT()` / `x = Type()` declarations, `this`/`self` —
@@ -124,7 +125,7 @@ This is not a compiler. Measured against SCIP (compiler-grade) ground truth — 
 |--------|----------|----------------:|-------------:|
 | gin v1.10.0 | Go | **99.2%** | **82.6%** |
 | hono v4.6.14 | TypeScript | **98.5%** | 58.5%* |
-| click 8.1.8 | Python | **98.1%** | **90.8%** |
+| click 8.1.8 | Python | **98.7%** | **94.2%** |
 
 \* hono assigns router verbs (`app.get/post/use`) at runtime — statically
 unresolvable by design; they surface as `possible_callers`.

@@ -137,11 +137,26 @@ fn collect_refs(
                 refs.push(RawReference {
                     line,
                     source_symbol: None,
-                    target_name: path,
+                    target_name: path.clone(),
                     target_qualifier: None,
                     receiver_type: None,
                     kind: RefKind::Import,
                 });
+                // `import com.foo.Bar` binds the simple name Bar. Wildcard
+                // imports (`com.foo.*`) bind nothing nameable — skipped.
+                if let Some(simple) = path.rsplit('.').next()
+                    && simple != "*"
+                    && !simple.is_empty()
+                {
+                    refs.push(RawReference {
+                        line,
+                        source_symbol: None,
+                        target_name: simple.to_string(),
+                        target_qualifier: Some(path.clone()),
+                        receiver_type: None,
+                        kind: RefKind::ImportBinding,
+                    });
+                }
             }
         }
         _ => {}

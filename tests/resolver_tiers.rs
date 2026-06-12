@@ -216,6 +216,78 @@ func Out() int { return Render() }
 // ═══ L0b: named-import binding tier (v0.3.3) ═══
 
 #[test]
+fn python_from_import_binding_resolves_cross_package() {
+    // `from util import pfn` + bare pfn(): the binding must beat the
+    // ambiguous-global tier despite a same-named decoy elsewhere.
+    let fx = index_fixture(&[
+        ("util.py", "def pfn():\n    return 1\n"),
+        ("other/decoy.py", "def pfn():\n    return 2\n"),
+        (
+            "app/main.py",
+            "from util import pfn\n\ndef caller():\n    return pfn()\n",
+        ),
+    ]);
+    let refs: Vec<_> = call_refs_to(&fx.repo, "pfn")
+        .into_iter()
+        .filter(|r| r.source_path == "app/main.py")
+        .collect();
+    assert_eq!(refs.len(), 1, "{refs:?}");
+    assert_eq!(refs[0].confidence, 0.95);
+    assert_eq!(refs[0].target_path.as_deref(), Some("util.py"));
+}
+
+#[test]
+fn python_relative_import_binding_resolves() {
+    // `from .helpers import fmt` — one leading dot = the importing file's
+    // package.
+    let fx = index_fixture(&[
+        ("pkg/helpers.py", "def fmt(s):\n    return s\n"),
+        ("other/helpers.py", "def fmt(s):\n    return s + s\n"),
+        (
+            "pkg/main.py",
+            "from .helpers import fmt\n\ndef caller():\n    return fmt('x')\n",
+        ),
+    ]);
+    let refs: Vec<_> = call_refs_to(&fx.repo, "fmt")
+        .into_iter()
+        .filter(|r| r.source_path == "pkg/main.py")
+        .collect();
+    assert_eq!(refs.len(), 1, "{refs:?}");
+    assert_eq!(refs[0].confidence, 0.95);
+    assert_eq!(refs[0].target_path.as_deref(), Some("pkg/helpers.py"));
+}
+
+#[test]
+fn java_import_binding_resolves_constructor() {
+    // `import com.foo.Helper` + `new Helper()` — the binding must pick
+    // com/foo over a same-named class in another package.
+    let fx = index_fixture(&[
+        (
+            "src/com/foo/Helper.java",
+            "package com.foo;\n\npublic class Helper {\n    public int run() { return 1; }\n}\n",
+        ),
+        (
+            "src/com/bar/Helper.java",
+            "package com.bar;\n\npublic class Helper {\n    public int run() { return 2; }\n}\n",
+        ),
+        (
+            "src/com/app/Main.java",
+            "package com.app;\n\nimport com.foo.Helper;\n\npublic class Main {\n    public int go() { return new Helper().run(); }\n}\n",
+        ),
+    ]);
+    let refs: Vec<_> = call_refs_to(&fx.repo, "Helper")
+        .into_iter()
+        .filter(|r| r.source_path == "src/com/app/Main.java")
+        .collect();
+    assert_eq!(refs.len(), 1, "{refs:?}");
+    assert_eq!(refs[0].confidence, 0.95);
+    assert_eq!(
+        refs[0].target_path.as_deref(),
+        Some("src/com/foo/Helper.java")
+    );
+}
+
+#[test]
 fn ts_named_import_binding_beats_global_unique() {
     // `css` is imported from helper/index.ts whose definition shape
     // (`export const css = ctx.css`) is invisible to the chunker, while an
