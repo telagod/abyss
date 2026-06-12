@@ -12,14 +12,15 @@ only in-repo symbols count (abyss does not resolve into dependencies).
 - **precision** — when abyss commits to an answer, how often is it right
 - **recall** — how much of the SCIP-known call graph abyss resolves correctly
 
-## Results — 2026-06-12, abyss v0.3.3-dev (four languages)
+## Results — 2026-06-12, abyss v0.3.3-dev (four languages, five corpora)
 
 | Corpus | Language | Truth pairs | Gated precision | Gated recall | All precision | All recall |
 |--------|----------|------------:|----------------:|-------------:|--------------:|-----------:|
 | gin v1.10.0 | Go | 2,968 | **99.3%** | **82.6%** | 89.2% | 88.0% |
 | hono v4.6.14 | TypeScript | 5,611 | **98.6%** | **58.7%** | 77.2% | 73.3% |
 | click 8.1.8 | Python | 573 | **98.7%** | **94.6%** | 97.5% | 96.2% |
-| abyss @8099aeb | Rust | 450 | **100.0%** | **86.7%** | 95.3% | 95.3% |
+| ripgrep 14.1.1 | Rust | 4,283 | **98.9%** | **67.8%** | 85.4% | 85.3% |
+| abyss @8099aeb | Rust (dogfood) | 450 | **100.0%** | **84.2%** | 95.3% | 95.3% |
 
 Gated = `--min-confidence 0.7` (the default). abyss index time per corpus:
 ~150–900ms; the SCIP indexers take 40s–4min on the same machines.
@@ -53,16 +54,54 @@ Gated = `--min-confidence 0.7` (the default). abyss index time per corpus:
 | 0.8 | global unique | 18 | 0 | 100% |
 | 0.6 / 0.5 | demoted / ambiguous | 9 | 7 | 56.3% |
 
+### ripgrep (Rust, third-party) — rust-analyzer scip
+
+| Tier | Strategy | Correct | Wrong | Precision |
+|------|----------|--------:|------:|----------:|
+| 1.0 | same file (bare + self-like calls) | 873 | 0 | **100%** |
+| 0.95 | receiver-type + use-binding | 1,812 | 3 | 99.8% |
+| 0.8 | global unique | 221 | 29 | 88.4% |
+| 0.6 / 0.5 | demoted / ambiguous | 749 | 595 | 55.7% |
+
 ### abyss (Rust, dogfood) — rust-analyzer scip
 
 | Tier | Strategy | Correct | Wrong | Precision |
 |------|----------|--------:|------:|----------:|
-| 1.0 | same file (bare + self-like calls) | 194 | 0 | **100%** |
-| 0.95 | receiver-type + use-binding | 46 | 0 | **100%** |
-| 0.8 | global unique | 150 | 0 | **100%** |
-| 0.6 / 0.5 | demoted / ambiguous | 39 | 21 | 65.0% |
+| 1.0 | same file (bare + self-like calls) | 165 | 0 | **100%** |
+| 0.95 | receiver-type + use-binding | 124 | 0 | **100%** |
+| 0.8 | global unique | 90 | 0 | **100%** |
+| 0.6 / 0.5 | demoted / ambiguous | 50 | 21 | 70.4% |
 
 ## How the eval drove the resolver (chronicle)
+
+### Round 8 — 2026-06-12: ripgrep — the third-party Rust verdict
+
+The dogfood corpus was friendly; ripgrep 14.1.1 (13-crate workspace, 4,283
+truth pairs) was the real exam. First run: 94.3%/68.4%. Three findings:
+
+1. **Workspace crate roots** — `crate::` resolved against a hardcoded
+   `src/`; workspace members live in `crates/<name>/src` (and ripgrep's
+   core crate has NO src dir — `crates/core/main.rs` is a path-overridden
+   root). `crate::` now walks the importing file's ancestors for a
+   `Cargo.toml`, trying `<member>/src` then `<member>` itself.
+2. **`super` inside an inline `mod tests`** is the file itself, not the
+   parent dir — `use super::escape` in escape.rs's test module bound to
+   lib.rs and made calls to `escape` *in its own file* wrong at 0.95. If
+   the source file defines the item, a `super::` binding now resolves to
+   the source file before any dir logic.
+3. **Rust receiver lite inference** (the big one): typed parameters,
+   `let x = T::new()` / `T { .. }` / annotated lets, and `self` → enclosing
+   impl type. The 0.95 sub-tier audit after the fix: receiver-typed
+   1,224/3, use-bindings 588/0 — but same-dir-unique qualified calls were
+   **76%** (229/72). A Rust dir is not a namespace (files in one dir are
+   separate modules needing `use`), unlike Go where the same slice measures
+   98%. L2 now excludes qualified calls for Rust sources only; they fall to
+   the 0.6 possibles.
+
+Net: ripgrep 94.3/68.4 → **98.9% / 67.8%** (un-gated recall 85.3% — the
+information is there, below the gate). The receiver inference also moved
+the dogfood corpus from 86.7% to 84.2% recall (the L2 guard) at a flat
+100.0% precision; gin/hono/click unchanged to the decimal.
 
 ### Round 7 — 2026-06-12: Rust corpus (dogfood) + the oversized-symbol bug
 
@@ -253,4 +292,5 @@ matched the *file* `json.go`). Net: 85.6% → 97.2% gated precision.
 | gin-gonic/gin | v1.10.0 | Go | scip-go |
 | honojs/hono | v4.6.14 | TypeScript | scip-typescript |
 | pallets/click | 8.1.8 | Python | scip-python |
+| BurntSushi/ripgrep | 14.1.1 | Rust | rust-analyzer scip |
 | telagod/abyss | 8099aeb | Rust | rust-analyzer scip |

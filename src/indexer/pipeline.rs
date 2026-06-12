@@ -338,9 +338,11 @@ impl IndexPipeline {
             }
         }
 
-        let bindings: Vec<(i64, String, String, Option<String>)> = {
+        let bindings: Vec<(i64, i64, String, String, String, Option<String>)> = {
             let mut stmt = conn.prepare(
-                "SELECT r.id, f.dir, r.target_qualifier, f.language FROM refs r
+                "SELECT r.id, r.source_file_id, f.dir, r.target_name, r.target_qualifier,
+                        f.language
+                 FROM refs r
                  JOIN files f ON r.source_file_id = f.id
                  WHERE r.kind = 'import_binding' AND r.target_file_id IS NULL
                    AND r.target_qualifier IS NOT NULL",
@@ -348,9 +350,11 @@ impl IndexPipeline {
             let rows = stmt.query_map([], |r| {
                 Ok((
                     r.get::<_, i64>(0)?,
-                    r.get::<_, String>(1)?,
+                    r.get::<_, i64>(1)?,
                     r.get::<_, String>(2)?,
-                    r.get::<_, Option<String>>(3)?,
+                    r.get::<_, String>(3)?,
+                    r.get::<_, String>(4)?,
+                    r.get::<_, Option<String>>(5)?,
                 ))
             })?;
             rows.collect::<std::result::Result<_, _>>()?
@@ -359,11 +363,25 @@ impl IndexPipeline {
         conn.execute_batch("BEGIN")?;
         {
             let mut update = conn.prepare("UPDATE refs SET target_file_id = ?1 WHERE id = ?2")?;
-            for (id, dir, module, language) in bindings {
+            let mut own_symbol =
+                conn.prepare("SELECT 1 FROM symbols WHERE file_id = ?1 AND name = ?2 LIMIT 1")?;
+            for (id, src_fid, dir, name, module, language) in bindings {
                 let fid = match language.as_deref() {
                     Some("python") => resolve_py_module(&dir, &module, &paths),
                     Some("java") => resolve_java_class(&module, &paths),
-                    Some("rust") => resolve_rust_use(&dir, &module, &paths),
+                    Some("rust") => {
+                        // `mod tests { use super::escape; }` — super inside an
+                        // INLINE module is the file itself. Bindings don't
+                        // record module nesting, so: if the source file
+                        // defines the item, bind to it before any dir logic.
+                        if module.starts_with("super::")
+                            && own_symbol.exists(rusqlite::params![src_fid, name])?
+                        {
+                            Some(src_fid)
+                        } else {
+                            resolve_rust_use(&dir, &module, &paths)
+                        }
+                    }
                     // TS/JS: only relative imports resolve in-repo; package
                     // imports stay NULL.
                     _ if module.starts_with('.') => {
@@ -508,6 +526,11 @@ impl IndexPipeline {
         // here — they fall through to the qualifier tier and, failing that, to the
         // demoted 0.6 tier below. Eval on gin showed these collisions dominate
         // resolution errors (see eval/RESULTS.md).
+        //
+        // Rust only: qualified calls (x.m(), unknown receiver) are excluded —
+        // a Rust dir is NOT a namespace (files in one dir are separate
+        // modules needing `use`), so dir proximity is weak evidence there:
+        // measured 76% on ripgrep vs 98% on gin (Go dirs ARE packages).
         let l2 = conn.execute(
             "UPDATE refs SET
                  target_file_id = (SELECT s.file_id FROM symbols s
@@ -525,6 +548,9 @@ impl IndexPipeline {
                  confidence = 0.95
              WHERE confidence = 0.0 AND kind NOT IN ('import', 'import_binding')
                AND receiver_type IS NULL
+               AND (target_qualifier IS NULL
+                    OR COALESCE((SELECT language FROM files
+                        WHERE id = refs.source_file_id), '') != 'rust')
                AND (SELECT COUNT(DISTINCT s.file_id) FROM symbols s JOIN files f ON s.file_id = f.id
                    WHERE s.name = refs.target_name
                      AND f.dir = (SELECT dir FROM files WHERE id = refs.source_file_id)
@@ -1024,7 +1050,37 @@ fn resolve_rust_use(
 
     match module_segs.first() {
         Some(&"crate") => {
-            // Crate root: src/ by convention, bare as fallback.
+            // Crate root: walk the importing file's ancestor dirs for a
+            // Cargo.toml (workspace members like crates/cli/src/...), trying
+            // <member>/src then <member> itself (path-overridden roots like
+            // ripgrep's crates/core/main.rs). Plain src/ is the fallback.
+            let mut d = dir.trim_end_matches('/');
+            loop {
+                let toml = if d.is_empty() {
+                    "Cargo.toml".to_string()
+                } else {
+                    format!("{d}/Cargo.toml")
+                };
+                if paths.contains_key(&toml) {
+                    let src = if d.is_empty() {
+                        "src".to_string()
+                    } else {
+                        format!("{d}/src")
+                    };
+                    if let Some(id) = try_module(&src, &module_segs[1..], paths)
+                        .or_else(|| try_module(d, &module_segs[1..], paths))
+                    {
+                        return Some(id);
+                    }
+                }
+                if d.is_empty() {
+                    break;
+                }
+                d = match d.rfind('/') {
+                    Some(pos) => &d[..pos],
+                    None => "",
+                };
+            }
             try_module("src", &module_segs[1..], paths)
                 .or_else(|| try_module("", &module_segs[1..], paths))
         }

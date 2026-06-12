@@ -18,6 +18,7 @@ REPOS=(
   "gin|https://github.com/gin-gonic/gin.git|v1.10.0|scip-go"
   "hono|https://github.com/honojs/hono.git|v4.6.14|scip-typescript"
   "click|https://github.com/pallets/click.git|8.1.8|scip-python"
+  "ripgrep|https://github.com/BurntSushi/ripgrep.git|14.1.1|rust-analyzer"
   # dogfood: abyss itself, pinned to the commit the numbers were taken at
   "abyss|https://github.com/telagod/abyss.git|8099aeb|rust-analyzer"
 )

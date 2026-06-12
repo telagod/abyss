@@ -216,6 +216,59 @@ func Out() int { return Render() }
 // ═══ L0b: named-import binding tier (v0.3.3) ═══
 
 #[test]
+fn rust_method_receiver_inference_resolves_cross_file() {
+    // let s = Searcher::new(); s.search() — the lite-inferred receiver type
+    // must pick the right impl despite a same-named method elsewhere.
+    let fx = index_fixture(&[
+        (
+            "src/searcher.rs",
+            "pub struct Searcher;\n\nimpl Searcher {\n    pub fn new() -> Self { Searcher }\n    pub fn search(&self) -> i32 { 1 }\n}\n",
+        ),
+        (
+            "src/matcher.rs",
+            "pub struct Matcher;\n\nimpl Matcher {\n    pub fn search(&self) -> i32 { 2 }\n}\n",
+        ),
+        (
+            "src/main.rs",
+            "fn m() -> i32 {\n    let s = Searcher::new();\n    s.search()\n}\n",
+        ),
+    ]);
+    let refs: Vec<_> = call_refs_to(&fx.repo, "search")
+        .into_iter()
+        .filter(|r| r.source_path == "src/main.rs")
+        .collect();
+    assert_eq!(refs.len(), 1, "{refs:?}");
+    assert_eq!(refs[0].confidence, 0.95);
+    assert_eq!(refs[0].target_path.as_deref(), Some("src/searcher.rs"));
+}
+
+#[test]
+fn rust_qualified_same_dir_demotes_below_gate() {
+    // Rust dirs are NOT namespaces: x.m() with an unknown receiver must not
+    // take a same-dir candidate at 0.95 (measured 76% on ripgrep). Go keeps
+    // the tier (dirs ARE packages, 98% on gin).
+    let fx = index_fixture(&[
+        (
+            "src/defs.rs",
+            "pub struct Flag;\n\nimpl Flag {\n    pub fn name_long(&self) -> &str { \"x\" }\n}\n",
+        ),
+        (
+            "src/parse.rs",
+            "pub fn parse(flag: &UnknownThing) -> i32 {\n    flag.name_long();\n    0\n}\n",
+        ),
+    ]);
+    let refs: Vec<_> = call_refs_to(&fx.repo, "name_long")
+        .into_iter()
+        .filter(|r| r.source_path == "src/parse.rs")
+        .collect();
+    assert_eq!(refs.len(), 1, "{refs:?}");
+    assert!(
+        refs[0].confidence < 0.7,
+        "rust qualified same-dir must stay below the gate: {refs:?}"
+    );
+}
+
+#[test]
 fn rust_use_binding_resolves_cross_module() {
     // `use crate::util::helper` + bare helper(): the binding must beat the
     // ambiguous-global tier despite a same-named decoy.

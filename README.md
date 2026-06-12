@@ -126,12 +126,11 @@ This is not a compiler. Measured against SCIP (compiler-grade) ground truth — 
 | gin v1.10.0 | Go | **99.3%** | **82.6%** |
 | hono v4.6.14 | TypeScript | **98.6%** | 58.7%* |
 | click 8.1.8 | Python | **98.7%** | **94.6%** |
-| abyss (dogfood) | Rust | **100.0%** | **86.7%** |
+| ripgrep 14.1.1 | Rust | **98.9%** | **67.8%** |
+| abyss (dogfood) | Rust | **100.0%** | **84.2%** |
 
 \* hono assigns router verbs (`app.get/post/use`) at runtime — statically
-unresolvable by design; they surface as `possible_callers`. The Rust corpus
-is abyss itself — small and friendly; treat it as a smoke signal, not a
-benchmark.
+unresolvable by design; they surface as `possible_callers`.
 
 abyss indexed gin in **~150ms**; scip-go took ~40s. Full method, per-tier tables, and known weaknesses: [eval/RESULTS.md](eval/RESULTS.md). Reproduce: `eval/run.sh`.
 
