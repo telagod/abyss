@@ -149,7 +149,7 @@ abyss indexed gin in **~150ms**; scip-go took ~40s. Full method, per-tier tables
 
 ## Status
 
-**v0.3.0** — 45 tests, prebuilt binaries for 5 platforms, single-binary agent hooks. APIs and index format may still change before 1.0. See [docs/DESIGN-v0.3.md](docs/DESIGN-v0.3.md) for the roadmap: SCIP-based eval harness (precision/recall, published whatever the numbers say), Java support, agent A/B regression benchmark.
+**v0.3.3** — 74 tests, prebuilt binaries for 5 platforms, single-binary agent hooks. Nine eval-driven resolver rounds against SCIP ground truth across four languages / five corpora (all ≥98.5% gated precision — see the table above and [eval/RESULTS.md](eval/RESULTS.md)): named-import binding tiers with barrel/`pub use` chasing, receiver-type lite inference for Go/TS/Python/Rust, and type-grade evidence (L0c/L0d) beyond exact scope matching. APIs and index format may still change before 1.0.
 
 ## License
 
