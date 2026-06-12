@@ -693,21 +693,98 @@ fn qualified_unknown_receiver_same_file_demotes_to_0_6() {
 }
 
 #[test]
-fn python_self_inherited_method_resolves_same_file_at_1_0() {
+fn python_self_inherited_method_resolves_confidently_same_file() {
     // self.fail() inside Choice where fail is defined on the BASE class
     // ParamType in the same file (the click pattern): L0 finds no
-    // Choice-owned `fail`, but the self-like exemption keeps same-file 1.0.
+    // Choice-owned `fail`, but the type's defining file carries it (L0d) —
+    // and the self-like same-file exemption backstops it. Must stay gated.
     let fx = index_fixture(&[(
         "types.py",
         "class ParamType:\n    def fail(self, msg):\n        raise ValueError(msg)\n\nclass Choice(ParamType):\n    def convert(self, value):\n        self.fail('bad')\n",
     )]);
     let refs = call_refs_to(&fx.repo, "fail");
     assert_eq!(refs.len(), 1, "{refs:?}");
-    assert_eq!(
-        refs[0].confidence, 1.0,
-        "self-like inherited call keeps 1.0: {refs:?}"
+    assert!(
+        refs[0].confidence >= 0.95,
+        "self-like inherited call stays confidently gated: {refs:?}"
     );
     assert_eq!(refs[0].target_path.as_deref(), Some("types.py"));
+}
+
+// ═══ L0c/L0d: typed receiver via type binding / type file (v0.3.3) ═══
+
+#[test]
+fn tier0c_receiver_type_alias_resolves_via_binding() {
+    // `use util::Captures as Caps; let c: Caps; c.get()` — the alias never
+    // matches the symbol scope (L0), but the binding of the TYPE points at
+    // the defining file, which carries the method.
+    let fx = index_fixture(&[
+        (
+            "src/util.rs",
+            "pub struct Captures;\n\nimpl Captures {\n    pub fn get(&self) -> i32 { 1 }\n}\n",
+        ),
+        (
+            "src/other.rs",
+            "pub struct Other;\n\nimpl Other {\n    pub fn get(&self) -> i32 { 2 }\n}\n",
+        ),
+        (
+            "src/main.rs",
+            "use crate::util::Captures as Caps;\n\nfn m(c: &Caps) -> i32 {\n    c.get()\n}\n",
+        ),
+    ]);
+    let refs: Vec<_> = call_refs_to(&fx.repo, "get")
+        .into_iter()
+        .filter(|r| r.source_path == "src/main.rs")
+        .collect();
+    assert_eq!(refs.len(), 1, "{refs:?}");
+    assert_eq!(refs[0].confidence, 0.95);
+    assert_eq!(refs[0].target_path.as_deref(), Some("src/util.rs"));
+}
+
+#[test]
+fn tier0d_trait_impl_method_resolves_via_type_file() {
+    // `impl Sink for StandardSink` — the method's owner scope is the TYPE
+    // (StandardSink), and the type's unique defining file carries the
+    // method, so a typed receiver resolves there even without a binding.
+    let fx = index_fixture(&[
+        (
+            "src/sink.rs",
+            "pub trait Sink {\n    fn matched(&self) -> bool;\n}\n\npub struct StandardSink;\n\nimpl Sink for StandardSink {\n    fn matched(&self) -> bool { true }\n}\n",
+        ),
+        (
+            "src/other.rs",
+            "pub struct OtherSink;\n\nimpl OtherSink {\n    pub fn matched(&self) -> bool { false }\n}\n",
+        ),
+        (
+            "src/main.rs",
+            "fn m(s: &StandardSink) -> bool {\n    s.matched()\n}\n",
+        ),
+    ]);
+    let refs: Vec<_> = call_refs_to(&fx.repo, "matched")
+        .into_iter()
+        .filter(|r| r.source_path == "src/main.rs")
+        .collect();
+    assert_eq!(refs.len(), 1, "{refs:?}");
+    assert_eq!(refs[0].confidence, 0.95);
+    assert_eq!(refs[0].target_path.as_deref(), Some("src/sink.rs"));
+}
+
+#[test]
+fn ts_unexported_const_function_is_a_symbol() {
+    // Bare `const splitRule = (...) => ...` (no export) used to be invisible
+    // — only export_statement was a chunk boundary. Same-file bare calls
+    // must resolve at 1.0.
+    let fx = index_fixture(&[(
+        "src/css.ts",
+        "const splitRule = (rule: string): string[] => {\n  return rule.split(';')\n}\n\nexport const use = (s: string) => splitRule(s)\n",
+    )]);
+    let refs: Vec<_> = call_refs_to(&fx.repo, "splitRule")
+        .into_iter()
+        .filter(|r| r.source_path == "src/css.ts")
+        .collect();
+    assert_eq!(refs.len(), 1, "{refs:?}");
+    assert_eq!(refs[0].confidence, 1.0);
+    assert_eq!(refs[0].target_path.as_deref(), Some("src/css.ts"));
 }
 
 // ═══ L0 receiver tier: Python (v0.3.3) ═══

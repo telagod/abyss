@@ -17,10 +17,10 @@ only in-repo symbols count (abyss does not resolve into dependencies).
 | Corpus | Language | Truth pairs | Gated precision | Gated recall | All precision | All recall |
 |--------|----------|------------:|----------------:|-------------:|--------------:|-----------:|
 | gin v1.10.0 | Go | 2,968 | **99.3%** | **82.6%** | 89.2% | 88.0% |
-| hono v4.6.14 | TypeScript | 5,611 | **98.6%** | **58.7%** | 77.2% | 73.3% |
+| hono v4.6.14 | TypeScript | 5,611 | **98.8%** | **63.8%** | 77.7% | 76.3% |
 | click 8.1.8 | Python | 573 | **98.7%** | **94.6%** | 97.5% | 96.2% |
-| ripgrep 14.1.1 | Rust | 4,283 | **98.9%** | **67.8%** | 85.4% | 85.3% |
-| abyss @8099aeb | Rust (dogfood) | 450 | **100.0%** | **84.2%** | 95.3% | 95.3% |
+| ripgrep 14.1.1 | Rust | 4,283 | **98.5%** | **75.3%** | 86.9% | 86.8% |
+| abyss @8099aeb | Rust (dogfood) | 450 | **100.0%** | **90.9%** | 98.4% | 98.4% |
 
 Gated = `--min-confidence 0.7` (the default). abyss index time per corpus:
 ~150–900ms; the SCIP indexers take 40s–4min on the same machines.
@@ -39,11 +39,11 @@ Gated = `--min-confidence 0.7` (the default). abyss index time per corpus:
 
 | Tier | Strategy | Correct | Wrong | Precision |
 |------|----------|--------:|------:|----------:|
-| 1.0 | same file (bare + self-like calls) | 301 | 2 | **99.3%** |
-| 0.95 | receiver-type + named-import binding + same-package unique | 2,795 | 30 | 98.9% |
-| 0.9 | import qualifier, unique candidate | 2 | 0 | 100% |
-| 0.8 | global unique (member-shaped for qualified calls) | 185 | 18 | 91.1% |
-| 0.6 / 0.5 | demoted / ambiguous | 821 | 1,171 | 41.2% |
+| 1.0 | same file (bare + self-like calls) | 494 | 2 | **99.6%** |
+| 0.95 | receiver-type (scope/binding/type-file) + import binding + same-package unique | 2,910 | 30 | 99.0% |
+| 0.9 | import qualifier, unique candidate | 1 | 0 | 100% |
+| 0.8 | global unique (member-shaped for qualified calls) | 175 | 10 | 94.6% |
+| 0.6 / 0.5 | demoted / ambiguous | 704 | 1,186 | 37.2% |
 
 ### click (Python) — scip-python
 
@@ -58,21 +58,51 @@ Gated = `--min-confidence 0.7` (the default). abyss index time per corpus:
 
 | Tier | Strategy | Correct | Wrong | Precision |
 |------|----------|--------:|------:|----------:|
-| 1.0 | same file (bare + self-like calls) | 873 | 0 | **100%** |
-| 0.95 | receiver-type + use-binding | 1,812 | 3 | 99.8% |
-| 0.8 | global unique | 221 | 29 | 88.4% |
-| 0.6 / 0.5 | demoted / ambiguous | 749 | 595 | 55.7% |
+| 1.0 | same file (bare + self-like calls) | 561 | 0 | **100%** |
+| 0.95 | receiver-type (scope/binding/type-file) + use-binding | 2,397 | 19 | 99.2% |
+| 0.8 | global unique | 269 | 29 | 90.3% |
+| 0.6 / 0.5 | demoted / ambiguous | 492 | 515 | 48.9% |
 
 ### abyss (Rust, dogfood) — rust-analyzer scip
 
 | Tier | Strategy | Correct | Wrong | Precision |
 |------|----------|--------:|------:|----------:|
 | 1.0 | same file (bare + self-like calls) | 165 | 0 | **100%** |
-| 0.95 | receiver-type + use-binding | 124 | 0 | **100%** |
+| 0.95 | receiver-type (scope/binding/type-file) + use-binding | 154 | 0 | **100%** |
 | 0.8 | global unique | 90 | 0 | **100%** |
-| 0.6 / 0.5 | demoted / ambiguous | 50 | 21 | 70.4% |
+| 0.6 / 0.5 | demoted / ambiguous | 34 | 7 | 82.9% |
 
 ## How the eval drove the resolver (chronicle)
+
+### Round 9 — 2026-06-12: the recall round — type-grade evidence beyond exact scope
+
+TS and Rust recall were the laggards (58.7% / 67.8%). Dissecting everything
+below the gate found the correct answers clustering in three places, each
+with recoverable evidence:
+
+1. **Non-exported function consts were invisible** (TS): bare
+   `const splitRule = (...) => ...` at module level was only a symbol when
+   wrapped in an `export_statement` (the only boundary). 187 unresolved
+   bare calls in hono had same-file truth. `lexical_declaration` /
+   `variable_declaration` are now chunk boundaries; hono unresolved
+   dropped 286 → 99 and the 1.0 tier grew 301 → 494 correct.
+2. **L0's exact-scope match was too rigid** (both): the receiver type was
+   correctly inferred, but type aliases (`use X as Separator`), impls split
+   across files, and trait-scoped methods never matched `symbols.scope`.
+   Two new tiers turn the inferred type itself into file evidence:
+   **L0c** — the source file imports the receiver type; the binding's
+   target file carries the method name. **L0d** — the type symbol
+   (class/struct/interface/enum) has a unique defining file and that file
+   carries the method name.
+3. **`impl Trait for Type` scoped methods to the trait** (Rust): the
+   chunker's owner extraction grabbed the first type_identifier — the
+   trait — so `impl Sink for StandardSink` methods got scope `Sink` and L0
+   receiver matching never fired. Owner (and the oversized-impl scope
+   stack) now use the impl's `type` field.
+
+Net: hono **98.8% / 63.8%** (+5.1pp recall), ripgrep **98.5% / 75.3%**
+(+7.5pp), dogfood **100.0% / 90.9%** (un-gated 98.4/98.4); gin and click
+unchanged to the decimal. 74 tests.
 
 ### Round 8 — 2026-06-12: ripgrep — the third-party Rust verdict
 

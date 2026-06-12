@@ -150,7 +150,7 @@ impl Chunker {
                 // a >max_lines function used to vanish from the symbols table
                 // entirely (only chunk boundaries among its children emit
                 // anything, and a plain body block is not one).
-                if let Some(name) = self.extract_node_name(node, source) {
+                if let Some(name) = self.scope_node_name(node, source) {
                     let header = lines
                         .get(start as usize)
                         .copied()
@@ -179,7 +179,7 @@ impl Chunker {
                 for child in node.children(&mut cursor) {
                     self.collect_chunks(&child, source, lines, language, scope_stack, chunks);
                 }
-                if self.extract_node_name(node, source).is_some() {
+                if self.scope_node_name(node, source).is_some() {
                     scope_stack.pop();
                 }
                 return;
@@ -194,7 +194,7 @@ impl Chunker {
                 symbols,
             });
         } else {
-            if let Some(name) = self.extract_node_name(node, source)
+            if let Some(name) = self.scope_node_name(node, source)
                 && self.is_scope_node(kind, language)
             {
                 scope_stack.push(name);
@@ -205,11 +205,26 @@ impl Chunker {
                 self.collect_chunks(&child, source, lines, language, scope_stack, chunks);
             }
 
-            if self.is_scope_node(kind, language) && self.extract_node_name(node, source).is_some()
-            {
+            if self.is_scope_node(kind, language) && self.scope_node_name(node, source).is_some() {
                 scope_stack.pop();
             }
         }
+    }
+
+    /// Scope name for a node: Rust impl blocks scope to the implementing
+    /// TYPE (never the trait — `impl Sink for StandardSink` → StandardSink);
+    /// everything else uses the name field / first identifier.
+    fn scope_node_name(&self, node: &Node, source: &str) -> Option<String> {
+        if node.kind() == "impl_item" {
+            return node
+                .child_by_field_name("type")
+                .map(|t| {
+                    let raw = self.extract_text(&t, source);
+                    raw.split('<').next().unwrap_or(&raw).trim().to_string()
+                })
+                .filter(|s| !s.is_empty());
+        }
+        self.extract_node_name(node, source)
     }
 
     /// Merge adjacent small chunks until they reach target_lines.
@@ -295,6 +310,11 @@ impl Chunker {
                 | "type_alias_declaration"
                 | "const_item"
                 | "static_item"
+                // bare `const f = () => ...` — non-exported module-level
+                // function consts were invisible (only export_statement was
+                // a boundary); data consts produce no symbols either way
+                | "lexical_declaration"
+                | "variable_declaration"
                 | "export_statement"
                 | "import_declaration"
                 | "import_statement"
@@ -425,14 +445,24 @@ impl Chunker {
             });
         }
 
-        // Entering a class-like node makes it the owner for nested methods
-        let next_owner: Option<String> = if matches!(
-            kind,
-            "class_definition" | "class_declaration" | "interface_declaration" | "impl_item"
-        ) {
-            self.extract_node_name(node, source)
-        } else {
-            None
+        // Entering a class-like node makes it the owner for nested methods.
+        // Rust impl blocks: the owner is the implementing TYPE, never the
+        // trait — `impl Sink for StandardSink` must scope methods to
+        // StandardSink (extract_node_name would grab the first
+        // type_identifier, i.e. the trait, and L0 receiver matching would
+        // never fire).
+        let next_owner: Option<String> = match kind {
+            "impl_item" => node
+                .child_by_field_name("type")
+                .map(|t| {
+                    let raw = self.extract_text(&t, source);
+                    raw.split('<').next().unwrap_or(&raw).trim().to_string()
+                })
+                .filter(|s| !s.is_empty()),
+            "class_definition" | "class_declaration" | "interface_declaration" => {
+                self.extract_node_name(node, source)
+            }
+            _ => None,
         };
 
         let mut cursor = node.walk();

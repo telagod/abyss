@@ -453,6 +453,68 @@ impl IndexPipeline {
             [],
         )?;
 
+        // Level 0c: Typed receiver via the TYPE's import binding (0.95).
+        // L0's exact scope match dies on type aliases (`use X as Separator`),
+        // trait-scoped methods, and impls split across files — but when the
+        // source file IMPORTS the receiver type, the binding's target file is
+        // type-grade evidence. Require the method name to exist there.
+        let l0c = conn.execute(
+            "UPDATE refs SET
+                 target_file_id = (SELECT ib.target_file_id FROM refs ib
+                     WHERE ib.source_file_id = refs.source_file_id
+                       AND ib.kind = 'import_binding'
+                       AND ib.target_name = refs.receiver_type
+                       AND ib.target_file_id IS NOT NULL LIMIT 1),
+                 target_symbol_id = (SELECT s.id FROM symbols s
+                     WHERE s.name = refs.target_name
+                       AND s.file_id = (SELECT ib.target_file_id FROM refs ib
+                           WHERE ib.source_file_id = refs.source_file_id
+                             AND ib.kind = 'import_binding'
+                             AND ib.target_name = refs.receiver_type
+                             AND ib.target_file_id IS NOT NULL LIMIT 1)
+                     LIMIT 1),
+                 confidence = 0.95
+             WHERE confidence = 0.0 AND kind NOT IN ('import', 'import_binding')
+               AND receiver_type IS NOT NULL
+               AND EXISTS (SELECT 1 FROM refs ib
+                   JOIN symbols s ON s.file_id = ib.target_file_id
+                   WHERE ib.source_file_id = refs.source_file_id
+                     AND ib.kind = 'import_binding'
+                     AND ib.target_name = refs.receiver_type
+                     AND ib.target_file_id IS NOT NULL
+                     AND s.name = refs.target_name)",
+            [],
+        )?;
+
+        // Level 0d: Typed receiver via the type's unique defining file
+        // (0.95). The type symbol (class/struct/interface/enum) lives in
+        // exactly one file and that file defines the method name — methods
+        // and their type overwhelmingly share a file.
+        let l0d = conn.execute(
+            "UPDATE refs SET
+                 target_file_id = (SELECT t.file_id FROM symbols t
+                     WHERE t.name = refs.receiver_type
+                       AND t.kind IN ('class', 'struct', 'interface', 'enum') LIMIT 1),
+                 target_symbol_id = (SELECT s.id FROM symbols s
+                     WHERE s.name = refs.target_name
+                       AND s.file_id = (SELECT t.file_id FROM symbols t
+                           WHERE t.name = refs.receiver_type
+                             AND t.kind IN ('class', 'struct', 'interface', 'enum') LIMIT 1)
+                     LIMIT 1),
+                 confidence = 0.95
+             WHERE confidence = 0.0 AND kind NOT IN ('import', 'import_binding')
+               AND receiver_type IS NOT NULL
+               AND (SELECT COUNT(DISTINCT t.file_id) FROM symbols t
+                   WHERE t.name = refs.receiver_type
+                     AND t.kind IN ('class', 'struct', 'interface', 'enum')) = 1
+               AND EXISTS (SELECT 1 FROM symbols m
+                   WHERE m.name = refs.target_name
+                     AND m.file_id = (SELECT t.file_id FROM symbols t
+                         WHERE t.name = refs.receiver_type
+                           AND t.kind IN ('class', 'struct', 'interface', 'enum') LIMIT 1))",
+            [],
+        )?;
+
         // Level 0b: Named-import binding (confidence = 0.95). A bare call
         // whose name is bound by `import { x } from './mod'` resolves to the
         // module's file — the strongest evidence short of a compiler, and it
@@ -669,8 +731,8 @@ impl IndexPipeline {
         )?;
 
         info!(
-            "resolved: L0(receiver-type)={}, L0b(import-binding)={}, L1(same-file)={}, L2(same-pkg-unique)={}, L3(qualifier)={}, L4(global-unique)={}, L4a(same-file-qual)={}, L4b(same-pkg-multi)={}, L5(ambiguous)={}",
-            l0, l0b, l1, l2, l3q, l3, l4a, l2b, l4
+            "resolved: L0(receiver-type)={}, L0c(type-binding)={}, L0d(type-file)={}, L0b(import-binding)={}, L1(same-file)={}, L2(same-pkg-unique)={}, L3(qualifier)={}, L4(global-unique)={}, L4a(same-file-qual)={}, L4b(same-pkg-multi)={}, L5(ambiguous)={}",
+            l0, l0c, l0d, l0b, l1, l2, l3q, l3, l4a, l2b, l4
         );
 
         Ok(())

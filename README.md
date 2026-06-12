@@ -102,8 +102,8 @@ References resolve through tiered heuristics, each tagged with a confidence scor
 
 | Tier | Strategy | Confidence |
 |------|----------|-----------|
-| 0 | Receiver-type match (`x.M()` where `x: T` is statically inferrable) | 0.95 |
-| 0b | Named-import binding (`import { x } from './m'`, `from m import x`, `import com.f.X`; barrel re-export chains chased) | 0.95 |
+| 0 | Receiver-type match (`x.M()` where `x: T` is statically inferrable) — by owner scope, the type's import binding, or the type's unique defining file | 0.95 |
+| 0b | Named-import binding (`import { x } from './m'`, `from m import x`, `import com.f.X`, `use crate::m::x`; barrel/`pub use` chains chased) | 0.95 |
 | 1 | Same file (bare + self-like calls only) | 1.0 |
 | 2 | Same package/directory, unique candidate | 0.95 |
 | 3 | Import-qualifier match, unique candidate | 0.9 |
@@ -124,10 +124,10 @@ This is not a compiler. Measured against SCIP (compiler-grade) ground truth — 
 | Corpus | Language | Gated precision | Gated recall |
 |--------|----------|----------------:|-------------:|
 | gin v1.10.0 | Go | **99.3%** | **82.6%** |
-| hono v4.6.14 | TypeScript | **98.6%** | 58.7%* |
+| hono v4.6.14 | TypeScript | **98.8%** | 63.8%* |
 | click 8.1.8 | Python | **98.7%** | **94.6%** |
-| ripgrep 14.1.1 | Rust | **98.9%** | **67.8%** |
-| abyss (dogfood) | Rust | **100.0%** | **84.2%** |
+| ripgrep 14.1.1 | Rust | **98.5%** | **75.3%** |
+| abyss (dogfood) | Rust | **100.0%** | **90.9%** |
 
 \* hono assigns router verbs (`app.get/post/use`) at runtime — statically
 unresolvable by design; they surface as `possible_callers`.
