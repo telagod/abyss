@@ -146,7 +146,33 @@ impl Chunker {
             };
 
             if end - start > self.max_lines {
+                // Descending into an oversized node must not lose ITS symbol:
+                // a >max_lines function used to vanish from the symbols table
+                // entirely (only chunk boundaries among its children emit
+                // anything, and a plain body block is not one).
                 if let Some(name) = self.extract_node_name(node, source) {
+                    let header = lines
+                        .get(start as usize)
+                        .copied()
+                        .unwrap_or_default()
+                        .to_string();
+                    chunks.push(CodeChunk {
+                        content: header,
+                        kind: chunk_kind,
+                        start_line: start,
+                        end_line: start,
+                        scope: scope.clone(),
+                        symbols: vec![Symbol {
+                            name: name.clone(),
+                            kind: match chunk_kind {
+                                ChunkKind::Class => SymbolKind::Class,
+                                _ if scope.is_some() => SymbolKind::Method,
+                                _ => SymbolKind::Function,
+                            },
+                            line: start,
+                            scope: scope.clone(),
+                        }],
+                    });
                     scope_stack.push(name);
                 }
                 let mut cursor = node.walk();

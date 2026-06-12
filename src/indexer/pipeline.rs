@@ -363,6 +363,7 @@ impl IndexPipeline {
                 let fid = match language.as_deref() {
                     Some("python") => resolve_py_module(&dir, &module, &paths),
                     Some("java") => resolve_java_class(&module, &paths),
+                    Some("rust") => resolve_rust_use(&dir, &module, &paths),
                     // TS/JS: only relative imports resolve in-repo; package
                     // imports stay NULL.
                     _ if module.starts_with('.') => {
@@ -967,6 +968,103 @@ fn resolve_py_module(
         }
     }
     None
+}
+
+/// Rust `use` path → the file defining the MODULE that owns the bound item.
+/// `crate::graph::extractor::RawReference` → src/graph/extractor.rs (or
+/// .../extractor/mod.rs); `super::chunker::Chunker` resolves against the
+/// importing file's dir (first `super` = the dir itself, each extra one =
+/// one level up). Bare first segments try dir-relative, then crate-root,
+/// then unique path suffix. `pub use` re-export hops are the barrel chase's
+/// job, not this function's.
+fn resolve_rust_use(
+    dir: &str,
+    use_path: &str,
+    paths: &std::collections::HashMap<String, i64>,
+) -> Option<i64> {
+    let segs: Vec<&str> = use_path.split("::").collect();
+    if segs.is_empty() {
+        return None;
+    }
+    // The last segment is the bound ITEM; the module path is what maps to a
+    // file.
+    let module_segs = &segs[..segs.len() - 1];
+
+    let try_module = |base: &str,
+                      rest: &[&str],
+                      paths: &std::collections::HashMap<String, i64>|
+     -> Option<i64> {
+        if rest.is_empty() {
+            // Item at crate root: lib.rs / main.rs
+            for root in ["lib.rs", "main.rs"] {
+                let cand = if base.is_empty() {
+                    root.to_string()
+                } else {
+                    format!("{base}/{root}")
+                };
+                if let Some(&id) = paths.get(&cand) {
+                    return Some(id);
+                }
+            }
+            return None;
+        }
+        let joined = rest.join("/");
+        let stem = if base.is_empty() {
+            joined
+        } else {
+            format!("{base}/{}", rest.join("/"))
+        };
+        for cand in [format!("{stem}.rs"), format!("{stem}/mod.rs")] {
+            if let Some(&id) = paths.get(&cand) {
+                return Some(id);
+            }
+        }
+        None
+    };
+
+    match module_segs.first() {
+        Some(&"crate") => {
+            // Crate root: src/ by convention, bare as fallback.
+            try_module("src", &module_segs[1..], paths)
+                .or_else(|| try_module("", &module_segs[1..], paths))
+        }
+        Some(&"super") => {
+            // First super = the importing file's dir (its parent module),
+            // each additional super = one level up.
+            let supers = module_segs.iter().take_while(|s| **s == "super").count();
+            let mut d = dir.trim_end_matches('/');
+            for _ in 1..supers {
+                d = match d.rfind('/') {
+                    Some(pos) => &d[..pos],
+                    None => "",
+                };
+            }
+            try_module(d, &module_segs[supers..], paths)
+        }
+        Some(&"self") => try_module(dir.trim_end_matches('/'), &module_segs[1..], paths),
+        Some(_) => {
+            // Bare path: dir-relative submodule, then crate-root module,
+            // then unique suffix (workspace layouts).
+            try_module(dir.trim_end_matches('/'), module_segs, paths)
+                .or_else(|| try_module("src", module_segs, paths))
+                .or_else(|| {
+                    let suffix = format!("/{}.rs", module_segs.join("/"));
+                    let mut hit = None;
+                    for (p, &id) in paths {
+                        if p.ends_with(&suffix) {
+                            if hit.is_some() {
+                                return None;
+                            }
+                            hit = Some(id);
+                        }
+                    }
+                    hit
+                })
+        }
+        // `use crate::Item` style: module_segs == ["crate"] handled above;
+        // empty module path (use Item;) — extern prelude, unresolvable.
+        None => None,
+    }
 }
 
 /// Java `import com.foo.Bar` → the unique file whose path ends with

@@ -12,13 +12,14 @@ only in-repo symbols count (abyss does not resolve into dependencies).
 - **precision** — when abyss commits to an answer, how often is it right
 - **recall** — how much of the SCIP-known call graph abyss resolves correctly
 
-## Results — 2026-06-11, abyss v0.3.3-dev (three languages)
+## Results — 2026-06-12, abyss v0.3.3-dev (four languages)
 
 | Corpus | Language | Truth pairs | Gated precision | Gated recall | All precision | All recall |
 |--------|----------|------------:|----------------:|-------------:|--------------:|-----------:|
-| gin v1.10.0 | Go | 2,968 | **99.2%** | **82.6%** | 89.1% | 87.2% |
-| hono v4.6.14 | TypeScript | 5,611 | **98.5%** | **58.5%** | 77.1% | 73.1% |
-| click 8.1.8 | Python | 573 | **98.7%** | **94.2%** | 97.5% | 95.8% |
+| gin v1.10.0 | Go | 2,968 | **99.3%** | **82.6%** | 89.2% | 88.0% |
+| hono v4.6.14 | TypeScript | 5,611 | **98.6%** | **58.7%** | 77.2% | 73.3% |
+| click 8.1.8 | Python | 573 | **98.7%** | **94.6%** | 97.5% | 96.2% |
+| abyss @8099aeb | Rust | 450 | **100.0%** | **86.7%** | 95.3% | 95.3% |
 
 Gated = `--min-confidence 0.7` (the default). abyss index time per corpus:
 ~150–900ms; the SCIP indexers take 40s–4min on the same machines.
@@ -52,7 +53,45 @@ Gated = `--min-confidence 0.7` (the default). abyss index time per corpus:
 | 0.8 | global unique | 18 | 0 | 100% |
 | 0.6 / 0.5 | demoted / ambiguous | 9 | 7 | 56.3% |
 
+### abyss (Rust, dogfood) — rust-analyzer scip
+
+| Tier | Strategy | Correct | Wrong | Precision |
+|------|----------|--------:|------:|----------:|
+| 1.0 | same file (bare + self-like calls) | 194 | 0 | **100%** |
+| 0.95 | receiver-type + use-binding | 46 | 0 | **100%** |
+| 0.8 | global unique | 150 | 0 | **100%** |
+| 0.6 / 0.5 | demoted / ambiguous | 39 | 21 | 65.0% |
+
 ## How the eval drove the resolver (chronicle)
+
+### Round 7 — 2026-06-12: Rust corpus (dogfood) + the oversized-symbol bug
+
+First Rust ground truth, via `rust-analyzer scip` on abyss itself. The
+first run (96.7%/78.4%) exposed three gaps; fixing them took the corpus to
+**100.0% gated precision / 86.7% recall, zero unresolved refs**:
+
+1. **Oversized functions vanished from the symbols table** — the chunker's
+   descend branch for >max_lines nodes emitted no symbol for the node
+   itself, so a 120-line function was invisible to every resolver tier:
+   bare same-file calls to `collect_refs` fell to the ambiguous tier and
+   lost. The fix (a header chunk carrying the node's symbol) is
+   language-agnostic — gin/hono/click each gained a few tenths from it.
+2. **`T::new()` receiver type** — the path qualifier's last segment IS the
+   receiver type. Every type has `new`; name tiers alone picked
+   `Config::new` for eight different types. Now an associated-function call
+   feeds L0 like any typed receiver.
+3. **Rust `use` bindings** — `use crate::storage::Repository` (incl.
+   `{A, B as C}` lists, `super::`/`self::` prefixes) now produce import
+   bindings; module paths resolve against the files table
+   (`x.rs` / `x/mod.rs`, crate root → `src/`). `pub use` re-exports look
+   identical to imports, so the existing barrel chase follows
+   `pub use repo::Repository` in `mod.rs` to the defining file for free.
+
+Caveats stated plainly: the corpus is abyss itself (~76 files, 450 truth
+pairs — small, and written by the people tuning the resolver); rust-analyzer
+emits no occurrences for some macro-generated code. The numbers are real
+but the corpus is friendly; a third-party Rust corpus is the obvious next
+step before bragging.
 
 ### Round 6 — 2026-06-11: bindings for Python and Java
 
@@ -214,3 +253,4 @@ matched the *file* `json.go`). Net: 85.6% → 97.2% gated precision.
 | gin-gonic/gin | v1.10.0 | Go | scip-go |
 | honojs/hono | v4.6.14 | TypeScript | scip-typescript |
 | pallets/click | 8.1.8 | Python | scip-python |
+| telagod/abyss | 8099aeb | Rust | rust-analyzer scip |

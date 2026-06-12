@@ -74,12 +74,25 @@ fn collect_refs(
                 let name = text(&func, source);
                 // Split path: foo::bar::baz → qualifier=foo::bar, name=baz
                 if let Some(pos) = name.rfind("::") {
+                    let qualifier = &name[..pos];
+                    // Associated function: the qualifier's last segment IS
+                    // the receiver type (`IndexPipeline::new()`, every type
+                    // has a `new` — name tiers alone pick the wrong one).
+                    let receiver_type = qualifier
+                        .rsplit("::")
+                        .next()
+                        .map(|s| s.split('<').next().unwrap_or(s).trim())
+                        .filter(|s| {
+                            s.chars().next().is_some_and(|c| c.is_uppercase())
+                                && s.chars().all(|c| c.is_alphanumeric() || c == '_')
+                        })
+                        .map(String::from);
                     refs.push(RawReference {
                         line,
                         source_symbol: enclosing.clone(),
                         target_name: name[pos + 2..].to_string(),
-                        target_qualifier: Some(name[..pos].to_string()),
-                        receiver_type: None,
+                        target_qualifier: Some(qualifier.to_string()),
+                        receiver_type,
                         kind: RefKind::Call,
                     });
                 } else if let Some(pos) = name.rfind('.') {
@@ -131,6 +144,13 @@ fn collect_refs(
                 receiver_type: None,
                 kind: RefKind::Import,
             });
+            // `use a::b::{C, D as E};` — each bound name becomes an
+            // ImportBinding (target_qualifier = full rust path). `pub use`
+            // re-exports look identical, which is exactly what lets the
+            // barrel chase follow `pub use repo::Repository` in mod.rs.
+            if let Some(arg) = node.child_by_field_name("argument") {
+                explode_use_tree(&arg, source, "", line, refs);
+            }
         }
         _ => {}
     }
@@ -138,6 +158,80 @@ fn collect_refs(
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
         collect_refs(&child, source, scope_map, refs);
+    }
+}
+
+/// Recursively explode a use tree into per-name bindings.
+/// `prefix` accumulates the path above this node (`a::b` for the list in
+/// `use a::b::{...}`). Wildcards bind nothing nameable.
+fn explode_use_tree(
+    node: &Node,
+    source: &str,
+    prefix: &str,
+    line: u32,
+    refs: &mut Vec<RawReference>,
+) {
+    let join = |head: &str, tail: &str| {
+        if head.is_empty() {
+            tail.to_string()
+        } else {
+            format!("{head}::{tail}")
+        }
+    };
+    let mut bind = |name: String, full_path: String| {
+        if !name.is_empty() && name != "*" {
+            refs.push(RawReference {
+                line,
+                source_symbol: None,
+                target_name: name,
+                target_qualifier: Some(full_path),
+                receiver_type: None,
+                kind: RefKind::ImportBinding,
+            });
+        }
+    };
+    match node.kind() {
+        "identifier" => {
+            let name = text(node, source);
+            let full = join(prefix, &name);
+            bind(name, full);
+        }
+        // `{self}` in a list re-binds the module itself under its last segment
+        "self" => {
+            if let Some(name) = prefix.rsplit("::").next() {
+                bind(name.to_string(), prefix.to_string());
+            }
+        }
+        "scoped_identifier" => {
+            let full = join(prefix, &text(node, source));
+            if let Some(name) = node.child_by_field_name("name") {
+                bind(text(&name, source), full);
+            }
+        }
+        "use_as_clause" => {
+            if let (Some(path), Some(alias)) = (
+                node.child_by_field_name("path"),
+                node.child_by_field_name("alias"),
+            ) {
+                bind(text(&alias, source), join(prefix, &text(&path, source)));
+            }
+        }
+        "scoped_use_list" => {
+            let new_prefix = node
+                .child_by_field_name("path")
+                .map(|p| join(prefix, &text(&p, source)))
+                .unwrap_or_else(|| prefix.to_string());
+            if let Some(list) = node.child_by_field_name("list") {
+                explode_use_tree(&list, source, &new_prefix, line, refs);
+            }
+        }
+        "use_list" => {
+            let mut cursor = node.walk();
+            for child in node.named_children(&mut cursor) {
+                explode_use_tree(&child, source, prefix, line, refs);
+            }
+        }
+        _ => {}
     }
 }
 

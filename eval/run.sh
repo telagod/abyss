@@ -6,6 +6,7 @@
 #   scip-go: go install github.com/scip-code/scip-go/cmd/scip-go@latest
 #   scip-typescript / scip-python:
 #            npm install -g @sourcegraph/scip-typescript @sourcegraph/scip-python
+#   rust-analyzer: rustup component add rust-analyzer
 set -euo pipefail
 
 EVAL_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -17,6 +18,8 @@ REPOS=(
   "gin|https://github.com/gin-gonic/gin.git|v1.10.0|scip-go"
   "hono|https://github.com/honojs/hono.git|v4.6.14|scip-typescript"
   "click|https://github.com/pallets/click.git|8.1.8|scip-python"
+  # dogfood: abyss itself, pinned to the commit the numbers were taken at
+  "abyss|https://github.com/telagod/abyss.git|8099aeb|rust-analyzer"
 )
 
 for entry in "${REPOS[@]}"; do
@@ -25,7 +28,11 @@ for entry in "${REPOS[@]}"; do
 
   if [ ! -d "$dir" ]; then
     echo "--- cloning $name @ $ref" >&2
-    git clone -q --depth 1 --branch "$ref" "$url" "$dir"
+    # tags/branches take the cheap path; bare commit shas need a full clone
+    git clone -q --depth 1 --branch "$ref" "$url" "$dir" 2>/dev/null || {
+      git clone -q "$url" "$dir"
+      git -C "$dir" checkout -q "$ref"
+    }
   fi
 
   cd "$dir"
@@ -41,6 +48,9 @@ for entry in "${REPOS[@]}"; do
         ;;
       scip-python)
         scip-python index . --project-name "$name" >&2
+        ;;
+      rust-analyzer)
+        rust-analyzer scip . --output index.scip >&2
         ;;
       *) echo "unknown indexer: $indexer" >&2; exit 1 ;;
     esac

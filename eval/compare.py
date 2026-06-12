@@ -37,6 +37,9 @@ def scip_symbol_name(symbol: str) -> str | None:
     # method on a type: Context#JSON()
     if "#" in last:
         last = last.split("#")[-1] or last.split("#")[0]
+    # rust-analyzer impl methods: impl#[IndexPipeline]run_structural()
+    if last.startswith("[") and "]" in last:
+        last = last.split("]", 1)[1]
     if last.endswith("()"):
         last = last[:-2]
     last = last.strip("`.")

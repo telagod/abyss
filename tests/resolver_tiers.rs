@@ -216,6 +216,98 @@ func Out() int { return Render() }
 // ═══ L0b: named-import binding tier (v0.3.3) ═══
 
 #[test]
+fn rust_use_binding_resolves_cross_module() {
+    // `use crate::util::helper` + bare helper(): the binding must beat the
+    // ambiguous-global tier despite a same-named decoy.
+    let fx = index_fixture(&[
+        ("src/util.rs", "pub fn helper() -> i32 { 1 }\n"),
+        ("src/other.rs", "pub fn helper() -> i32 { 2 }\n"),
+        (
+            "src/main.rs",
+            "use crate::util::helper;\n\nfn m() -> i32 { helper() }\n",
+        ),
+    ]);
+    let refs: Vec<_> = call_refs_to(&fx.repo, "helper")
+        .into_iter()
+        .filter(|r| r.source_path == "src/main.rs")
+        .collect();
+    assert_eq!(refs.len(), 1, "{refs:?}");
+    assert_eq!(refs[0].confidence, 0.95);
+    assert_eq!(refs[0].target_path.as_deref(), Some("src/util.rs"));
+}
+
+#[test]
+fn rust_pub_use_reexport_chain_resolves_to_definition() {
+    // mod.rs re-exports (`pub use repo::Repository`) — the barrel chase must
+    // land on the defining file.
+    let fx = index_fixture(&[
+        (
+            "src/storage/repo.rs",
+            "pub struct Repository;\n\nimpl Repository {\n    pub fn open() -> Self { Repository }\n}\n",
+        ),
+        (
+            "src/storage/mod.rs",
+            "mod repo;\npub use repo::Repository;\n",
+        ),
+        (
+            "src/main.rs",
+            "use crate::storage::Repository;\n\nfn m() {\n    let _r = Repository::open();\n}\n",
+        ),
+    ]);
+    let refs: Vec<_> = call_refs_to(&fx.repo, "open")
+        .into_iter()
+        .filter(|r| r.source_path == "src/main.rs")
+        .collect();
+    assert_eq!(refs.len(), 1, "{refs:?}");
+    assert!(
+        refs[0].confidence >= 0.95,
+        "assoc fn through re-export must resolve confidently: {refs:?}"
+    );
+    assert_eq!(refs[0].target_path.as_deref(), Some("src/storage/repo.rs"));
+}
+
+#[test]
+fn rust_associated_fn_receiver_type_disambiguates() {
+    // Chunker::new() — every type has `new`; the path qualifier IS the
+    // receiver type and must pick the right impl's file at 0.95.
+    let fx = index_fixture(&[
+        (
+            "src/chunker.rs",
+            "pub struct Chunker;\n\nimpl Chunker {\n    pub fn new() -> Self { Chunker }\n}\n",
+        ),
+        (
+            "src/parser.rs",
+            "pub struct Parser;\n\nimpl Parser {\n    pub fn new() -> Self { Parser }\n}\n",
+        ),
+        ("src/main.rs", "fn m() {\n    let _c = Chunker::new();\n}\n"),
+    ]);
+    let refs: Vec<_> = call_refs_to(&fx.repo, "new")
+        .into_iter()
+        .filter(|r| r.source_path == "src/main.rs")
+        .collect();
+    assert_eq!(refs.len(), 1, "{refs:?}");
+    assert_eq!(refs[0].confidence, 0.95);
+    assert_eq!(refs[0].target_path.as_deref(), Some("src/chunker.rs"));
+}
+
+#[test]
+fn oversized_function_keeps_its_symbol() {
+    // A function longer than the chunker's max_lines used to vanish from the
+    // symbols table — same-file calls to it fell to the ambiguous tiers.
+    let big_body = "    x = 1\n".repeat(120);
+    let source =
+        format!("def caller():\n    return big_fn()\n\ndef big_fn():\n{big_body}    return x\n");
+    let fx = index_fixture(&[("app/main.py", source.as_str())]);
+    let refs = call_refs_to(&fx.repo, "big_fn");
+    assert_eq!(refs.len(), 1, "{refs:?}");
+    assert_eq!(
+        refs[0].confidence, 1.0,
+        "same-file call to an oversized function must resolve at 1.0: {refs:?}"
+    );
+    assert_eq!(refs[0].target_path.as_deref(), Some("app/main.py"));
+}
+
+#[test]
 fn python_from_import_binding_resolves_cross_package() {
     // `from util import pfn` + bare pfn(): the binding must beat the
     // ambiguous-global tier despite a same-named decoy elsewhere.
