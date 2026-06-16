@@ -108,6 +108,15 @@ enum Commands {
         #[command(subcommand)]
         action: HookAction,
     },
+    /// Install abyss hooks into an agent host's settings (idempotent).
+    /// Supported hosts: claude
+    Attach {
+        /// Agent host (currently: claude)
+        host: String,
+        /// Write to <cwd>/.claude/settings.json instead of $HOME
+        #[arg(long)]
+        local: bool,
+    },
     /// Run as MCP server (stdio transport)
     Mcp,
 }
@@ -174,6 +183,7 @@ fn main() -> Result<()> {
         Commands::Map { limit } => cmd_map(config, limit, json),
         Commands::Stats => cmd_stats(config, json),
         Commands::Hook { action } => cmd_hook(config, action, json),
+        Commands::Attach { host, local } => cmd_attach(&host, local),
         Commands::Mcp => cmd_mcp(config),
     }
 }
@@ -696,6 +706,13 @@ fn hook_post_edit(config: Config) -> Result<()> {
     let pipeline = IndexPipeline::new(config);
     let _ = pipeline.run_structural(&repo);
     Ok(())
+}
+
+fn cmd_attach(host: &str, local: bool) -> Result<()> {
+    match host {
+        "claude" => code_abyss::attach::claude::install(local),
+        other => anyhow::bail!("unknown host: {other}; supported: claude"),
+    }
 }
 
 fn cmd_mcp(config: Config) -> Result<()> {
