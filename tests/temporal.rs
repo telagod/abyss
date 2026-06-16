@@ -93,6 +93,81 @@ fn hotspots_rank_changed_complex_files() {
 }
 
 #[test]
+fn git_history_skips_unindexed_paths() {
+    // Lock files, notes, deleted/vendored paths flood git history but are never
+    // indexed. They must not land in commit_files — every temporal consumer
+    // filters by an indexed path, so they'd be pure dead weight + coupling-N².
+    let fx = index_git_fixture(&[
+        &[
+            ("app/x.go", X_V[0]),
+            ("notes.txt", "just a note\n"),
+            ("deps.lock", "lockfile contents\n"),
+        ],
+        &[("app/x.go", X_V[1]), ("notes.txt", "updated note\n")],
+    ]);
+    let conn = fx.repo.conn();
+
+    let indexed_rows: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM commit_files WHERE file_path = 'app/x.go'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        indexed_rows, 2,
+        "indexed go file tracked across both commits"
+    );
+
+    let dead_rows: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM commit_files WHERE file_path IN ('notes.txt', 'deps.lock')",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(dead_rows, 0, "unindexed paths must not enter commit_files");
+}
+
+#[test]
+fn coupling_excludes_bulk_commits() {
+    // A reformat / dep-bump commit touching >50 files couples every pair —
+    // false signal and O(N²) blowup. Such commits must not generate coupling.
+    let n = 60;
+    let mk = |round: usize| -> Vec<(String, String)> {
+        (0..n)
+            .map(|i| {
+                (
+                    format!("app/f{i}.go"),
+                    format!("package app\n\nfunc F{i}() int {{ return {round} }}\n"),
+                )
+            })
+            .collect()
+    };
+    let v0 = mk(0);
+    let v1 = mk(1);
+    let v2 = mk(2);
+    fn to_refs(v: &[(String, String)]) -> Vec<(&str, &str)> {
+        v.iter().map(|(a, b)| (a.as_str(), b.as_str())).collect()
+    }
+    // Three commits each touching 60 files together — would be 60*59/2 = 1770
+    // coupling pairs each at co_changes=3 without the bulk guard.
+    let c0 = to_refs(&v0);
+    let c1 = to_refs(&v1);
+    let c2 = to_refs(&v2);
+    let fx = index_git_fixture(&[&c0, &c1, &c2]);
+    let conn = fx.repo.conn();
+
+    let pairs: i64 = conn
+        .query_row("SELECT COUNT(*) FROM change_coupling", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(
+        pairs, 0,
+        "bulk commits (>50 files) must not generate coupling"
+    );
+}
+
+#[test]
 fn non_git_workspace_indexes_without_temporal_data() {
     // Must not fail — temporal data is best-effort.
     let fx = index_fixture(&[("a.go", "package app\n\nfunc A() int { return 1 }\n")]);

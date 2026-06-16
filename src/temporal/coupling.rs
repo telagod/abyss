@@ -1,7 +1,14 @@
 use anyhow::Result;
+use rusqlite::params;
 use tracing::info;
 
 use crate::storage::Repository;
+
+/// Commits touching more than this many indexed files are excluded from change
+/// coupling. A `prettier --write .` / dep-bump / license-header commit couples
+/// every file to every other (O(N²) pairs) — a signal that's both false (no
+/// logical cohesion) and the source of runaway memory in the self-join.
+const BULK_COMMIT_THRESHOLD: i64 = 50;
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct CouplingPair {
@@ -27,9 +34,12 @@ pub fn compute_change_coupling(repo: &Repository, min_co_changes: u32) -> Result
                 MAX(1, (SELECT COUNT(DISTINCT commit_id) FROM commit_files WHERE file_path = a.file_path))
          FROM commit_files a
          JOIN commit_files b ON a.commit_id = b.commit_id AND a.file_path < b.file_path
+         WHERE a.commit_id IN (
+            SELECT commit_id FROM commit_files GROUP BY commit_id
+            HAVING COUNT(*) <= ?2)
          GROUP BY a.file_path, b.file_path
          HAVING COUNT(DISTINCT a.commit_id) >= ?1",
-        [min_co_changes],
+        params![min_co_changes, BULK_COMMIT_THRESHOLD],
     )?;
 
     let count: i64 = conn.query_row("SELECT COUNT(*) FROM change_coupling", [], |r| r.get(0))?;

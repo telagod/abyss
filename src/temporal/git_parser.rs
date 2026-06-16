@@ -90,11 +90,24 @@ pub fn parse_git_log_to_memory(workspace: &Path, since_days: u32) -> Result<GitD
     })
 }
 
-/// Write pre-parsed git data into DB (must run on main thread)
+/// Write pre-parsed git data into DB (must run on main thread).
+///
+/// Must run AFTER the files table is populated: git history records EVERY path
+/// ever touched — lock files, deleted files, vendored deps, binaries — none of
+/// which are indexed. Every temporal consumer (hotspot/coupling/evolution)
+/// JOINs files or filters by an indexed path, so unindexed rows are pure dead
+/// weight: they bloat commit_files and, worse, feed the O(N²) self-join in
+/// change coupling. We keep only rows whose path is an indexed file.
 pub fn write_git_data(repo: &Repository, data: &GitData) -> Result<GitStats> {
     let conn = repo.conn();
     let mut commits_parsed = 0u64;
     let mut files_touched = 0u64;
+
+    let indexed: std::collections::HashSet<String> = {
+        let mut stmt = conn.prepare("SELECT path FROM files")?;
+        let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+        rows.filter_map(|r| r.ok()).collect()
+    };
 
     conn.execute_batch("BEGIN TRANSACTION")?;
 
@@ -125,6 +138,11 @@ pub fn write_git_data(repo: &Repository, data: &GitData) -> Result<GitStats> {
         let mut stmt = conn.prepare_cached(
             "INSERT OR IGNORE INTO commit_files(commit_id,file_path,added,deleted) VALUES(?1,?2,?3,?4)")?;
         for (idx, fc) in &data.file_changes {
+            // Skip paths that aren't indexed code files — they're dead weight
+            // for every temporal consumer and inflate the coupling self-join.
+            if !indexed.contains(&fc.file_path) {
+                continue;
+            }
             if let Some(Some(commit_id)) = commit_ids.get(*idx) {
                 stmt.execute(params![commit_id, &fc.file_path, fc.added, fc.deleted])?;
                 files_touched += 1;
