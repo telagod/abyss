@@ -1,7 +1,7 @@
 use anyhow::Result;
 use rusqlite::Connection;
 
-pub const SCHEMA_VERSION: u32 = 4;
+pub const SCHEMA_VERSION: u32 = 5;
 
 pub fn init_db(conn: &Connection) -> Result<()> {
     conn.execute_batch("PRAGMA journal_mode = WAL;")?;
@@ -145,6 +145,32 @@ pub fn init_db(conn: &Connection) -> Result<()> {
             total_changes  INTEGER NOT NULL,
             coupling_score REAL NOT NULL,
             PRIMARY KEY (file_a, file_b)
+        );
+
+        -- ═══ v5: Architectural facts (L0 coordinates) ═══
+
+        CREATE TABLE IF NOT EXISTS arch_facts (
+            file_id            INTEGER PRIMARY KEY REFERENCES files(id) ON DELETE CASCADE,
+            layer              TEXT NOT NULL DEFAULT 'unknown',     -- entry|api|domain|infra|util|test|config|vendor|generated|unknown
+            role               TEXT NOT NULL DEFAULT 'unknown',     -- entry_point|core|leaf|bridge|orphan|unknown
+            module_id          INTEGER NOT NULL DEFAULT 0,
+            depth_from_entry   INTEGER,                              -- nullable: unreachable from entry
+            centrality         REAL NOT NULL DEFAULT 0.0,           -- PageRank score
+            in_degree          INTEGER NOT NULL DEFAULT 0,
+            out_degree         INTEGER NOT NULL DEFAULT 0,
+            layer_conf         REAL NOT NULL DEFAULT 0.0,           -- fusion confidence [0,1]
+            signals            TEXT NOT NULL DEFAULT '{}'           -- JSON: which rules fired (for debug)
+        );
+        CREATE INDEX IF NOT EXISTS idx_arch_layer ON arch_facts(layer);
+        CREATE INDEX IF NOT EXISTS idx_arch_module ON arch_facts(module_id);
+        CREATE INDEX IF NOT EXISTS idx_arch_role ON arch_facts(role);
+
+        CREATE TABLE IF NOT EXISTS arch_modules (
+            module_id          INTEGER PRIMARY KEY,
+            label              TEXT NOT NULL DEFAULT '',           -- e.g. auth/session or graph/languages
+            file_count         INTEGER NOT NULL DEFAULT 0,
+            centroid_path      TEXT NOT NULL DEFAULT '',           -- longest common dir prefix
+            dominant_layer     TEXT NOT NULL DEFAULT 'unknown'     -- modal layer of member files
         );
         ",
     )?;
