@@ -807,17 +807,43 @@ fn longest_common_prefix(paths: &[String]) -> String {
 /// Human-readable module label. Prefers the deepest meaningful directory name
 /// from the centroid path; falls back to `module-{id}` when there's nothing
 /// to derive.
-fn derive_label(centroid: &str, _paths: &[String], id: i64) -> String {
+fn derive_label(centroid: &str, paths: &[String], id: i64) -> String {
+    // First choice: the deepest directory segment of the longest common prefix.
+    // Example: members all under `src/auth/` → label "auth".
     let trimmed = centroid.trim_end_matches('/');
-    if trimmed.is_empty() {
-        return format!("module-{id}");
+    if !trimmed.is_empty() {
+        let last = trimmed.rsplit('/').next().unwrap_or(trimmed);
+        if !last.is_empty() && last != "src" {
+            return last.to_string();
+        }
     }
-    let last = trimmed.rsplit('/').next().unwrap_or(trimmed);
-    if last.is_empty() {
-        format!("module-{id}")
-    } else {
-        last.to_string()
+
+    // Fallback: members are scattered (no common prefix beyond "src/" or none).
+    // Pick the modal second-from-top directory segment across members so a
+    // module of {src/graph/extractor.rs, src/graph/languages/go.rs, …} labels
+    // as "graph" instead of "module-5". Skip the topmost segment because it's
+    // almost always "src"/"pkg"/"internal" and not discriminative.
+    use std::collections::HashMap;
+    let mut counts: HashMap<&str, usize> = HashMap::new();
+    for p in paths {
+        let segs: Vec<&str> = p.split('/').collect();
+        // Prefer 2nd segment (segs[1]) when there's at least 3 segments;
+        // fall back to 1st when path is shallow (e.g. "cmd/main.go").
+        let pick = if segs.len() >= 3 {
+            segs[1]
+        } else if segs.len() == 2 {
+            segs[0]
+        } else {
+            continue;
+        };
+        if !pick.is_empty() {
+            *counts.entry(pick).or_insert(0) += 1;
+        }
     }
+    if let Some((seg, _)) = counts.iter().max_by_key(|(_, n)| **n) {
+        return (*seg).to_string();
+    }
+    format!("module-{id}")
 }
 
 #[cfg(test)]
@@ -846,7 +872,31 @@ mod arch_tests {
 
     #[test]
     fn derive_label_from_centroid() {
+        // Common prefix beyond "src/" — deepest dir wins.
         assert_eq!(derive_label("src/auth/", &[], 0), "auth");
+        // No common prefix AND no paths — fall through to "module-N".
         assert_eq!(derive_label("", &[], 7), "module-7");
+    }
+
+    #[test]
+    fn derive_label_modal_second_segment() {
+        // Scattered members under src/graph/* — modal 2nd segment "graph" wins.
+        let paths = vec![
+            "src/graph/extractor.rs".to_string(),
+            "src/graph/languages/go.rs".to_string(),
+            "src/graph/languages/rust_lang.rs".to_string(),
+        ];
+        assert_eq!(derive_label("", &paths, 5), "graph");
+    }
+
+    #[test]
+    fn derive_label_skips_src_in_common_prefix() {
+        // Common prefix is just "src/" — that's the boring top-level.
+        // Should fall through to modal 2nd segment, which is "storage".
+        let paths = vec![
+            "src/storage/repo.rs".to_string(),
+            "src/storage/schema.rs".to_string(),
+        ];
+        assert_eq!(derive_label("src/", &paths, 0), "storage");
     }
 }

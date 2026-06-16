@@ -302,23 +302,48 @@ pub fn render_card(ctx: &serde_json::Value, file_path: &str, staleness_ms: u128)
         .get("epoch")
         .and_then(serde_json::Value::as_i64)
         .unwrap_or(0);
-    let layer = ctx
-        .get("layer")
+
+    // L0 architectural coordinates live under ctx.arch (populated by
+    // enrich_ctx_for_card via where_summary). Fall back to "unknown" / dir
+    // path only if the arch step hasn't run on this index yet.
+    let arch = ctx.get("arch");
+    let layer = arch
+        .and_then(|a| a.get("layer"))
         .and_then(serde_json::Value::as_str)
         .unwrap_or("unknown");
-    let module = ctx
-        .get("module")
+    let module = arch
+        .and_then(|a| a.get("module_label"))
         .and_then(serde_json::Value::as_str)
+        .filter(|s| !s.is_empty())
         .unwrap_or_else(|| {
             file_path
                 .rsplit_once('/')
                 .map(|(dir, _)| dir)
                 .unwrap_or("unknown")
         });
-    let role = ctx
-        .get("role")
+    let role = arch
+        .and_then(|a| a.get("role"))
         .and_then(serde_json::Value::as_str)
         .unwrap_or("unknown");
+    let centrality = arch
+        .and_then(|a| a.get("centrality"))
+        .and_then(serde_json::Value::as_f64)
+        .unwrap_or(0.0);
+    let layer_conf = arch
+        .and_then(|a| a.get("layer_conf"))
+        .and_then(serde_json::Value::as_f64)
+        .unwrap_or(0.0);
+    let depth = arch
+        .and_then(|a| a.get("depth_from_entry"))
+        .and_then(serde_json::Value::as_i64);
+    let in_deg = arch
+        .and_then(|a| a.get("in_degree"))
+        .and_then(serde_json::Value::as_i64)
+        .unwrap_or(0);
+    let out_deg = arch
+        .and_then(|a| a.get("out_degree"))
+        .and_then(serde_json::Value::as_i64)
+        .unwrap_or(0);
 
     let empty = Vec::new();
     let sym_callers = ctx["symbols_with_external_callers"]
@@ -339,7 +364,11 @@ pub fn render_card(ctx: &serde_json::Value, file_path: &str, staleness_ms: u128)
         .collect::<Vec<_>>()
         .join(", ");
     body.push_str(&format!(
-        "where\n  layer={layer} · module={module} · role={role}\n"
+        "where\n  layer={layer} · module={module} · role={role} · conf={layer_conf:.2}\n"
+    ));
+    let depth_str = depth.map(|d| d.to_string()).unwrap_or_else(|| "—".into());
+    body.push_str(&format!(
+        "  depth_from_entry={depth_str} · centrality={centrality:.2} · in={in_deg} out={out_deg}\n"
     ));
     if sib_count > 0 {
         body.push_str(&format!("  siblings({sib_count}): {sib_preview}"));
