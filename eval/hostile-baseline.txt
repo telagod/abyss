@@ -1,0 +1,22 @@
+[hostile] target: abyss dogfood (82 files, 530 symbols, 4626 refs, 50 commits)
+[hostile] parallelism=4 bursts=10 100 500
+[hostile] index built in 81ms (cold)
+
+BEFORE merging W1 fixes (v0.3.6: sync run_structural in hook + N+1 caller lookup)
+  BURST=10  | p50=138.55ms p95=171.65ms p99= 171.65ms | card body p50=    0 p95=  129 p99=  129
+  BURST=100 | p50= 77.23ms p95=372.60ms p99=1072.43ms | card body p50=    0 p95=  187 p99=  188
+  BURST=500 | p50=103.78ms p95=473.33ms p99= 901.21ms | card body p50=    0 p95=  187 p99=  188
+
+AFTER W1 (read-only hook + JOIN-flattened context.rs + rendered <abyss-card>)
+  BURST=10  | p50=  4.36ms p95=  8.34ms p99=   8.34ms | card body p50=  612 p95=  865 p99=  865
+  BURST=100 | p50=  5.19ms p95=  8.52ms p99=  11.13ms | card body p50=  566 p95= 1319 p99= 2187
+  BURST=500 | p50=  5.31ms p95=  9.34ms p99=  11.13ms | card body p50=  589 p95= 1077 p99= 2187
+
+  hook p50  : 138.55ms → 4.36ms   ~32x
+  hook p95  : 171.65ms → 8.34ms   ~21x
+  hook p99  : 1072.43ms → 11.13ms ~96x  (burst=100, the silent-killer case)
+  card body : 0 bytes → 566-2187 bytes (rendered <abyss-card> with all 6 sections)
+
+All percentiles well under the 250ms third-edit-in-burst p99 target set by
+the adversarial KPI review. Tested only on the dogfood corpus — replays on
+larger polyglot monorepos (Linux kernel, etc.) are the next gate.

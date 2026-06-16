@@ -36,9 +36,27 @@ BURST_SIZES="${BURST_SIZES:-10 100 500}"
 
 # ---- prereqs ---------------------------------------------------------------
 need() { command -v "$1" >/dev/null 2>&1 || { echo "missing dep: $1" >&2; exit 1; }; }
-need sqlite3
 need jq
 need cargo
+
+# sqlite3 CLI is preferred; fall back to python3 with stdlib sqlite3 module if
+# the CLI isn't installed (common on minimal Linux images).
+if command -v sqlite3 >/dev/null 2>&1; then
+  sqlite3_query() { sqlite3 "$1" "$2"; }
+elif command -v python3 >/dev/null 2>&1; then
+  echo "[hostile] sqlite3 CLI not found — using python3 stdlib fallback" >&2
+  sqlite3_query() {
+    python3 -c '
+import sqlite3, sys
+db, sql = sys.argv[1], sys.argv[2]
+con = sqlite3.connect(db)
+for row in con.execute(sql):
+    print("|".join(str(c) if c is not None else "" for c in row))
+' "$1" "$2"
+  }
+else
+  echo "missing dep: sqlite3 (CLI or python3)" >&2; exit 1
+fi
 
 REPO="$(cd "$REPO" && pwd)"
 DB="$REPO/.code-abyss/index.db"
@@ -62,7 +80,7 @@ rm -f "$DB"
 echo "[hostile] phase 2: selecting hub files"
 HUBS_FILE="$(mktemp)"
 trap 'rm -f "$HUBS_FILE"' EXIT
-sqlite3 "$DB" \
+sqlite3_query "$DB" \
   "SELECT f.path FROM files f
      JOIN symbols s ON s.file_id = f.id
      GROUP BY f.id
@@ -97,7 +115,7 @@ SUPPORTED_LIKE="path LIKE '%.go' OR path LIKE '%.rs' OR path LIKE '%.ts'
 # we sample WITH replacement so BURST=500 on a 60-file repo still simulates
 # 500 hook invocations (file-system save storms are not deduped).
 POOL="$TMPDIR_RUN/pool"
-sqlite3 "$DB" "SELECT path FROM files WHERE $SUPPORTED_LIKE;" > "$POOL"
+sqlite3_query "$DB" "SELECT path FROM files WHERE $SUPPORTED_LIKE;" > "$POOL"
 POOL_SIZE=$(wc -l < "$POOL")
 echo "[hostile] supported-file pool size: $POOL_SIZE"
 [[ "$POOL_SIZE" -gt 0 ]] || { echo "no supported files indexed — abort" >&2; exit 1; }

@@ -1,0 +1,53 @@
+{
+  "timestamp": "2026-06-16T20:05:05Z",
+  "repo": "/home/telagod/project/code-abyss-dev",
+  "host": "Linux 6.17.0-35-generic x86_64",
+  "abyss_version": "0.3.6",
+  "runs": [
+    {
+      "burst": 10,
+      "picked": 10,
+      "parallelism": 4,
+      "hook_latency_ms": {
+        "p50": 4.36,
+        "p95": 8.34,
+        "p99": 8.34
+      },
+      "card_bytes": {
+        "p50": 612,
+        "p95": 865,
+        "p99": 865
+      }
+    },
+    {
+      "burst": 100,
+      "picked": 100,
+      "parallelism": 4,
+      "hook_latency_ms": {
+        "p50": 5.19,
+        "p95": 8.52,
+        "p99": 11.13
+      },
+      "card_bytes": {
+        "p50": 566,
+        "p95": 1319,
+        "p99": 2187
+      }
+    },
+    {
+      "burst": 500,
+      "picked": 500,
+      "parallelism": 4,
+      "hook_latency_ms": {
+        "p50": 5.31,
+        "p95": 9.34,
+        "p99": 11.13
+      },
+      "card_bytes": {
+        "p50": 589,
+        "p95": 1077,
+        "p99": 2187
+      }
+    }
+  ]
+}
