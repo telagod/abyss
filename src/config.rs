@@ -24,6 +24,10 @@ pub struct IndexConfig {
     pub min_chunk_tokens: usize,
     pub watch: bool,
     pub languages: Vec<String>,
+    /// When false (default), machine-generated files (DO NOT EDIT markers) keep
+    /// their symbols but skip ref extraction — they're 35%+ noise in codegen-
+    /// heavy repos. Set true to index them fully.
+    pub index_generated: bool,
 }
 
 impl Config {
@@ -57,6 +61,7 @@ impl Default for IndexConfig {
             min_chunk_tokens: 32,
             watch: true,
             languages: vec![],
+            index_generated: false,
         }
     }
 }

@@ -39,7 +39,7 @@ Results in `eval/RESULTS.md`. All corpora must stay ≥98.5% gated precision —
 `IndexPipeline::run_structural()` is the hot path:
 1. **Walk** (`walker.rs`) — `ignore`-crate respects `.gitignore`
 2. **Hash-check** — blake3 content hash; skip unchanged files
-3. **Parallel parse** (rayon) — tree-sitter AST per file, extract chunks + symbols + raw refs + complexity. CPU-bound, no DB access
+3. **Parallel parse** (rayon) — tree-sitter AST per file, extract chunks + symbols + raw refs + complexity. CPU-bound, no DB access. Machine-generated files (`parser::is_generated` — `DO NOT EDIT`/`@generated` markers) keep symbols+chunks but skip ref extraction unless `--index-generated`
 4. **Git log** — parsed in a background thread concurrently with step 3
 5. **Batch insert** — single transaction, prepared statements
 6. **Resolve import bindings** — module-path → file_id mapping per language, then barrel/`pub use` chain chasing (bounded fixpoint, 5 hops)
@@ -106,6 +106,7 @@ Behind `--features semantic`. The `Embedder` in slim builds is an unconstructabl
 - **Confidence is a contract.** Every ref carries a confidence score stored in the DB. Agent-facing APIs default to `min_confidence=0.7` to filter noise. Changes to confidence thresholds require eval validation.
 - **Hash-incremental indexing.** Only re-indexes files whose blake3 hash changed. The pipeline is designed to run in <5s on medium codebases.
 - **Hooks must never block the agent.** `cmd_hook` silently succeeds on every error path — no panics, no stderr noise except actionable warnings.
+- **Bounded resource use.** Three guards keep the index proportional to hand-written code, not to repo size: workspace safety (refuse `$HOME`/`/`, file-count circuit breaker without `.git`), bounded temporal mining (`commit_files` keeps only indexed-file paths; coupling excludes bulk commits >50 files), and codegen-aware indexing (generated files skip ref extraction). Measured: a 1953-file Go backend's index dropped 102MB → 75MB, refs −34%, coupling −90%.
 
 ## CI
 

@@ -47,6 +47,10 @@ enum Commands {
         /// Max files to index before aborting (0 = no limit; default 50000 without .git)
         #[arg(long)]
         max_files: Option<u64>,
+        /// Extract refs from machine-generated files too (DO NOT EDIT markers);
+        /// default keeps their symbols but skips their high-noise call edges
+        #[arg(long)]
+        index_generated: bool,
     },
     /// Generate embeddings for semantic search. Slow, run after `index`.
     #[cfg(feature = "semantic")]
@@ -145,7 +149,11 @@ fn main() -> Result<()> {
     let json = cli.json;
 
     match cli.command {
-        Commands::Index { force, max_files } => cmd_index(config, json, force, max_files),
+        Commands::Index {
+            force,
+            max_files,
+            index_generated,
+        } => cmd_index(config, json, force, max_files, index_generated),
         #[cfg(feature = "semantic")]
         Commands::Embed => cmd_embed(config),
         #[cfg(feature = "semantic")]
@@ -194,8 +202,15 @@ fn check_workspace_safety(workspace: &std::path::Path, force: bool) -> Result<()
     Ok(())
 }
 
-fn cmd_index(config: Config, json: bool, force: bool, max_files: Option<u64>) -> Result<()> {
+fn cmd_index(
+    mut config: Config,
+    json: bool,
+    force: bool,
+    max_files: Option<u64>,
+    index_generated: bool,
+) -> Result<()> {
     check_workspace_safety(&config.workspace, force)?;
+    config.index.index_generated = index_generated;
 
     let repo = Repository::open(&config.db_path, config.model.dimensions)?;
     let mut pipeline = IndexPipeline::new(config.clone());

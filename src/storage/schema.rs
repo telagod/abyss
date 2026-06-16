@@ -1,7 +1,7 @@
 use anyhow::Result;
 use rusqlite::Connection;
 
-pub const SCHEMA_VERSION: u32 = 3;
+pub const SCHEMA_VERSION: u32 = 4;
 
 pub fn init_db(conn: &Connection) -> Result<()> {
     conn.execute_batch("PRAGMA journal_mode = WAL;")?;
@@ -23,7 +23,8 @@ pub fn init_db(conn: &Connection) -> Result<()> {
             language TEXT,
             mtime    INTEGER NOT NULL,
             size     INTEGER NOT NULL,
-            dir      TEXT NOT NULL DEFAULT ''
+            dir      TEXT NOT NULL DEFAULT '',
+            generated INTEGER NOT NULL DEFAULT 0  -- machine-generated (DO NOT EDIT); refs skipped
         );
         CREATE INDEX IF NOT EXISTS idx_files_path ON files(path);
         CREATE INDEX IF NOT EXISTS idx_files_dir ON files(dir);
@@ -162,6 +163,12 @@ pub fn init_db(conn: &Connection) -> Result<()> {
         .unwrap_or(0);
     if version < 3 {
         let _ = conn.execute("ALTER TABLE refs ADD COLUMN receiver_type TEXT", []);
+    }
+    if version < 4 {
+        let _ = conn.execute(
+            "ALTER TABLE files ADD COLUMN generated INTEGER NOT NULL DEFAULT 0",
+            [],
+        );
     }
 
     // Set schema version

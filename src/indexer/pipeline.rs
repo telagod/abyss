@@ -23,6 +23,7 @@ struct FileOutput {
     refs: Vec<RawReference>,
     complexity: f64,
     max_func_lines: u32,
+    generated: bool,
 }
 
 /// Workspace-relative path with unix separators — the canonical form stored in
@@ -134,10 +135,11 @@ impl IndexPipeline {
         use rayon::prelude::*;
 
         let workspace = self.config.workspace.clone();
+        let index_generated = self.config.index.index_generated;
         let outputs: Vec<FileOutput> = to_index
             .par_iter()
             .filter_map(|(path, rel_path)| {
-                Self::process_file_parallel(&workspace, rel_path, path).ok()
+                Self::process_file_parallel(&workspace, rel_path, path, index_generated).ok()
             })
             .collect();
 
@@ -194,10 +196,16 @@ impl IndexPipeline {
     }
 
     /// Pure CPU work — no DB access, safe for parallel execution
-    fn process_file_parallel(_workspace: &Path, rel_path: &str, path: &Path) -> Result<FileOutput> {
+    fn process_file_parallel(
+        _workspace: &Path,
+        rel_path: &str,
+        path: &Path,
+        index_generated: bool,
+    ) -> Result<FileOutput> {
         let source = std::fs::read_to_string(path)?;
         let hash = blake3::hash(source.as_bytes()).to_hex().to_string();
         let language = parser::detect_language(rel_path);
+        let generated = parser::is_generated(&source);
         let mtime = std::fs::metadata(path)?
             .modified()?
             .duration_since(std::time::UNIX_EPOCH)?
@@ -235,7 +243,12 @@ impl IndexPipeline {
         let mut max_func_lines = 0u32;
 
         if let (Some(tree), Some(lang)) = (&tree, &language) {
-            if let Some(extractor) = languages::get_extractor(lang) {
+            // Generated code keeps its symbols (chunks above) so hand-written
+            // callers still resolve, but its own call edges are mechanical
+            // noise — skip ref extraction unless explicitly opted in.
+            if (!generated || index_generated)
+                && let Some(extractor) = languages::get_extractor(lang)
+            {
                 refs = extractor.extract(tree, &source);
             }
             complexity =
@@ -253,6 +266,7 @@ impl IndexPipeline {
             refs,
             complexity,
             max_func_lines,
+            generated,
         })
     }
 
@@ -270,6 +284,7 @@ impl IndexPipeline {
             out.language.as_deref(),
             out.mtime,
             out.size,
+            out.generated,
         )?;
         let conn = repo.conn();
 
@@ -864,7 +879,9 @@ impl IndexPipeline {
             repo.delete_file(old_id)?;
         }
 
-        let file_id = repo.upsert_file(rel_path, &hash, language.as_deref(), mtime, size)?;
+        let generated = parser::is_generated(&source);
+        let file_id =
+            repo.upsert_file(rel_path, &hash, language.as_deref(), mtime, size, generated)?;
         let chunks = self.parse_and_chunk(&source, language.as_deref());
 
         let mut count = 0u64;

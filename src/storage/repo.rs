@@ -84,16 +84,17 @@ impl Repository {
         language: Option<&str>,
         mtime: i64,
         size: i64,
+        generated: bool,
     ) -> Result<i64> {
         let dir = match path.rfind('/') {
             Some(pos) => &path[..pos + 1],
             None => "",
         };
         self.conn.execute(
-            "INSERT INTO files(path, hash, language, mtime, size, dir)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-             ON CONFLICT(path) DO UPDATE SET hash=?2, language=?3, mtime=?4, size=?5, dir=?6",
-            params![path, hash, language, mtime, size, dir],
+            "INSERT INTO files(path, hash, language, mtime, size, dir, generated)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+             ON CONFLICT(path) DO UPDATE SET hash=?2, language=?3, mtime=?4, size=?5, dir=?6, generated=?7",
+            params![path, hash, language, mtime, size, dir, generated as i64],
         )?;
         Ok(self.conn.last_insert_rowid())
     }
