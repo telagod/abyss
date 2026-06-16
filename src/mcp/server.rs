@@ -203,6 +203,41 @@ pub struct CoupledPairItem {
     pub coupling_score: f64,
 }
 
+// --- Arch map tool types ---
+
+#[derive(Deserialize, schemars::JsonSchema, Default)]
+pub struct ArchMapInput {}
+
+#[derive(Serialize, schemars::JsonSchema)]
+pub struct ArchMapOutput {
+    pub total_files: u64,
+    pub modules: Vec<ArchModuleItem>,
+    pub layers: Vec<LabelCount>,
+    pub roles: Vec<LabelCount>,
+    pub top_centrality: Vec<CentralityItem>,
+}
+
+#[derive(Serialize, schemars::JsonSchema)]
+pub struct ArchModuleItem {
+    pub id: i64,
+    pub label: String,
+    pub files: u64,
+    pub dominant_layer: String,
+    pub centroid_path: String,
+}
+
+#[derive(Serialize, schemars::JsonSchema)]
+pub struct LabelCount {
+    pub label: String,
+    pub count: u64,
+}
+
+#[derive(Serialize, schemars::JsonSchema)]
+pub struct CentralityItem {
+    pub path: String,
+    pub centrality: f64,
+}
+
 // --- Evolution tool types ---
 
 #[derive(Deserialize, schemars::JsonSchema, Default)]
@@ -476,6 +511,54 @@ impl McpServer {
                 .collect(),
             total_files,
             total_refs,
+        })
+    }
+
+    #[tool(
+        name = "arch_map",
+        description = "L0 architectural map of the codebase: per-layer / per-role file counts, Louvain modules with labels and dominant layers, and the top-N files by PageRank centrality. Use to answer 'what does this codebase look like overall?' without crawling individual files."
+    )]
+    fn arch_map(&self, Parameters(_input): Parameters<ArchMapInput>) -> Json<ArchMapOutput> {
+        let repo = self.repo.lock().unwrap();
+        let total_files = repo.file_count().unwrap_or(0) as u64;
+        let modules = repo.list_arch_modules().unwrap_or_default();
+        let layers = repo.arch_layer_counts().unwrap_or_default();
+        let roles = repo.arch_role_counts().unwrap_or_default();
+        let top_central = repo.arch_top_centrality(10).unwrap_or_default();
+
+        Json(ArchMapOutput {
+            total_files,
+            modules: modules
+                .into_iter()
+                .map(|m| ArchModuleItem {
+                    id: m.id,
+                    label: m.label,
+                    files: m.file_count as u64,
+                    dominant_layer: m.dominant_layer,
+                    centroid_path: m.centroid_path,
+                })
+                .collect(),
+            layers: layers
+                .into_iter()
+                .map(|(k, v)| LabelCount {
+                    label: k,
+                    count: v as u64,
+                })
+                .collect(),
+            roles: roles
+                .into_iter()
+                .map(|(k, v)| LabelCount {
+                    label: k,
+                    count: v as u64,
+                })
+                .collect(),
+            top_centrality: top_central
+                .into_iter()
+                .map(|(path, c)| CentralityItem {
+                    path,
+                    centrality: c,
+                })
+                .collect(),
         })
     }
 
