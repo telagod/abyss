@@ -20,3 +20,15 @@ AFTER W1 (read-only hook + JOIN-flattened context.rs + rendered <abyss-card>)
 All percentiles well under the 250ms third-edit-in-burst p99 target set by
 the adversarial KPI review. Tested only on the dogfood corpus — replays on
 larger polyglot monorepos (Linux kernel, etc.) are the next gate.
+
+AFTER W3/L0 (+ arch_facts populated via dir+name+entry+PageRank+SCC+Louvain)
+  BURST=10  | p50=  5.30ms p95=  7.09ms p99=   7.09ms | card body p50=  672 p95= 1263 p99= 1263
+  BURST=100 | p50=  5.51ms p95= 10.39ms p99=  16.38ms | card body p50=  655 p95= 1263 p99= 1454
+  BURST=500 | p50=  5.36ms p95=  8.24ms p99=  10.35ms | card body p50=  674 p95= 1140 p99= 2853
+
+  Adding the L0 layer/module/role lookup to render_card cost the hook
+  ~5ms p99 on burst=100 (11→16ms) and grew the card body p99 by ~700B
+  (depth/centrality/in/out is one extra line). Both well inside budget.
+
+  abyss arch step itself: 4ms on 91 files / 10 modules at the tail of
+  IndexPipeline::run_structural — 3% of total cold-index time.
