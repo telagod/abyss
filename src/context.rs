@@ -180,6 +180,221 @@ pub fn build_file_context(repo: &Repository, file: &str) -> Result<Option<serde_
     })))
 }
 
+/// Render the pre-edit context as a structured `<abyss-card>` system-reminder
+/// block. Output is meant to be written to stderr by the hook — Claude Code
+/// surfaces hook stderr to the agent verbatim, so this is how we get a card
+/// into the agent's view without any tool-result plumbing.
+///
+/// The card is best-effort: every section is skipped cleanly if its data is
+/// missing from `ctx`. Body is hard-capped at `BODY_BUDGET_CHARS` (~1800
+/// tokens at 4 chars/token) so it never crowds the conversation.
+pub fn render_card(ctx: &serde_json::Value, file_path: &str, staleness_ms: u128) -> String {
+    const BODY_BUDGET_CHARS: usize = 7200;
+    const HIGH_BLAST_RADIUS: usize = 10;
+
+    let epoch = ctx
+        .get("epoch")
+        .and_then(serde_json::Value::as_i64)
+        .unwrap_or(0);
+    let layer = ctx
+        .get("layer")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("unknown");
+    let module = ctx
+        .get("module")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_else(|| {
+            file_path
+                .rsplit_once('/')
+                .map(|(dir, _)| dir)
+                .unwrap_or("unknown")
+        });
+    let role = ctx
+        .get("role")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("unknown");
+
+    let empty = Vec::new();
+    let sym_callers = ctx["symbols_with_external_callers"]
+        .as_array()
+        .unwrap_or(&empty);
+    let deps = ctx["dependencies"].as_array().unwrap_or(&empty);
+    let coupled = ctx["coupled_files"].as_array().unwrap_or(&empty);
+    let siblings = ctx["siblings"].as_array().unwrap_or(&empty);
+
+    let mut body = String::new();
+
+    // ---- header line: where am I in the system ----
+    let sib_count = siblings.len();
+    let sib_preview = siblings
+        .iter()
+        .take(6)
+        .filter_map(|s| s.as_str())
+        .collect::<Vec<_>>()
+        .join(", ");
+    body.push_str(&format!(
+        "where\n  layer={layer} · module={module} · role={role}\n"
+    ));
+    if sib_count > 0 {
+        body.push_str(&format!("  siblings({sib_count}): {sib_preview}"));
+        if sib_count > 6 {
+            body.push_str(&format!(" … +{} more", sib_count - 6));
+        }
+        body.push('\n');
+    }
+
+    // ---- depends-on: outgoing deps, grouped per target file ----
+    if !deps.is_empty() {
+        body.push_str("\ndepends-on (top 6)\n");
+        // Group by file → list of names.
+        let mut by_file: Vec<(String, Vec<String>)> = Vec::new();
+        for d in deps {
+            let file = d["file"].as_str().unwrap_or("?").to_string();
+            let name = d["name"].as_str().unwrap_or("?").to_string();
+            match by_file.iter_mut().find(|(f, _)| f == &file) {
+                Some((_, ns)) => ns.push(name),
+                None => by_file.push((file, vec![name])),
+            }
+        }
+        let total = by_file.len();
+        for (file, mut names) in by_file.iter().take(6).cloned().collect::<Vec<_>>() {
+            names.sort();
+            names.dedup();
+            let n = names.len();
+            let shown = names.iter().take(4).cloned().collect::<Vec<_>>().join(", ");
+            let suffix = if n > 4 {
+                format!(", +{} more", n - 4)
+            } else {
+                String::new()
+            };
+            body.push_str(&format!("  → {file} :{shown}{suffix}  ({n} refs)\n"));
+        }
+        if total > 6 {
+            body.push_str(&format!("  +{} more\n", total - 6));
+        }
+    }
+
+    // ---- depended-on: incoming production callers, with blast-radius flag ----
+    let mut prod_callers = 0usize;
+    let mut test_callers = 0usize;
+    let mut callers_per_file: Vec<(String, usize)> = Vec::new();
+    for s in sym_callers {
+        if let Some(arr) = s["external_callers"].as_array() {
+            for c in arr {
+                let is_test = c["is_test"].as_bool().unwrap_or(false);
+                let file = c["file"].as_str().unwrap_or("?").to_string();
+                if is_test {
+                    test_callers += 1;
+                } else {
+                    prod_callers += 1;
+                    match callers_per_file.iter_mut().find(|(f, _)| f == &file) {
+                        Some((_, n)) => *n += 1,
+                        None => callers_per_file.push((file, 1)),
+                    }
+                }
+            }
+        }
+    }
+    if prod_callers > 0 || test_callers > 0 {
+        let blast = if prod_callers >= HIGH_BLAST_RADIUS {
+            "  ⚠ HIGH BLAST RADIUS"
+        } else {
+            ""
+        };
+        body.push_str(&format!("\ndepended-on{blast}\n"));
+        body.push_str(&format!(
+            "  ← {prod_callers} prod callers across {} files, {test_callers} test callers\n",
+            callers_per_file.len()
+        ));
+        callers_per_file.sort_by_key(|x| std::cmp::Reverse(x.1));
+        let hottest = callers_per_file
+            .iter()
+            .take(3)
+            .map(|(f, n)| format!("{f}({n})"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        if !hottest.is_empty() {
+            body.push_str(&format!("  hottest: {hottest}\n"));
+        }
+    }
+
+    // ---- contracts: exported symbols + their reach ----
+    if !sym_callers.is_empty() {
+        body.push_str("\ncontracts (exported symbols & callers)\n");
+        for s in sym_callers {
+            let name = s["symbol"].as_str().unwrap_or("?");
+            let kind = s["kind"].as_str().unwrap_or("");
+            let (n_prod, n_test) = s["external_callers"]
+                .as_array()
+                .map(|arr| {
+                    arr.iter().fold((0usize, 0usize), |(p, t), c| {
+                        if c["is_test"].as_bool().unwrap_or(false) {
+                            (p, t + 1)
+                        } else {
+                            (p + 1, t)
+                        }
+                    })
+                })
+                .unwrap_or((0, 0));
+            body.push_str(&format!(
+                "  {name} ({kind}) → [{n_prod} callers, {n_test} tests]\n"
+            ));
+        }
+    }
+
+    // ---- change-coupling: files that historically move together ----
+    if !coupled.is_empty() {
+        body.push_str("\nchange-coupling (90d)\n");
+        for c in coupled.iter().take(6) {
+            let f = c["file"].as_str().unwrap_or("?");
+            let coupling = c["coupling"].as_str().unwrap_or("?");
+            let co = c["co_changes"].as_i64().unwrap_or(0);
+            body.push_str(&format!("  {f}  {coupling} ({co} co-changes)\n"));
+        }
+    }
+
+    // ---- recent activity / hotspot ----
+    if let Some(h) = ctx.get("hotspot").filter(|v| !v.is_null()) {
+        let score = h["score"].as_f64().unwrap_or(0.0);
+        let changes = h["changes_30d"].as_i64().unwrap_or(0);
+        body.push_str("\nrecent activity\n");
+        body.push_str(&format!("  {changes} commits/30d"));
+        if let Some(last) = ctx.get("last_touched_days").and_then(|v| v.as_i64()) {
+            body.push_str(&format!(" · last touched {last}d ago"));
+        }
+        body.push('\n');
+        if score > 0.0 {
+            body.push_str(&format!("  hotspot {score:.0}\n"));
+        }
+    }
+
+    // ---- resolver line: confidence floor of this card ----
+    let ambiguous: usize = sym_callers
+        .iter()
+        .map(|s| s["possible_callers"].as_array().map(Vec::len).unwrap_or(0))
+        .sum();
+    body.push_str(&format!(
+        "\nresolver: degraded=false · {ambiguous} ambiguous refs in this file\n"
+    ));
+
+    // ---- hard truncate so the card never crowds the agent's window ----
+    let truncated = if body.len() > BODY_BUDGET_CHARS {
+        let mut s = body[..BODY_BUDGET_CHARS].to_string();
+        // Round to the last newline so we don't cut a line in half.
+        if let Some(nl) = s.rfind('\n') {
+            s.truncate(nl + 1);
+        }
+        s.push_str("… (truncated to fit budget)\n");
+        s
+    } else {
+        body
+    };
+
+    format!(
+        "<abyss-card file=\"{file_path}\" epoch=\"{epoch}\" staleness_ms=\"{staleness_ms}\" precision_mode=\"heuristic\">\n{truncated}</abyss-card>"
+    )
+}
+
 /// Pull a file path out of an agent tool-call JSON payload. Supports the
 /// shapes used by Claude Code, Codex, Gemini, Pi, Hermes, and OpenClaw
 /// hooks without needing a --platform flag.
@@ -232,5 +447,82 @@ mod tests {
             None
         );
         assert_eq!(extract_file_path(&serde_json::json!({})), None);
+    }
+
+    use super::render_card;
+
+    #[test]
+    fn render_card_emits_opening_and_closing_tags() {
+        let ctx = json!({
+            "file": "src/auth/login.go",
+            "symbols_defined": 0,
+            "symbols_with_external_callers": [],
+            "dependencies": [],
+            "hotspot": null,
+            "coupled_files": [],
+        });
+        let card = render_card(&ctx, "src/auth/login.go", 42);
+        assert!(card.starts_with("<abyss-card file=\"src/auth/login.go\""));
+        assert!(card.contains("staleness_ms=\"42\""));
+        assert!(card.contains("precision_mode=\"heuristic\""));
+        assert!(card.ends_with("</abyss-card>"));
+    }
+
+    #[test]
+    fn render_card_flags_high_blast_radius() {
+        let callers: Vec<_> = (0..12)
+            .map(|i| {
+                json!({
+                    "file": format!("src/caller_{i}.go"),
+                    "line": 1,
+                    "caller": "Foo",
+                    "confidence": 1.0,
+                    "is_test": false,
+                })
+            })
+            .collect();
+        let ctx = json!({
+            "file": "src/auth/login.go",
+            "symbols_defined": 1,
+            "symbols_with_external_callers": [{
+                "symbol": "Login",
+                "kind": "function",
+                "line": 10,
+                "external_callers": callers,
+                "possible_callers": [],
+            }],
+            "dependencies": [],
+            "hotspot": null,
+            "coupled_files": [],
+        });
+        let card = render_card(&ctx, "src/auth/login.go", 10);
+        assert!(card.contains("HIGH BLAST RADIUS"));
+        assert!(card.contains("12 prod callers across 12 files"));
+    }
+
+    #[test]
+    fn render_card_truncates_when_oversized() {
+        // Build a pathological ctx with many deps to exceed the budget.
+        let deps: Vec<_> = (0..2000)
+            .map(|i| {
+                json!({
+                    "name": format!("sym_{i}"),
+                    "file": format!("src/dep_{i:04}.go"),
+                    "kind": "call",
+                })
+            })
+            .collect();
+        let ctx = json!({
+            "file": "src/big.go",
+            "symbols_defined": 0,
+            "symbols_with_external_callers": [],
+            "dependencies": deps,
+            "hotspot": null,
+            "coupled_files": [],
+        });
+        let card = render_card(&ctx, "src/big.go", 0);
+        // Total card length should stay within budget + small header/footer.
+        assert!(card.len() < 8200, "card too long: {} chars", card.len());
+        assert!(card.ends_with("</abyss-card>"));
     }
 }

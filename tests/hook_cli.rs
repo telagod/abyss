@@ -55,8 +55,12 @@ fn pre_edit_warns_about_production_callers() {
 
     let (_, stderr, ok) = run_hook(&fx, &["hook", "pre-edit"], &payload);
     assert!(ok);
+    // The card now wraps the signal: opening tag, file path, and a
+    // depended-on line that names the prod callers and the affected symbol.
+    assert!(stderr.contains("<abyss-card"), "stderr: {stderr}");
+    assert!(stderr.contains("core.go"), "stderr: {stderr}");
     assert!(
-        stderr.contains("core.go") && stderr.contains("1 production caller"),
+        stderr.contains("1 prod callers across 1 files"),
         "stderr: {stderr}"
     );
     assert!(stderr.contains("Target"), "stderr: {stderr}");
@@ -91,10 +95,11 @@ fn pre_edit_is_silent_for_irrelevant_input() {
 }
 
 #[test]
-fn pre_edit_is_read_only_and_does_not_reindex() {
-    // Pre-edit must NEVER block the agent on a structural scan — index
-    // updates belong to post-edit. A caller added between index runs is
-    // reported only after post-edit (or the next explicit `abyss index`).
+fn pre_edit_is_read_only_and_reports_staleness() {
+    // Pre-edit MUST NOT re-index — that used to stall the agent on large
+    // repos. New callers between commits show up only after post-edit (or
+    // an explicit `abyss index`) refreshes the index. The card's
+    // `staleness_ms` attribute exists so the agent can see the gap.
     let fx = edited_file_fixture();
     write_files(
         &fx.config.workspace,
@@ -106,19 +111,16 @@ fn pre_edit_is_read_only_and_does_not_reindex() {
     let payload = r#"{"file_path": "app/core.go"}"#;
     let (_, stderr, ok) = run_hook(&fx, &["hook", "pre-edit"], payload);
     assert!(ok);
-    // Stale-but-fast: pre-edit reports the 1 caller that existed at last
-    // index time, not the 2 callers in the working tree.
-    assert!(
-        stderr.contains("1 production caller"),
-        "pre-edit must be read-only — saw refresh: {stderr}"
-    );
-    // The index itself must be untouched.
+    assert!(stderr.contains("<abyss-card"), "stderr: {stderr}");
+    // staleness_ms must be present and parse as a u128.
+    let token = "staleness_ms=\"";
+    let start = stderr.find(token).expect("staleness_ms attr");
+    let rest = &stderr[start + token.len()..];
+    let end = rest.find('"').unwrap();
+    let _: u128 = rest[..end].parse().expect("staleness_ms is a number");
+    // And the still-old index proves pre-edit did not re-index.
     let refs = call_refs_to(&fx.repo, "Target");
-    assert_eq!(
-        refs.len(),
-        1,
-        "pre-edit must not refresh the index: {refs:?}"
-    );
+    assert_eq!(refs.len(), 1, "pre-edit should not re-index, got {refs:?}");
 }
 
 #[test]

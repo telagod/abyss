@@ -123,8 +123,9 @@ enum Commands {
 
 #[derive(Subcommand)]
 enum HookAction {
-    /// Pre-edit guard: refresh the index, then warn about callers/hotspots
-    /// of the file referenced in the tool-call JSON on stdin
+    /// Pre-edit guard: emit a `<abyss-card>` system-reminder block on stderr
+    /// for the file referenced in the tool-call JSON on stdin. Read-only —
+    /// never re-indexes (use post-edit for that).
     PreEdit,
     /// Post-edit: incrementally refresh the index
     PostEdit,
@@ -618,6 +619,7 @@ fn read_stdin_json() -> Option<serde_json::Value> {
 }
 
 fn hook_pre_edit(config: Config, json: bool) -> Result<()> {
+    let start = std::time::Instant::now();
     let Some(payload) = read_stdin_json() else {
         return Ok(());
     };
@@ -644,58 +646,78 @@ fn hook_pre_edit(config: Config, json: bool) -> Result<()> {
         .map(|p| p.to_string_lossy().replace('\\', "/"))
         .unwrap_or_else(|_| raw_path.replace('\\', "/"));
 
-    let Some(ctx) = code_abyss::context::build_file_context(&repo, &rel)? else {
+    let Some(mut ctx) = code_abyss::context::build_file_context(&repo, &rel)? else {
         return Ok(());
     };
+
+    // Best-effort enrichment for the card. All failures are silent — the
+    // hook must never block the agent on a missing optional metric.
+    enrich_ctx_for_card(&repo, &rel, &mut ctx);
+
     if json {
         println!("{}", serde_json::to_string(&ctx)?);
     }
 
-    let empty = Vec::new();
-    let syms = ctx["symbols_with_external_callers"]
-        .as_array()
-        .unwrap_or(&empty);
-    let mut prod = 0usize;
-    let mut possible = 0usize;
-    let mut names: Vec<String> = Vec::new();
-    for s in syms {
-        let confident = s["external_callers"]
-            .as_array()
-            .map(|a| {
-                a.iter()
-                    .filter(|c| !c["is_test"].as_bool().unwrap_or(false))
-                    .count()
-            })
-            .unwrap_or(0);
-        possible += s["possible_callers"].as_array().map(Vec::len).unwrap_or(0);
-        if confident > 0 {
-            prod += confident;
-            names.push(s["symbol"].as_str().unwrap_or("?").to_string());
-        }
-    }
-
-    let fname = rel.rsplit('/').next().unwrap_or(&rel);
-    if prod > 0 {
-        let shown = names.iter().take(5).cloned().collect::<Vec<_>>().join(", ");
-        eprintln!(
-            "[abyss] {fname}: {prod} production caller(s) across {} symbol(s) ({shown})",
-            names.len()
-        );
-    }
-    if possible > 0 {
-        eprintln!(
-            "[abyss] {fname}: {possible} ambiguous reference(s) — `abyss callers <symbol> --min-confidence 0` to inspect"
-        );
-    }
-    if let Some(score) = ctx["hotspot"]["score"].as_f64()
-        && score > 5000.0
-    {
-        eprintln!(
-            "[abyss] ⚠ {fname} is a hotspot (score={score:.0}) — `abyss impact <symbol>` before large edits"
-        );
-    }
+    let staleness_ms = start.elapsed().as_millis();
+    let card = code_abyss::context::render_card(&ctx, &rel, staleness_ms);
+    eprintln!("{card}");
 
     Ok(())
+}
+
+/// Add `siblings`, `epoch`, and `last_touched_days` to the context payload
+/// so `render_card` has the data it needs. Every query is best-effort.
+fn enrich_ctx_for_card(repo: &Repository, rel: &str, ctx: &mut serde_json::Value) {
+    let conn = repo.conn();
+    let obj = match ctx.as_object_mut() {
+        Some(o) => o,
+        None => return,
+    };
+
+    // ---- siblings: other files in the same directory ----
+    let dir = match rel.rsplit_once('/') {
+        Some((d, _)) => format!("{d}/"),
+        None => String::new(),
+    };
+    let fname = rel.rsplit('/').next().unwrap_or(rel);
+    let siblings: Vec<serde_json::Value> = (|| -> rusqlite::Result<Vec<serde_json::Value>> {
+        let mut stmt = conn.prepare(
+            "SELECT path FROM files WHERE dir = ?1 AND path != ?2 ORDER BY path LIMIT 12",
+        )?;
+        let rows = stmt.query_map([&dir, &rel.to_string()], |r| r.get::<_, String>(0))?;
+        Ok(rows
+            .filter_map(|r| r.ok())
+            .map(|p| serde_json::Value::String(p.rsplit('/').next().unwrap_or(&p).to_string()))
+            .collect())
+    })()
+    .unwrap_or_default();
+    if !siblings.is_empty() {
+        obj.insert("siblings".into(), serde_json::Value::Array(siblings));
+    }
+    let _ = fname;
+
+    // ---- epoch: latest known commit ts (workspace-wide, fast aggregate) ----
+    if let Ok(epoch) =
+        conn.query_row::<i64, _, _>("SELECT COALESCE(MAX(ts), 0) FROM commits", [], |r| r.get(0))
+    {
+        obj.insert("epoch".into(), serde_json::json!(epoch));
+    }
+
+    // ---- last_touched_days: based on file_metrics.last_changed_ts ----
+    if let Ok(last_ts) = conn.query_row::<i64, _, _>(
+        "SELECT COALESCE(fm.last_changed_ts, 0) FROM file_metrics fm
+         JOIN files f ON f.id = fm.file_id WHERE f.path = ?1",
+        [rel],
+        |r| r.get(0),
+    ) && last_ts > 0
+    {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        let days = ((now - last_ts) / 86_400).max(0);
+        obj.insert("last_touched_days".into(), serde_json::json!(days));
+    }
 }
 
 fn hook_post_edit(config: Config) -> Result<()> {
