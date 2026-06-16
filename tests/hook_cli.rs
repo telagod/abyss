@@ -91,9 +91,10 @@ fn pre_edit_is_silent_for_irrelevant_input() {
 }
 
 #[test]
-fn pre_edit_sees_brand_new_callers_after_refresh() {
-    // A caller added AFTER the last index run must still be reported:
-    // the hook refreshes incrementally before querying.
+fn pre_edit_is_read_only_and_does_not_reindex() {
+    // Pre-edit must NEVER block the agent on a structural scan — index
+    // updates belong to post-edit. A caller added between index runs is
+    // reported only after post-edit (or the next explicit `abyss index`).
     let fx = edited_file_fixture();
     write_files(
         &fx.config.workspace,
@@ -105,9 +106,18 @@ fn pre_edit_sees_brand_new_callers_after_refresh() {
     let payload = r#"{"file_path": "app/core.go"}"#;
     let (_, stderr, ok) = run_hook(&fx, &["hook", "pre-edit"], payload);
     assert!(ok);
+    // Stale-but-fast: pre-edit reports the 1 caller that existed at last
+    // index time, not the 2 callers in the working tree.
     assert!(
-        stderr.contains("2 production caller"),
-        "stale index — refresh did not pick up late.go: {stderr}"
+        stderr.contains("1 production caller"),
+        "pre-edit must be read-only — saw refresh: {stderr}"
+    );
+    // The index itself must be untouched.
+    let refs = call_refs_to(&fx.repo, "Target");
+    assert_eq!(
+        refs.len(),
+        1,
+        "pre-edit must not refresh the index: {refs:?}"
     );
 }
 

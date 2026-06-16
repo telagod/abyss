@@ -623,10 +623,11 @@ fn hook_pre_edit(config: Config, json: bool) -> Result<()> {
         return Ok(());
     }
 
+    // Read-only path: hooks must never block the agent. A full structural
+    // refresh on every PreToolUse blocks the agent on a repo scan before
+    // every edit — the #1 reason ambient delivery was broken. Index updates
+    // run from hook_post_edit instead; pre_edit only queries.
     let repo = Repository::open(&config.db_path, config.model.dimensions)?;
-    // Hash-incremental refresh so warnings reflect the file as it is now.
-    let pipeline = IndexPipeline::new(config.clone());
-    let _ = pipeline.run_structural(&repo);
 
     let rel = std::path::Path::new(&raw_path)
         .strip_prefix(&config.workspace)
