@@ -168,6 +168,37 @@ pub fn build_file_context(repo: &Repository, file: &str) -> Result<Option<serde_
         .filter_map(|r| r.ok())
         .collect();
 
+    // ─── Arch facts (L0 coordinates) ───
+    // Populated by IndexPipeline::run_structural at the end of every pass.
+    // Older indexes (pre-v5 schema) won't have these rows yet — `get_arch_fact`
+    // returns None in that case and we omit the field so the card's "where"
+    // line falls back to the placeholder.
+    let arch_block = match repo.get_arch_fact(file_id)? {
+        Some(fact) => {
+            let module = repo.get_arch_module(fact.module_id)?;
+            let module_label = module.as_ref().map(|m| m.label.clone()).unwrap_or_else(|| {
+                if fact.module_id < 0 {
+                    String::from("—")
+                } else {
+                    format!("module-{}", fact.module_id)
+                }
+            });
+            Some(serde_json::json!({
+                "layer": fact.layer,
+                "role": fact.role,
+                "module_id": fact.module_id,
+                "module_label": module_label,
+                "depth_from_entry": fact.depth_from_entry,
+                "centrality": fact.centrality,
+                "in_degree": fact.in_degree,
+                "out_degree": fact.out_degree,
+                "layer_conf": fact.layer_conf,
+                "signals": fact.signals,
+            }))
+        }
+        None => None,
+    };
+
     Ok(Some(serde_json::json!({
         "file": file_path,
         "symbols_defined": symbols.len(),
@@ -177,6 +208,81 @@ pub fn build_file_context(repo: &Repository, file: &str) -> Result<Option<serde_
             "score": score, "changes_30d": changes, "complexity": cc
         })),
         "coupled_files": coupled,
+        "arch": arch_block,
+    })))
+}
+
+/// One-line `where` summary for the pre-edit card / CLI. Reads the arch_facts
+/// row for `file` (relative path, suffix-matchable) and returns a structured
+/// JSON view:
+///
+/// ```json
+/// {
+///   "file": "src/auth/login.go",
+///   "layer": "domain",
+///   "role": "core",
+///   "module_label": "auth",
+///   "module_id": 3,
+///   "depth_from_entry": 2,
+///   "centrality": 0.71,
+///   "in_degree": 12, "out_degree": 7,
+///   "layer_conf": 0.84,
+///   "signals": { "dir": [...], "name": [...], "entry": false }
+/// }
+/// ```
+///
+/// Returns `Ok(None)` when the file is not indexed (so the caller can print
+/// a friendly "not found" message instead of a cryptic SQL error).
+pub fn where_summary(repo: &Repository, file: &str) -> Result<Option<serde_json::Value>> {
+    let conn = repo.conn();
+    let row: Option<(i64, String)> = conn
+        .query_row(
+            "SELECT id, path FROM files WHERE path = ?1 OR path LIKE ?2 LIMIT 1",
+            rusqlite::params![file, format!("%{file}")],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .ok();
+    let Some((file_id, file_path)) = row else {
+        return Ok(None);
+    };
+
+    let Some(fact) = repo.get_arch_fact(file_id)? else {
+        return Ok(Some(serde_json::json!({
+            "file": file_path,
+            "layer": "unknown",
+            "role": "unknown",
+            "module_label": "—",
+            "module_id": -1,
+            "depth_from_entry": null,
+            "centrality": 0.0,
+            "in_degree": 0,
+            "out_degree": 0,
+            "layer_conf": 0.0,
+            "signals": null,
+            "note": "no arch_facts row for this file — reindex with current binary",
+        })));
+    };
+    let module = repo.get_arch_module(fact.module_id)?;
+    let module_label = module.as_ref().map(|m| m.label.clone()).unwrap_or_else(|| {
+        if fact.module_id < 0 {
+            String::from("—")
+        } else {
+            format!("module-{}", fact.module_id)
+        }
+    });
+
+    Ok(Some(serde_json::json!({
+        "file": file_path,
+        "layer": fact.layer,
+        "role": fact.role,
+        "module_id": fact.module_id,
+        "module_label": module_label,
+        "depth_from_entry": fact.depth_from_entry,
+        "centrality": fact.centrality,
+        "in_degree": fact.in_degree,
+        "out_degree": fact.out_degree,
+        "layer_conf": fact.layer_conf,
+        "signals": fact.signals,
     })))
 }
 
