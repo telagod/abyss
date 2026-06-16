@@ -38,6 +38,7 @@ pub struct IndexPipeline {
     config: Config,
     parser: MultiParser,
     chunker: Chunker,
+    max_files: Option<u64>,
 }
 
 impl IndexPipeline {
@@ -46,7 +47,12 @@ impl IndexPipeline {
             chunker: Chunker::new(100, 3),
             parser: MultiParser::new(),
             config,
+            max_files: None,
         }
+    }
+
+    pub fn set_max_files(&mut self, n: u64) {
+        self.max_files = Some(n);
     }
 
     /// Fast structural index only: parse + chunk + symbols + FTS5.
@@ -56,6 +62,17 @@ impl IndexPipeline {
         let walker = FileWalker::new(&self.config.workspace);
         let files = walker.walk()?;
         info!("found {} indexable files", files.len());
+
+        if let Some(limit) = self.max_files
+            && files.len() as u64 > limit
+        {
+            anyhow::bail!(
+                "found {} indexable files (limit {}). This looks like an unscoped directory. \
+                 Use --force to proceed or --max-files 0 to disable this check.",
+                files.len(),
+                limit,
+            );
+        }
 
         let existing = repo.all_file_paths()?;
         let existing_map: std::collections::HashMap<String, (i64, String)> = existing

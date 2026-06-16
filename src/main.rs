@@ -40,7 +40,14 @@ struct Cli {
 #[derive(Subcommand)]
 enum Commands {
     /// Fast structural index (symbols + fulltext, no embedding). Seconds.
-    Index,
+    Index {
+        /// Skip workspace safety checks (banned paths, file-count breaker)
+        #[arg(long)]
+        force: bool,
+        /// Max files to index before aborting (0 = no limit; default 50000 without .git)
+        #[arg(long)]
+        max_files: Option<u64>,
+    },
     /// Generate embeddings for semantic search. Slow, run after `index`.
     #[cfg(feature = "semantic")]
     Embed,
@@ -138,7 +145,7 @@ fn main() -> Result<()> {
     let json = cli.json;
 
     match cli.command {
-        Commands::Index => cmd_index(config, json),
+        Commands::Index { force, max_files } => cmd_index(config, json, force, max_files),
         #[cfg(feature = "semantic")]
         Commands::Embed => cmd_embed(config),
         #[cfg(feature = "semantic")]
@@ -163,9 +170,47 @@ fn main() -> Result<()> {
     }
 }
 
-fn cmd_index(config: Config, json: bool) -> Result<()> {
+const DEFAULT_MAX_FILES_NO_GIT: u64 = 50_000;
+
+fn check_workspace_safety(workspace: &std::path::Path, force: bool) -> Result<()> {
+    if force {
+        return Ok(());
+    }
+    let home = std::env::var("HOME")
+        .ok()
+        .and_then(|h| std::fs::canonicalize(h).ok());
+    let banned: Vec<std::path::PathBuf> = [home, Some(std::path::PathBuf::from("/"))]
+        .into_iter()
+        .flatten()
+        .collect();
+    for b in &banned {
+        if workspace == b {
+            anyhow::bail!(
+                "refusing to index {} (too broad). Use --force to override, or --workspace to target a project directory.",
+                workspace.display()
+            );
+        }
+    }
+    Ok(())
+}
+
+fn cmd_index(config: Config, json: bool, force: bool, max_files: Option<u64>) -> Result<()> {
+    check_workspace_safety(&config.workspace, force)?;
+
     let repo = Repository::open(&config.db_path, config.model.dimensions)?;
-    let pipeline = IndexPipeline::new(config.clone());
+    let mut pipeline = IndexPipeline::new(config.clone());
+
+    let has_git = config.workspace.join(".git").exists();
+    let limit = match max_files {
+        Some(0) => None,
+        Some(n) => Some(n),
+        None if force || has_git => None,
+        None => Some(DEFAULT_MAX_FILES_NO_GIT),
+    };
+    if let Some(n) = limit {
+        pipeline.set_max_files(n);
+    }
+
     let stats = pipeline.run_structural(&repo)?;
 
     if json {
@@ -638,6 +683,7 @@ fn hook_post_edit(config: Config) -> Result<()> {
 }
 
 fn cmd_mcp(config: Config) -> Result<()> {
+    check_workspace_safety(&config.workspace, false)?;
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(async {
         info!("starting MCP server");
