@@ -180,7 +180,7 @@ impl IndexPipeline {
         let git_stats = crate::temporal::git_parser::write_git_data(repo, &git_data)?;
 
         crate::temporal::hotspot::compute_file_metrics(repo, 30, 90)?;
-        crate::temporal::coupling::compute_change_coupling(repo, 3)?;
+        crate::temporal::coupling::compute_change_coupling(repo, 4)?;
 
         stats.total_files = repo.file_count()? as u64;
         stats.total_chunks = repo.chunk_count()? as u64;

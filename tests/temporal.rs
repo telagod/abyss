@@ -49,19 +49,29 @@ fn git_history_populates_metrics_and_coupling() {
         .unwrap();
     assert_eq!(changes, 4);
 
-    let co_changes: i64 = conn
+    // Pipeline default suppresses coupling under 50 commits — this fixture
+    // only has 4. Recompute with the test variant (min_commits=0) to exercise
+    // the join/denominator logic.
+    code_abyss::temporal::coupling::compute_change_coupling_with(&fx.repo, 3, 0).unwrap();
+
+    let (co_changes, score): (i64, f64) = conn
         .query_row(
-            "SELECT co_changes FROM change_coupling
+            "SELECT co_changes, coupling_score FROM change_coupling
              WHERE (file_a = 'app/x.go' AND file_b = 'app/y.go')
                 OR (file_a = 'app/y.go' AND file_b = 'app/x.go')
              LIMIT 1",
             [],
-            |r| r.get(0),
+            |r| Ok((r.get(0)?, r.get(1)?)),
         )
         .expect("coupled pair must exist");
     assert_eq!(co_changes, 4);
+    // Symmetric denominator: min(total_a, total_b) = min(4,4) = 4 → score = 1.0.
+    assert!(
+        (score - 1.0).abs() < 1e-9,
+        "symmetric score expected 1.0, got {score}"
+    );
 
-    // solo.go only appears in one commit → below the coupling threshold (3).
+    // solo.go only appears in one commit → below the co-changes threshold.
     let solo_pairs: i64 = conn
         .query_row(
             "SELECT COUNT(*) FROM change_coupling WHERE file_a = 'app/solo.go' OR file_b = 'app/solo.go'",
@@ -70,6 +80,57 @@ fn git_history_populates_metrics_and_coupling() {
         )
         .unwrap();
     assert_eq!(solo_pairs, 0);
+}
+
+#[test]
+fn coupling_symmetric_denominator_not_inflated_by_rare_file() {
+    // file_a changes in every commit (5 commits). file_b changes alongside
+    // it in only 4 of them, then never again. file_b's total = 4 → score
+    // should be 4/min(5,4) = 1.0 (this is the "rarer file" anchor). file_a's
+    // perspective alone (4/5 = 0.8) is the asymmetric old behavior we are
+    // moving away from — symmetric uses the min, surfacing meaningful pairs.
+    let fx = index_git_fixture(&[
+        &[("app/a.go", X_V[0]), ("app/b.go", Y_V[0])],
+        &[("app/a.go", X_V[1]), ("app/b.go", Y_V[1])],
+        &[("app/a.go", X_V[2]), ("app/b.go", Y_V[2])],
+        &[("app/a.go", X_V[3]), ("app/b.go", Y_V[3])],
+        // a.go-only churn — b.go does not appear here.
+        &[("app/a.go", "package app\n\nfunc X() int { return 99 }\n")],
+    ]);
+    code_abyss::temporal::coupling::compute_change_coupling_with(&fx.repo, 3, 0).unwrap();
+    let conn = fx.repo.conn();
+    let score: f64 = conn
+        .query_row(
+            "SELECT coupling_score FROM change_coupling
+             WHERE (file_a = 'app/a.go' AND file_b = 'app/b.go')
+                OR (file_a = 'app/b.go' AND file_b = 'app/a.go')
+             LIMIT 1",
+            [],
+            |r| r.get(0),
+        )
+        .expect("coupled pair must exist");
+    // co_changes=4, min(total_a=5, total_b=4)=4 → 4/4 = 1.0
+    assert!((score - 1.0).abs() < 1e-9, "expected 1.0, got {score}");
+}
+
+#[test]
+fn coupling_suppressed_below_minimum_commits() {
+    // Default 50-commit gate: small repos must not emit a noise signal.
+    let fx = index_git_fixture(&[
+        &[("app/a.go", X_V[0]), ("app/b.go", Y_V[0])],
+        &[("app/a.go", X_V[1]), ("app/b.go", Y_V[1])],
+        &[("app/a.go", X_V[2]), ("app/b.go", Y_V[2])],
+        &[("app/a.go", X_V[3]), ("app/b.go", Y_V[3])],
+    ]);
+    let conn = fx.repo.conn();
+    // Pipeline already ran with default gate; verify suppressed.
+    let pairs: i64 = conn
+        .query_row("SELECT COUNT(*) FROM change_coupling", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(
+        pairs, 0,
+        "pipeline default min_commits=50 must suppress coupling on tiny histories"
+    );
 }
 
 #[test]
@@ -157,6 +218,10 @@ fn coupling_excludes_bulk_commits() {
     let c2 = to_refs(&v2);
     let fx = index_git_fixture(&[&c0, &c1, &c2]);
     let conn = fx.repo.conn();
+
+    // Force-compute with min_commits=0 so the bulk-commit filter (not the
+    // commit-count gate) is what zeroes the result.
+    code_abyss::temporal::coupling::compute_change_coupling_with(&fx.repo, 3, 0).unwrap();
 
     let pairs: i64 = conn
         .query_row("SELECT COUNT(*) FROM change_coupling", [], |r| r.get(0))

@@ -10,6 +10,12 @@ use crate::storage::Repository;
 /// logical cohesion) and the source of runaway memory in the self-join.
 const BULK_COMMIT_THRESHOLD: i64 = 50;
 
+/// Below this many commits, coupling is statistically meaningless: any rarely-
+/// touched file pins to a high score under any denominator. Skip the whole
+/// pass — the signal is noise and the storage is dead weight. Production
+/// callers use [`DEFAULT_MIN_COMMITS_FOR_COUPLING`]; tests can lower it.
+pub const DEFAULT_MIN_COMMITS_FOR_COUPLING: i64 = 50;
+
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct CouplingPair {
     pub file_a: String,
@@ -19,10 +25,36 @@ pub struct CouplingPair {
 }
 
 pub fn compute_change_coupling(repo: &Repository, min_co_changes: u32) -> Result<u64> {
+    compute_change_coupling_with(repo, min_co_changes, DEFAULT_MIN_COMMITS_FOR_COUPLING)
+}
+
+/// Test-friendly variant exposing the `min_commits` gate. Production code uses
+/// [`compute_change_coupling`] which pins it to [`DEFAULT_MIN_COMMITS_FOR_COUPLING`].
+pub fn compute_change_coupling_with(
+    repo: &Repository,
+    min_co_changes: u32,
+    min_commits: i64,
+) -> Result<u64> {
     let conn = repo.conn();
 
     conn.execute("DELETE FROM change_coupling", [])?;
 
+    let total_commits: i64 = conn
+        .query_row("SELECT COUNT(*) FROM commits", [], |r| r.get(0))
+        .unwrap_or(0);
+    if total_commits < min_commits {
+        info!(
+            "insufficient history (<{} commits) — coupling signal suppressed ({} commits)",
+            min_commits, total_commits
+        );
+        return Ok(0);
+    }
+
+    // Symmetric (Jaccard-like) denominator: co_changes / min(total_a, total_b).
+    // Dividing by total_a alone pins any rarely-touched file_a to score 1.0
+    // even when file_b churns constantly — the asymmetry buries real signal
+    // under noise. min(...) keeps "of the rarer file's changes, fraction
+    // co-changed" — the score is meaningful in both directions.
     conn.execute(
         "INSERT INTO change_coupling (file_a, file_b, co_changes, total_changes, coupling_score)
          SELECT
@@ -31,7 +63,10 @@ pub fn compute_change_coupling(repo: &Repository, min_co_changes: u32) -> Result
             COUNT(DISTINCT a.commit_id),
             (SELECT COUNT(DISTINCT commit_id) FROM commit_files WHERE file_path = a.file_path),
             CAST(COUNT(DISTINCT a.commit_id) AS REAL) /
-                MAX(1, (SELECT COUNT(DISTINCT commit_id) FROM commit_files WHERE file_path = a.file_path))
+                MAX(1, MIN(
+                    (SELECT COUNT(DISTINCT commit_id) FROM commit_files WHERE file_path = a.file_path),
+                    (SELECT COUNT(DISTINCT commit_id) FROM commit_files WHERE file_path = b.file_path)
+                ))
          FROM commit_files a
          JOIN commit_files b ON a.commit_id = b.commit_id AND a.file_path < b.file_path
          WHERE a.commit_id IN (
