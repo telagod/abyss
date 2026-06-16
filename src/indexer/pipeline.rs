@@ -182,14 +182,37 @@ impl IndexPipeline {
         crate::temporal::hotspot::compute_file_metrics(repo, 30, 90)?;
         crate::temporal::coupling::compute_change_coupling(repo, 4)?;
 
+        // ═══ Step 9: L0 architectural coordinates ═══
+        //
+        // Fuse dictionary / naming / entry-point / topology signals into one
+        // ArchFact per file, then derive Louvain modules from the same graph.
+        // The card's `where` line reads from arch_facts; populating it here
+        // keeps the cost in the indexer (one transaction per pass) rather
+        // than the hot read path of every hook invocation.
+        let arch_start = Instant::now();
+        let arch_facts = crate::arch::inference::infer_all(repo)?;
+        repo.replace_arch_facts(&arch_facts)?;
+        let arch_modules = crate::arch::inference::collect_modules(&arch_facts);
+        repo.replace_arch_modules(&arch_modules)?;
+        let arch_ms = arch_start.elapsed().as_millis() as u64;
+
         stats.total_files = repo.file_count()? as u64;
         stats.total_chunks = repo.chunk_count()? as u64;
         stats.total_symbols = repo.symbol_count()? as u64;
+        stats.arch_files = arch_facts.len() as u64;
+        stats.arch_modules = arch_modules.len() as u64;
         stats.duration_ms = start.elapsed().as_millis() as u64;
 
         info!(
-            "done in {}ms | parse {}ms | insert {}ms | resolve {}ms | git {} commits (overlapped)",
-            stats.duration_ms, parse_ms, insert_ms, resolve_ms, git_stats.commits_parsed
+            "done in {}ms | parse {}ms | insert {}ms | resolve {}ms | arch {}ms ({} files / {} modules) | git {} commits (overlapped)",
+            stats.duration_ms,
+            parse_ms,
+            insert_ms,
+            resolve_ms,
+            arch_ms,
+            stats.arch_files,
+            stats.arch_modules,
+            git_stats.commits_parsed
         );
 
         Ok(stats)
@@ -1013,6 +1036,10 @@ pub struct IndexStats {
     pub refs: u64,
     pub duration_ms: u64,
     pub embed_duration_ms: u64,
+    /// Number of files that received a fused L0 ArchFact in this pass.
+    pub arch_files: u64,
+    /// Number of Louvain communities the file→file graph collapsed into.
+    pub arch_modules: u64,
 }
 
 #[derive(Debug, Default, Clone, serde::Serialize)]
