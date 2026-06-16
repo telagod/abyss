@@ -1,9 +1,5 @@
-<<<<<<< HEAD
-pub mod attach;
-||||||| parent of fde4429 (feat(arch): inference engine — fuse dir/name/entry/topology signals)
-=======
 pub mod arch;
->>>>>>> fde4429 (feat(arch): inference engine — fuse dir/name/entry/topology signals)
+pub mod attach;
 pub mod config;
 pub mod context;
 pub mod embedding;

@@ -83,7 +83,6 @@ thiserror = "2"
 # Misc
 rayon = "1"
 num_cpus = "1"
-petgraph = "0.6"
 
 # Graph algorithms (arch L0 — PageRank / SCC / Louvain)
 petgraph = "0.8"
