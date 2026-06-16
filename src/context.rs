@@ -24,47 +24,107 @@ pub fn build_file_context(repo: &Repository, file: &str) -> Result<Option<serde_
 
     let file_path: String = repo.get_file_path(file_id)?.unwrap_or_default();
 
-    // Get all symbols defined in this file
+    // Get all symbols defined in this file (used for the total count and to
+    // ensure we expose symbols even when they have zero external callers).
     let symbols = repo.find_symbols_in_file(file_id)?;
 
-    // For each symbol, find external callers. Confident matches (>= 0.7) are
-    // reported as callers; ambiguous ones are listed separately so agents can
-    // tell solid ground from guesses.
+    // Single JOIN replaces an N+1 cascade:
+    //   N symbols × (1 find_callers_of + M is_test_file) round-trips.
+    // We pull symbol × external-caller rows in one shot, with the per-source
+    // file path and an inline is_test_file replica (path-LIKE patterns kept
+    // 1:1 with Repository::is_test_file). Symbols with no external callers
+    // simply don't appear in the join — same observable shape as the old loop.
+    //
+    // Confident matches (>= 0.7) are reported as callers; ambiguous ones are
+    // listed separately so agents can tell solid ground from guesses.
     const CONTEXT_MIN_CONFIDENCE: f64 = 0.7;
-    let caller_json = |c: &crate::storage::repo::RefRecord| {
-        serde_json::json!({
-            "file": &c.source_file_path,
-            "line": c.source_line + 1,
-            "caller": &c.source_symbol,
-            "confidence": c.confidence,
-            "is_test": repo.is_test_file(c.source_file_id).unwrap_or(false),
-        })
-    };
-    let mut sym_callers: Vec<serde_json::Value> = Vec::new();
-    for sym in &symbols {
-        // Completeness over brevity: pre-edit context is a safety contract.
-        // A LIMIT of 20 once silently dropped 2 of a symbol's 16 external
-        // callers (confidence ties → arbitrary cut) and an agent shipped a
-        // compile-breaking edit trusting the list. Cap stays absurdly high
-        // only to bound pathological cases.
-        let callers = repo.find_callers_of(&sym.name, Some(file_id), 1000)?;
-        let external: Vec<_> = callers
-            .iter()
-            .filter(|c| c.source_file_id != file_id)
-            .collect();
-        if !external.is_empty() {
-            let (confident, possible): (Vec<_>, Vec<_>) = external
-                .into_iter()
-                .partition(|c| c.confidence >= CONTEXT_MIN_CONFIDENCE);
-            sym_callers.push(serde_json::json!({
-                "symbol": sym.name,
-                "kind": sym.kind,
-                "line": sym.line + 1,
-                "external_callers": confident.into_iter().map(caller_json).collect::<Vec<_>>(),
-                "possible_callers": possible.into_iter().map(caller_json).collect::<Vec<_>>(),
-            }));
+    let mut callers_stmt = conn.prepare(
+        "SELECT s.name, s.kind, s.line,
+                r.source_line, r.source_symbol, r.confidence,
+                sf.path,
+                CASE
+                    WHEN sf.path LIKE '%\\_test.%' ESCAPE '\\' THEN 1
+                    WHEN sf.path LIKE '%/test/%' THEN 1
+                    WHEN sf.path LIKE '%/tests/%' THEN 1
+                    WHEN sf.path LIKE '%.test.%' THEN 1
+                    WHEN sf.path LIKE '%.spec.%' THEN 1
+                    ELSE 0
+                END AS is_test
+         FROM symbols s
+         JOIN refs r
+              ON r.target_name = s.name
+             AND (r.target_file_id = s.file_id OR r.target_file_id IS NULL)
+             AND r.kind IN ('call','field_access')
+         JOIN files sf ON sf.id = r.source_file_id
+         WHERE s.file_id = ?1
+           AND s.kind IN ('function','method','struct','class','interface','type')
+           AND r.source_file_id != ?1
+         ORDER BY s.line, r.confidence DESC",
+    )?;
+
+    // Group rows by symbol (sym_name, sym_kind, sym_line) preserving the
+    // ORDER BY emission order. SQLite returns symbols in line order, so we
+    // can group with a simple "did the key change?" check — no HashMap.
+    struct SymGroup {
+        name: String,
+        kind: String,
+        line: u32,
+        confident: Vec<serde_json::Value>,
+        possible: Vec<serde_json::Value>,
+    }
+    let mut groups: Vec<SymGroup> = Vec::new();
+    let mut rows = callers_stmt.query([file_id])?;
+    while let Some(row) = rows.next()? {
+        let sym_name: String = row.get(0)?;
+        let sym_kind: String = row.get(1)?;
+        let sym_line: u32 = row.get(2)?;
+        let source_line: u32 = row.get(3)?;
+        let source_symbol: Option<String> = row.get(4)?;
+        let confidence: f64 = row.get(5)?;
+        let source_file_path: String = row.get(6)?;
+        let is_test: i64 = row.get(7)?;
+
+        let entry = serde_json::json!({
+            "file": source_file_path,
+            "line": source_line + 1,
+            "caller": source_symbol,
+            "confidence": confidence,
+            "is_test": is_test != 0,
+        });
+
+        let needs_new_group = match groups.last() {
+            Some(g) => g.name != sym_name || g.kind != sym_kind || g.line != sym_line,
+            None => true,
+        };
+        if needs_new_group {
+            groups.push(SymGroup {
+                name: sym_name,
+                kind: sym_kind,
+                line: sym_line,
+                confident: Vec::new(),
+                possible: Vec::new(),
+            });
+        }
+        let g = groups.last_mut().expect("just pushed");
+        if confidence >= CONTEXT_MIN_CONFIDENCE {
+            g.confident.push(entry);
+        } else {
+            g.possible.push(entry);
         }
     }
+
+    let sym_callers: Vec<serde_json::Value> = groups
+        .into_iter()
+        .map(|g| {
+            serde_json::json!({
+                "symbol": g.name,
+                "kind": g.kind,
+                "line": g.line + 1,
+                "external_callers": g.confident,
+                "possible_callers": g.possible,
+            })
+        })
+        .collect();
 
     // Get outgoing refs (what this file depends on)
     let mut deps_stmt = conn.prepare(
