@@ -152,7 +152,7 @@ abyss indexed gin in **~150ms**; scip-go took ~40s. Full method, per-tier tables
 
 ## Status
 
-**v0.3.5** — 87 tests, prebuilt binaries for 5 platforms, single-binary agent hooks. Ten eval-driven resolver rounds against SCIP ground truth across five languages / six corpora (all ≥98.5% gated precision — see the table above and [eval/RESULTS.md](eval/RESULTS.md)): C/C++ caller tracing with receiver-type inference, named-import binding tiers with barrel/`pub use` chasing, receiver-type lite inference for Go/TS/Python/Rust/C/C++, and type-grade evidence (L0c/L0d) beyond exact scope matching. Bounded temporal mining: unindexed git paths skipped, bulk commits excluded from change coupling. APIs and index format may still change before 1.0.
+**v0.3.6** — 90 tests, prebuilt binaries for 5 platforms, single-binary agent hooks. Ten eval-driven resolver rounds against SCIP ground truth across five languages / six corpora (all ≥98.5% gated precision — see the table above and [eval/RESULTS.md](eval/RESULTS.md)): C/C++ caller tracing with receiver-type inference, named-import binding tiers with barrel/`pub use` chasing, receiver-type lite inference for Go/TS/Python/Rust/C/C++, and type-grade evidence (L0c/L0d) beyond exact scope matching. Bounded index: workspace safety guards, bounded temporal mining, and codegen-aware indexing (generated files skip ref extraction) keep the index proportional to hand-written code — a 1953-file Go backend dropped 102MB → 75MB. APIs and index format may still change before 1.0.
 
 ## License
 
