@@ -64,6 +64,11 @@ pub struct FileContextOutput {
 pub struct SearchContextOutput {
     pub results: Vec<SearchResultItem>,
     pub total: usize,
+    /// What this binary actually delivered: "fulltext" in slim builds (no
+    /// embedder), "semantic+fulltext" in `--features semantic` builds. Lets
+    /// callers tell whether they got vector-similarity matching or only
+    /// keyword/symbol matching — the tool description alone cannot.
+    pub precision_mode: String,
 }
 
 #[derive(Serialize, schemars::JsonSchema)]
@@ -233,7 +238,7 @@ pub struct EvCommit {
 impl McpServer {
     #[tool(
         name = "search_context",
-        description = "Search the codebase using semantic, symbol, and full-text search. Returns relevant code chunks with file paths, line numbers, and content."
+        description = "Search the codebase by symbol and full-text. Semantic (vector) similarity is available only when the binary was built with `--features semantic` — check the `precision_mode` field on the response to see what was actually used. Returns relevant code chunks with file paths, line numbers, and content."
     )]
     fn search_context(
         &self,
@@ -245,6 +250,15 @@ impl McpServer {
 
         let results = engine.search(&input.query, input.limit).unwrap_or_default();
         let total = results.len();
+
+        // Honest mode tag: slim builds cannot run the embedder (it's an
+        // `unreachable!()` stub) so they only deliver fulltext/symbol matches.
+        // Semantic builds with a successfully-loaded model deliver both.
+        let precision_mode = if embedder_ref.is_some() {
+            "semantic+fulltext".to_string()
+        } else {
+            "fulltext".to_string()
+        };
 
         Json(SearchContextOutput {
             results: results
@@ -261,6 +275,7 @@ impl McpServer {
                 })
                 .collect(),
             total,
+            precision_mode,
         })
     }
 
