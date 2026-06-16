@@ -168,6 +168,61 @@ fn generated_files_keep_symbols_but_skip_refs() {
 }
 
 #[test]
+fn impact_bfs_explores_same_named_callers_in_different_files() {
+    // Two distinct callers both named `run` (in svc_a/run.go and svc_b/run.go)
+    // each call Target. If the BFS visited set keys on just the bare name `run`,
+    // the second `run` is skipped and its transitive subtree disappears. The
+    // fix keys visited on (source_file_id, source_symbol_name).
+    let fx = index_fixture(&[
+        (
+            "svc/target.go",
+            "package svc\n\nfunc Target() int { return 1 }\n",
+        ),
+        (
+            "svc_a/run.go",
+            "package svc_a\n\nfunc run() int { return Target() }\n\n\
+             func Entry() int { return run() }\n",
+        ),
+        (
+            "svc_b/run.go",
+            "package svc_b\n\nfunc run() int { return Target() }\n\n\
+             func Boot() int { return run() }\n",
+        ),
+    ]);
+
+    let gq = GraphQuery::new(&fx.repo);
+    // Use min_confidence=0.0 so cross-package lookups (which land at L4=0.8 or
+    // even demoted tiers) are not filtered out by the default 0.7 gate.
+    let impact = gq.impact_analysis("Target", 3, 0.0).unwrap();
+
+    let direct: Vec<&str> = impact
+        .direct_callers
+        .iter()
+        .map(|c| c.symbol.as_str())
+        .collect();
+    let direct_run_count = direct.iter().filter(|s| **s == "run").count();
+    assert_eq!(
+        direct_run_count, 2,
+        "both same-named `run` callers should be direct callers of Target: {direct:?}"
+    );
+
+    let transitive: Vec<&str> = impact
+        .transitive_callers
+        .iter()
+        .map(|c| c.symbol.as_str())
+        .collect();
+    // The BUG would drop one of these — only one subtree was being walked.
+    assert!(
+        transitive.contains(&"Entry"),
+        "transitive caller from svc_a/run.go's subtree should be walked: {transitive:?}"
+    );
+    assert!(
+        transitive.contains(&"Boot"),
+        "transitive caller from svc_b/run.go's subtree should be walked: {transitive:?}"
+    );
+}
+
+#[test]
 fn deleted_files_are_removed_from_index() {
     let fx = index_fixture(&[
         ("a.go", "package main\n\nfunc A() int { return 1 }\n"),

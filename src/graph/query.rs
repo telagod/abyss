@@ -69,7 +69,10 @@ impl<'a> GraphQuery<'a> {
         max_depth: u32,
         min_confidence: f64,
     ) -> Result<ImpactResult> {
-        let mut visited: HashSet<String> = HashSet::new();
+        // Visited key is (source_file_id, source_symbol_name): two functions
+        // named `run` in different files must each have their subtrees walked.
+        // Keying on just the name collapses them and silently drops a subtree.
+        let mut visited: HashSet<(i64, String)> = HashSet::new();
         let mut queue: VecDeque<(String, u32)> = VecDeque::new();
         let mut direct = Vec::new();
         let mut transitive = Vec::new();
@@ -98,10 +101,12 @@ impl<'a> GraphQuery<'a> {
                 direct.push(caller.clone());
                 if let Some(ref sym) = r.source_symbol
                     && !sym.is_empty()
-                    && !visited.contains(sym)
                 {
-                    visited.insert(sym.clone());
-                    queue.push_back((sym.clone(), 1));
+                    let key = (r.source_file_id, sym.clone());
+                    if !visited.contains(&key) {
+                        visited.insert(key);
+                        queue.push_back((sym.clone(), 1));
+                    }
                 }
             }
         }
@@ -134,10 +139,12 @@ impl<'a> GraphQuery<'a> {
                     transitive.push(caller);
                     if let Some(ref sym_name) = r.source_symbol
                         && !sym_name.is_empty()
-                        && !visited.contains(sym_name)
                     {
-                        visited.insert(sym_name.clone());
-                        queue.push_back((sym_name.clone(), depth + 1));
+                        let key = (r.source_file_id, sym_name.clone());
+                        if !visited.contains(&key) {
+                            visited.insert(key);
+                            queue.push_back((sym_name.clone(), depth + 1));
+                        }
                     }
                 }
             }
