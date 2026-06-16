@@ -7,6 +7,7 @@
 #   scip-typescript / scip-python:
 #            npm install -g @sourcegraph/scip-typescript @sourcegraph/scip-python
 #   rust-analyzer: rustup component add rust-analyzer
+#   scip-clang: https://github.com/sourcegraph/scip-clang/releases (+ cmake)
 set -euo pipefail
 
 EVAL_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -21,6 +22,7 @@ REPOS=(
   "ripgrep|https://github.com/BurntSushi/ripgrep.git|14.1.1|rust-analyzer"
   # dogfood: abyss itself, pinned to the commit the numbers were taken at
   "abyss|https://github.com/telagod/abyss.git|8099aeb|rust-analyzer"
+  "cmark|https://github.com/commonmark/cmark.git|0.31.1|scip-clang"
 )
 
 for entry in "${REPOS[@]}"; do
@@ -52,6 +54,10 @@ for entry in "${REPOS[@]}"; do
         ;;
       rust-analyzer)
         rust-analyzer scip . --output index.scip >&2
+        ;;
+      scip-clang)
+        cmake -B build -DCMAKE_EXPORT_COMPILE_COMMANDS=ON >&2
+        scip-clang --compdb-path=build/compile_commands.json >&2
         ;;
       *) echo "unknown indexer: $indexer" >&2; exit 1 ;;
     esac

@@ -1,3 +1,4 @@
+pub mod c_cpp;
 pub mod go;
 pub mod java;
 pub mod python;
@@ -13,6 +14,8 @@ pub fn get_extractor(language: &str) -> Option<Box<dyn LanguageRefExtractor>> {
         "typescript" | "tsx" | "javascript" => Some(Box::new(typescript::TypeScriptExtractor)),
         "rust" => Some(Box::new(rust_lang::RustExtractor)),
         "python" => Some(Box::new(python::PythonExtractor)),
+        "c" => Some(Box::new(c_cpp::CExtractor)),
+        "cpp" => Some(Box::new(c_cpp::CppExtractor)),
         _ => None,
     }
 }

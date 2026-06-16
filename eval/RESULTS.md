@@ -12,7 +12,7 @@ only in-repo symbols count (abyss does not resolve into dependencies).
 - **precision** — when abyss commits to an answer, how often is it right
 - **recall** — how much of the SCIP-known call graph abyss resolves correctly
 
-## Results — 2026-06-12, abyss v0.3.3-dev (four languages, five corpora)
+## Results — 2026-06-16, abyss v0.3.4-dev (five languages, six corpora)
 
 | Corpus | Language | Truth pairs | Gated precision | Gated recall | All precision | All recall |
 |--------|----------|------------:|----------------:|-------------:|--------------:|-----------:|
@@ -21,6 +21,7 @@ only in-repo symbols count (abyss does not resolve into dependencies).
 | click 8.1.8 | Python | 573 | **98.7%** | **94.6%** | 97.5% | 96.2% |
 | ripgrep 14.1.1 | Rust | 4,283 | **98.5%** | **75.3%** | 86.9% | 86.8% |
 | abyss @8099aeb | Rust (dogfood) | 450 | **100.0%** | **90.9%** | 98.4% | 98.4% |
+| cmark 0.31.1 | C | 1,383 | **99.1%** | **74.8%** | 99.1% | 74.8% |
 
 Gated = `--min-confidence 0.7` (the default). abyss index time per corpus:
 ~150–900ms; the SCIP indexers take 40s–4min on the same machines.
@@ -72,7 +73,41 @@ Gated = `--min-confidence 0.7` (the default). abyss index time per corpus:
 | 0.8 | global unique | 90 | 0 | **100%** |
 | 0.6 / 0.5 | demoted / ambiguous | 34 | 7 | 82.9% |
 
+### cmark (C) — scip-clang
+
+| Tier | Strategy | Correct | Wrong | Precision |
+|------|----------|--------:|------:|----------:|
+| 1.0 | same file (bare + self-like calls) | 373 | 9 | **97.6%** |
+| 0.95 | receiver-type + include-binding + same-dir unique | 526 | 0 | **100%** |
+| 0.8 | global unique | 135 | 0 | **100%** |
+
 ## How the eval drove the resolver (chronicle)
+
+### Round 10 — 2026-06-16: C/C++ caller tracing — first C corpus
+
+New `CExtractor` / `CppExtractor` sharing `c_cpp.rs`: direct calls, `.`/`->`
+method calls, C++ `qualified_identifier` (`ns::func()`), `new` expressions,
+`#include "..."` imports, `this` receiver inference, typed parameter/local
+inference, `std::` namespace filtering, `base_class_clause` inheritance.
+
+Chunker additions: `class_specifier`, `struct_specifier`, `namespace_definition`,
+`type_definition`, `enum_specifier` as chunk boundaries + scope nodes. Fixed
+`extract_node_name` for C/C++ `function_definition` (return type was winning
+the fallback race over the function name inside `function_declarator`).
+
+The `compare.py` SCIP name extractor needed a `cxx` scheme handler: scip-clang
+symbols use `cxx . . $ descriptor` format (space-delimited prefix, no `/`
+in simple descriptors), overload hashes in parens, and backtick-quoted macro
+identifiers that must be skipped.
+
+First run on cmark 0.31.1 (CommonMark reference parser, pure C, 38 source files,
+1,383 truth pairs): **99.1% gated precision / 74.8% recall**. The 0.95 tier
+(same-dir unique + receiver-type) is 100% — C's flat file structure makes
+directory-based resolution very effective. The 340 unresolved calls are mostly
+`static` helper functions in `.h` headers that SCIP defines in the header but
+abyss resolves to the `.c` file that includes it — a "wrong file" by strict
+join semantics but functionally correct. 85 tests, zero regression on existing
+five corpora.
 
 ### Round 9 — 2026-06-12: the recall round — type-grade evidence beyond exact scope
 
@@ -324,3 +359,4 @@ matched the *file* `json.go`). Net: 85.6% → 97.2% gated precision.
 | pallets/click | 8.1.8 | Python | scip-python |
 | BurntSushi/ripgrep | 14.1.1 | Rust | rust-analyzer scip |
 | telagod/abyss | 8099aeb | Rust | rust-analyzer scip |
+| commonmark/cmark | 0.31.1 | C | scip-clang |

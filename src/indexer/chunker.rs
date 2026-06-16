@@ -224,6 +224,12 @@ impl Chunker {
                 })
                 .filter(|s| !s.is_empty());
         }
+        // C++ out-of-class method: `void Player::move(int)` → scope to `Player`
+        if node.kind() == "function_definition"
+            && let Some(owner) = crate::graph::languages::c_cpp::cpp_method_owner_type(node, source)
+        {
+            return Some(owner);
+        }
         self.extract_node_name(node, source)
     }
 
@@ -302,12 +308,17 @@ impl Chunker {
                 | "field_definition"
                 | "class_definition"
                 | "class_declaration"
+                | "class_specifier"
                 | "struct_item"
+                | "struct_specifier"
                 | "enum_item"
+                | "enum_specifier"
                 | "impl_item"
                 | "trait_item"
                 | "interface_declaration"
                 | "type_alias_declaration"
+                | "type_definition"
+                | "namespace_definition"
                 | "const_item"
                 | "static_item"
                 // bare `const f = () => ...` — non-exported module-level
@@ -330,11 +341,14 @@ impl Chunker {
             kind,
             "class_definition"
                 | "class_declaration"
+                | "class_specifier"
                 | "struct_item"
+                | "struct_specifier"
                 | "impl_item"
                 | "trait_item"
                 | "module_definition"
                 | "mod_item"
+                | "namespace_definition"
                 | "interface_declaration"
         )
     }
@@ -348,13 +362,17 @@ impl Chunker {
             | "method_declaration" => ChunkKind::Function,
             "class_definition"
             | "class_declaration"
+            | "class_specifier"
             | "struct_item"
+            | "struct_specifier"
             | "enum_item"
+            | "enum_specifier"
             | "impl_item"
             | "trait_item"
             | "interface_declaration"
-            | "type_alias_declaration" => ChunkKind::Class,
-            "module_definition" | "mod_item" => ChunkKind::Module,
+            | "type_alias_declaration"
+            | "type_definition" => ChunkKind::Class,
+            "module_definition" | "mod_item" | "namespace_definition" => ChunkKind::Module,
             "import_declaration" | "import_statement" | "use_declaration" | "export_statement" => {
                 ChunkKind::Import
             }
@@ -414,12 +432,12 @@ impl Chunker {
             {
                 Some(SymbolKind::Function)
             }
-            "class_definition" | "class_declaration" => Some(SymbolKind::Class),
-            "struct_item" => Some(SymbolKind::Struct),
-            "enum_item" => Some(SymbolKind::Enum),
+            "class_definition" | "class_declaration" | "class_specifier" => Some(SymbolKind::Class),
+            "struct_item" | "struct_specifier" => Some(SymbolKind::Struct),
+            "enum_item" | "enum_specifier" => Some(SymbolKind::Enum),
             "const_item" | "static_item" => Some(SymbolKind::Const),
             "interface_declaration" => Some(SymbolKind::Interface),
-            "type_alias_declaration" => Some(SymbolKind::Type),
+            "type_alias_declaration" | "type_definition" => Some(SymbolKind::Type),
             _ => None,
         };
 
@@ -459,9 +477,11 @@ impl Chunker {
                     raw.split('<').next().unwrap_or(&raw).trim().to_string()
                 })
                 .filter(|s| !s.is_empty()),
-            "class_definition" | "class_declaration" | "interface_declaration" => {
-                self.extract_node_name(node, source)
-            }
+            "class_definition"
+            | "class_declaration"
+            | "class_specifier"
+            | "struct_specifier"
+            | "interface_declaration" => self.extract_node_name(node, source),
             _ => None,
         };
 
@@ -478,6 +498,26 @@ impl Chunker {
     }
 
     fn extract_node_name(&self, node: &Node, source: &str) -> Option<String> {
+        // C/C++ function_definition: name is nested inside function_declarator,
+        // not a direct `name` field. Without this, the return type_identifier
+        // (e.g. `Point` in `Point make_point(...)`) wins the fallback race.
+        if node.kind() == "function_definition"
+            && let Some(decl) = node.child_by_field_name("declarator")
+            && let Some(name_node) = decl.child_by_field_name("declarator")
+        {
+            return match name_node.kind() {
+                "identifier" | "field_identifier" => Some(self.extract_text(&name_node, source)),
+                "qualified_identifier" => {
+                    let mut cursor = name_node.walk();
+                    name_node
+                        .named_children(&mut cursor)
+                        .filter(|c| c.kind() == "identifier" || c.kind() == "destructor_name")
+                        .last()
+                        .map(|n| self.extract_text(&n, source))
+                }
+                _ => None,
+            };
+        }
         node.child_by_field_name("name")
             .or_else(|| {
                 let mut cursor = node.walk();

@@ -75,6 +75,17 @@ fn is_branch_node(kind: &str, language: &str) -> bool {
                 | "conditional_expression"
                 | "boolean_operator"
         ),
+        "c" | "cpp" => matches!(
+            kind,
+            "if_statement"
+                | "for_statement"
+                | "while_statement"
+                | "do_statement"
+                | "case_statement"
+                | "catch_clause"
+                | "conditional_expression"
+                | "binary_expression"
+        ),
         _ => matches!(
             kind,
             "if_statement" | "for_statement" | "while_statement" | "switch_case" | "catch_clause"

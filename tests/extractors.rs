@@ -240,3 +240,224 @@ fn java_test_file_detection() {
     assert!(ex.is_test_file("app/ServiceTest.java"));
     assert!(!ex.is_test_file("src/main/java/app/Service.java"));
 }
+
+// --- C ---
+
+#[test]
+fn c_direct_and_qualified_calls() {
+    let refs = extract(
+        "c",
+        r#"
+#include "myutil.h"
+
+void helper(int n);
+
+int caller(int x) {
+    helper(x);
+    return custom_fn(x);
+}
+"#,
+    );
+    let helper = find(&refs, "helper", RefKind::Call).expect("direct call");
+    assert_eq!(helper.target_qualifier, None);
+    assert_eq!(helper.source_symbol.as_deref(), Some("caller"));
+
+    assert!(find(&refs, "custom_fn", RefKind::Call).is_some());
+    assert!(find(&refs, "myutil.h", RefKind::Import).is_some());
+}
+
+#[test]
+fn c_member_access_via_dot_and_arrow() {
+    let refs = extract(
+        "c",
+        r#"
+void process(struct Ctx* ctx) {
+    ctx->run(1);
+    struct Obj o;
+    o.update();
+}
+"#,
+    );
+    let run = find(&refs, "run", RefKind::Call).expect("arrow call");
+    assert_eq!(run.target_qualifier.as_deref(), Some("ctx"));
+    assert_eq!(run.receiver_type.as_deref(), Some("Ctx"));
+
+    let update = find(&refs, "update", RefKind::Call).expect("dot call");
+    assert_eq!(update.target_qualifier.as_deref(), Some("o"));
+    assert_eq!(update.receiver_type.as_deref(), Some("Obj"));
+}
+
+#[test]
+fn c_type_refs_and_builtin_filtering() {
+    let refs = extract(
+        "c",
+        r#"
+Point make_point(int x) {
+    printf("hi");
+    Point* p = malloc(sizeof(Point));
+    return *p;
+}
+"#,
+    );
+    assert!(
+        find(&refs, "Point", RefKind::TypeRef).is_some(),
+        "custom type ref"
+    );
+    assert!(
+        find(&refs, "printf", RefKind::Call).is_none(),
+        "builtin printf filtered"
+    );
+    assert!(
+        find(&refs, "malloc", RefKind::Call).is_none(),
+        "builtin malloc filtered"
+    );
+}
+
+#[test]
+fn c_system_include_not_captured() {
+    let refs = extract(
+        "c",
+        r#"
+#include <stdio.h>
+#include "local.h"
+
+void f() {}
+"#,
+    );
+    assert!(
+        find(&refs, "local.h", RefKind::Import).is_some(),
+        "local include captured"
+    );
+    // system includes should NOT be captured
+    assert!(
+        refs.iter()
+            .all(|r| r.target_name != "stdio.h" || r.kind != RefKind::Import),
+        "system include not captured"
+    );
+}
+
+#[test]
+fn c_test_file_detection() {
+    let ex = get_extractor("c").unwrap();
+    assert!(ex.is_test_file("src/parser_test.c"));
+    assert!(ex.is_test_file("tests/test_parser.c"));
+    assert!(!ex.is_test_file("src/parser.c"));
+}
+
+// --- C++ ---
+
+#[test]
+fn cpp_method_call_and_new_expression() {
+    let refs = extract(
+        "cpp",
+        r#"
+#include "engine.h"
+
+void caller() {
+    Engine* e = new Engine();
+    e->start(1);
+    helper();
+}
+"#,
+    );
+    let start = find(&refs, "start", RefKind::Call).expect("arrow method call");
+    assert_eq!(start.target_qualifier.as_deref(), Some("e"));
+    assert_eq!(start.receiver_type.as_deref(), Some("Engine"));
+
+    assert!(
+        find(&refs, "Engine", RefKind::Call).is_some(),
+        "new expression → constructor call"
+    );
+    assert!(find(&refs, "helper", RefKind::Call).is_some());
+    assert!(find(&refs, "engine.h", RefKind::Import).is_some());
+}
+
+#[test]
+fn cpp_qualified_call_filters_std() {
+    let refs = extract(
+        "cpp",
+        r#"
+void f() {
+    std::sort(v.begin(), v.end());
+    game::Engine::create();
+}
+"#,
+    );
+    assert!(
+        find(&refs, "sort", RefKind::Call).is_none(),
+        "std:: calls filtered"
+    );
+    let create = find(&refs, "create", RefKind::Call).expect("qualified call");
+    assert_eq!(create.target_qualifier.as_deref(), Some("game::Engine"));
+}
+
+#[test]
+fn cpp_class_method_this_receiver() {
+    let refs = extract(
+        "cpp",
+        r#"
+class Player {
+public:
+    void move(int dx) {
+        this->update(dx);
+        helper();
+    }
+};
+"#,
+    );
+    let update = find(&refs, "update", RefKind::Call).expect("this->method");
+    assert_eq!(update.receiver_type.as_deref(), Some("Player"));
+}
+
+#[test]
+fn cpp_inheritance_ref() {
+    let refs = extract(
+        "cpp",
+        r#"
+class Animal {
+public:
+    virtual void speak();
+};
+
+class Dog : public Animal {
+public:
+    void speak() override {}
+};
+"#,
+    );
+    assert!(
+        find(&refs, "Animal", RefKind::Inherit).is_some(),
+        "inheritance ref"
+    );
+}
+
+#[test]
+fn cpp_builtin_type_filtering() {
+    let refs = extract(
+        "cpp",
+        r#"
+Widget create(int x, bool flag) {
+    string name;
+    return Widget();
+}
+"#,
+    );
+    assert!(find(&refs, "Widget", RefKind::TypeRef).is_some());
+    assert!(
+        find(&refs, "string", RefKind::TypeRef).is_none(),
+        "builtin string filtered"
+    );
+    assert!(
+        find(&refs, "bool", RefKind::TypeRef).is_none(),
+        "builtin bool filtered"
+    );
+}
+
+#[test]
+fn cpp_test_file_detection() {
+    let ex = get_extractor("cpp").unwrap();
+    assert!(ex.is_test_file("src/engine_test.cpp"));
+    assert!(ex.is_test_file("tests/TestEngine.cc"));
+    assert!(ex.is_test_file("testing/foo.cpp"));
+    assert!(!ex.is_test_file("src/engine.cpp"));
+}

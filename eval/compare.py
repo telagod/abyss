@@ -30,16 +30,37 @@ def scip_symbol_name(symbol: str) -> str | None:
     e.g. '... `github.com/gin-gonic/gin`/Context#JSON().' -> 'JSON'
          '... `pkg`/New().'                               -> 'New'
          '... `pkg`/Engine#'                              -> 'Engine'
+         'cxx . . $ cmark_node_get_type(0).'              -> 'cmark_node_get_type'
+         'cxx . . $ test_runner#test_num.'                -> 'test_num'
     """
     if symbol.startswith("local "):
         return None
-    last = symbol.rstrip(".").split("/")[-1]
+    # scip-clang (C/C++): scheme is 'cxx', prefix is 4 space-separated tokens.
+    # Strip prefix to get the raw descriptor chain.
+    if symbol.startswith("cxx "):
+        parts = symbol.split(" ", 4)
+        if len(parts) < 5:
+            return None
+        desc = parts[4]  # descriptor chain after 'cxx manager name version'
+        # Skip macros (backtick-quoted file:line:col identifiers)
+        if desc.startswith("`"):
+            return None
+        # Skip anonymous types
+        if "$anonymous" in desc:
+            return None
+    else:
+        desc = symbol
+
+    last = desc.rstrip(".").split("/")[-1]
     # method on a type: Context#JSON()
     if "#" in last:
         last = last.split("#")[-1] or last.split("#")[0]
     # rust-analyzer impl methods: impl#[IndexPipeline]run_structural()
     if last.startswith("[") and "]" in last:
         last = last.split("]", 1)[1]
+    # scip-clang overload hashes: func(hexhash)
+    if "(" in last and last.endswith(")"):
+        last = last[:last.index("(")]
     if last.endswith("()"):
         last = last[:-2]
     last = last.strip("`.")
