@@ -101,6 +101,11 @@ enum Commands {
         #[arg(long, default_value = "15")]
         limit: usize,
     },
+    /// Show the L0 architectural coordinates for a file (layer/module/role/topology)
+    Where {
+        /// File path (relative to workspace, suffix-matchable)
+        file: String,
+    },
     /// Show index statistics
     Stats,
     /// Agent hook entry points (read tool-call JSON from stdin)
@@ -182,6 +187,7 @@ fn main() -> Result<()> {
         Commands::History { file, symbol } => cmd_history(config, &file, symbol.as_deref(), json),
         Commands::Context { file } => cmd_context(config, &file, json),
         Commands::Map { limit } => cmd_map(config, limit, json),
+        Commands::Where { file } => cmd_where(config, &file, json),
         Commands::Stats => cmd_stats(config, json),
         Commands::Hook { action } => cmd_hook(config, action, json),
         Commands::Attach { host, local } => cmd_attach(&host, local),
@@ -573,6 +579,82 @@ fn cmd_map(config: Config, limit: usize, json: bool) -> Result<()> {
                 );
             }
         }
+    }
+    Ok(())
+}
+
+fn cmd_where(config: Config, file: &str, json: bool) -> Result<()> {
+    let repo = Repository::open(&config.db_path, config.model.dimensions)?;
+    let Some(view) = code_abyss::context::where_summary(&repo, file)? else {
+        if json {
+            println!("{}", serde_json::json!({"file": file, "found": false}));
+        } else {
+            eprintln!("not indexed: {file}");
+        }
+        return Ok(());
+    };
+
+    if json {
+        println!("{}", serde_json::to_string(&view)?);
+        return Ok(());
+    }
+
+    let layer = view["layer"].as_str().unwrap_or("unknown");
+    let role = view["role"].as_str().unwrap_or("unknown");
+    let module = view["module_label"].as_str().unwrap_or("—");
+    let conf = view["layer_conf"].as_f64().unwrap_or(0.0);
+    let centrality = view["centrality"].as_f64().unwrap_or(0.0);
+    let in_deg = view["in_degree"].as_u64().unwrap_or(0);
+    let out_deg = view["out_degree"].as_u64().unwrap_or(0);
+    let depth = view["depth_from_entry"]
+        .as_u64()
+        .map(|d| d.to_string())
+        .unwrap_or_else(|| String::from("—"));
+    let path = view["file"].as_str().unwrap_or(file);
+
+    println!("where: {path}");
+    println!("  layer={layer}  module={module}  role={role}  conf={conf:.2}");
+    println!("  depth_from_entry={depth}  centrality={centrality:.2}  in={in_deg} out={out_deg}");
+
+    // Compact one-line signal trace — useful for "why is this file classified
+    // as X?" without dumping the full JSON.
+    let signals = &view["signals"];
+    if !signals.is_null() {
+        let dir_hints = signals["dir"]
+            .as_array()
+            .map(|arr| {
+                arr.iter()
+                    .map(|h| {
+                        format!(
+                            "{}×{:.1}",
+                            h["layer"].as_str().unwrap_or("?"),
+                            h["weight"].as_f64().unwrap_or(0.0)
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            })
+            .unwrap_or_default();
+        let name_hints = signals["name"]
+            .as_array()
+            .map(|arr| {
+                arr.iter()
+                    .map(|h| {
+                        format!(
+                            "{}×{:.1}",
+                            h["layer"].as_str().unwrap_or("?"),
+                            h["weight"].as_f64().unwrap_or(0.0)
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            })
+            .unwrap_or_default();
+        let entry = signals["entry"].as_bool().unwrap_or(false);
+        println!("  signals: dir=[{dir_hints}], name=[{name_hints}], entry={entry}");
+    }
+    if let Some(note) = view.get("note").and_then(|v| v.as_str()) {
+        println!("  note: {note}");
     }
     Ok(())
 }
