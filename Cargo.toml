@@ -85,6 +85,12 @@ rayon = "1"
 num_cpus = "1"
 petgraph = "0.6"
 
+# Graph algorithms (arch L0 — PageRank / SCC / Louvain)
+petgraph = "0.8"
+
+# Path-segment dictionary regex (arch L0 signal extractors)
+regex = "1"
+
 [dev-dependencies]
 tempfile = "3"
 

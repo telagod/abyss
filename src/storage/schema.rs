@@ -147,30 +147,35 @@ pub fn init_db(conn: &Connection) -> Result<()> {
             PRIMARY KEY (file_a, file_b)
         );
 
-        -- ═══ v5: Architectural facts (L0 coordinates) ═══
-
+        -- ═══ v5: Architectural coordinates (L0 inference) ═══
+        --
+        -- One row per indexed file: layer + role + module assignment + topology
+        -- evidence. Replaced wholesale at the end of each indexing pass.
         CREATE TABLE IF NOT EXISTS arch_facts (
-            file_id            INTEGER PRIMARY KEY REFERENCES files(id) ON DELETE CASCADE,
-            layer              TEXT NOT NULL DEFAULT 'unknown',     -- entry|api|domain|infra|util|test|config|vendor|generated|unknown
-            role               TEXT NOT NULL DEFAULT 'unknown',     -- entry_point|core|leaf|bridge|orphan|unknown
-            module_id          INTEGER NOT NULL DEFAULT 0,
-            depth_from_entry   INTEGER,                              -- nullable: unreachable from entry
-            centrality         REAL NOT NULL DEFAULT 0.0,           -- PageRank score
-            in_degree          INTEGER NOT NULL DEFAULT 0,
-            out_degree         INTEGER NOT NULL DEFAULT 0,
-            layer_conf         REAL NOT NULL DEFAULT 0.0,           -- fusion confidence [0,1]
-            signals            TEXT NOT NULL DEFAULT '{}'           -- JSON: which rules fired (for debug)
+            file_id           INTEGER PRIMARY KEY REFERENCES files(id) ON DELETE CASCADE,
+            layer             TEXT    NOT NULL DEFAULT 'unknown',
+            role              TEXT    NOT NULL DEFAULT 'leaf',
+            module_id         INTEGER NOT NULL DEFAULT -1,
+            depth_from_entry  INTEGER,              -- NULL when unreachable
+            centrality        REAL    NOT NULL DEFAULT 0,
+            in_degree         INTEGER NOT NULL DEFAULT 0,
+            out_degree        INTEGER NOT NULL DEFAULT 0,
+            layer_conf        REAL    NOT NULL DEFAULT 0,
+            signals           TEXT    NOT NULL DEFAULT '{}'  -- JSON debug envelope
         );
-        CREATE INDEX IF NOT EXISTS idx_arch_layer ON arch_facts(layer);
-        CREATE INDEX IF NOT EXISTS idx_arch_module ON arch_facts(module_id);
-        CREATE INDEX IF NOT EXISTS idx_arch_role ON arch_facts(role);
+        CREATE INDEX IF NOT EXISTS idx_arch_facts_layer ON arch_facts(layer);
+        CREATE INDEX IF NOT EXISTS idx_arch_facts_role ON arch_facts(role);
+        CREATE INDEX IF NOT EXISTS idx_arch_facts_module ON arch_facts(module_id);
 
+        -- One row per detected Louvain community. label is a human-readable
+        -- best-effort name (longest common dir prefix of members) so callers
+        -- can show auth instead of module-7.
         CREATE TABLE IF NOT EXISTS arch_modules (
-            module_id          INTEGER PRIMARY KEY,
-            label              TEXT NOT NULL DEFAULT '',           -- e.g. auth/session or graph/languages
-            file_count         INTEGER NOT NULL DEFAULT 0,
-            centroid_path      TEXT NOT NULL DEFAULT '',           -- longest common dir prefix
-            dominant_layer     TEXT NOT NULL DEFAULT 'unknown'     -- modal layer of member files
+            id              INTEGER PRIMARY KEY,
+            label           TEXT NOT NULL,
+            file_count      INTEGER NOT NULL DEFAULT 0,
+            dominant_layer  TEXT NOT NULL DEFAULT 'unknown',
+            centroid_path   TEXT NOT NULL DEFAULT ''
         );
         ",
     )?;
@@ -195,6 +200,11 @@ pub fn init_db(conn: &Connection) -> Result<()> {
             "ALTER TABLE files ADD COLUMN generated INTEGER NOT NULL DEFAULT 0",
             [],
         );
+    }
+    if version < 5 {
+        // arch_facts / arch_modules are created via the CREATE IF NOT EXISTS
+        // batch above; no ALTER needed. We bump the recorded version so
+        // future migrations know this snapshot already has the L0 tables.
     }
 
     // Set schema version
