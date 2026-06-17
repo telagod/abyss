@@ -54,6 +54,16 @@ enum Commands {
         /// default keeps their symbols but skips their high-noise call edges
         #[arg(long)]
         index_generated: bool,
+        /// Restrict the index pass to files git reports as changed between
+        /// `<ref>` and HEAD. Added/Modified/Renamed paths are reindexed;
+        /// Deleted paths are dropped from the index. Skips the workspace
+        /// walker entirely — orders of magnitude faster on large repos.
+        ///
+        /// Falls back to a full walk (with a stderr warning) when the
+        /// workspace is not a git repo. Example: `abyss index --since HEAD~5`
+        /// or `abyss index --since origin/main` from a feature branch.
+        #[arg(long, value_name = "REF")]
+        since: Option<String>,
     },
     /// Generate embeddings for semantic search. Slow, run after `index`.
     #[cfg(feature = "semantic")]
@@ -336,7 +346,8 @@ fn main() -> Result<()> {
             force,
             max_files,
             index_generated,
-        } => cmd_index(config, json, force, max_files, index_generated),
+            since,
+        } => cmd_index(config, json, force, max_files, index_generated, since),
         #[cfg(feature = "semantic")]
         Commands::Embed => cmd_embed(config),
         #[cfg(feature = "semantic")]
@@ -634,12 +645,83 @@ fn check_workspace_safety(workspace: &std::path::Path, force: bool) -> Result<()
     Ok(())
 }
 
+/// Indexable file extensions for the `--since` driver. Keep in sync with
+/// `walker::is_indexable` — the goal is to pre-filter git's diff output
+/// to what abyss would actually parse, so we don't spawn the pipeline
+/// against `.png` or `.lock` files that the walker would silently drop
+/// anyway. Out-of-sync is a soft failure (extra parse-then-skip), not
+/// a correctness bug.
+const INDEXABLE_EXTS: &[&str] = &[
+    "rs", "py", "pyi", "js", "mjs", "cjs", "ts", "mts", "cts", "tsx", "jsx", "go", "java", "c",
+    "h", "cpp", "cc", "cxx", "hpp", "hxx", "hh", "json", "toml", "yml", "yaml", "sh", "bash",
+    "html", "htm", "css", "scss", "md", "markdown",
+];
+
+/// Run `git diff --name-only --diff-filter=...` twice (added/modified/renamed
+/// vs deleted) against `<since>..HEAD` and split the output. Returns
+/// `(changed_abs_paths, deleted_rel_paths)` already filtered to indexable
+/// extensions so the caller doesn't have to.
+fn git_diff_changeset(
+    workspace: &std::path::Path,
+    since: &str,
+) -> Result<(Vec<std::path::PathBuf>, Vec<String>)> {
+    use std::process::Command;
+    let range = format!("{since}..HEAD");
+
+    let run = |filter: &str| -> Result<Vec<String>> {
+        let out = Command::new("git")
+            .current_dir(workspace)
+            .args([
+                "diff",
+                "--name-only",
+                &format!("--diff-filter={filter}"),
+                &range,
+            ])
+            .output()
+            .with_context(|| format!("git diff --diff-filter={filter}"))?;
+        if !out.status.success() {
+            anyhow::bail!(
+                "git diff exited {}: {}",
+                out.status,
+                String::from_utf8_lossy(&out.stderr).trim()
+            );
+        }
+        Ok(String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect())
+    };
+
+    let is_indexable = |p: &str| {
+        std::path::Path::new(p)
+            .extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|ext| INDEXABLE_EXTS.contains(&ext))
+    };
+
+    // AMR: added / modified / renamed → reindex from the worktree.
+    let changed_rel = run("AMR")?;
+    let changed: Vec<std::path::PathBuf> = changed_rel
+        .into_iter()
+        .filter(|p| is_indexable(p))
+        .map(|p| workspace.join(p))
+        .collect();
+
+    // D: deleted → drop from the index. Keep these workspace-relative so
+    // they match the `files.path` column directly.
+    let deleted: Vec<String> = run("D")?.into_iter().filter(|p| is_indexable(p)).collect();
+
+    Ok((changed, deleted))
+}
+
 fn cmd_index(
     mut config: Config,
     json: bool,
     force: bool,
     max_files: Option<u64>,
     index_generated: bool,
+    since: Option<String>,
 ) -> Result<()> {
     check_workspace_safety(&config.workspace, force)?;
     config.index.index_generated = index_generated;
@@ -656,6 +738,34 @@ fn cmd_index(
     };
     if let Some(n) = limit {
         pipeline.set_max_files(n);
+    }
+
+    // `--since <ref>`: ask git for the change set. Falls back to a full
+    // walk (with a stderr warning) when the workspace isn't a git repo —
+    // the operator's intent is "index", not "fail on a missing optimization".
+    if let Some(ref reference) = since {
+        if !has_git {
+            eprintln!(
+                "abyss index --since: workspace is not a git repo — falling back to full walk"
+            );
+        } else {
+            match git_diff_changeset(&config.workspace, reference) {
+                Ok((changed, deleted)) => {
+                    eprintln!(
+                        "abyss index --since {reference}: {} changed, {} deleted",
+                        changed.len(),
+                        deleted.len()
+                    );
+                    pipeline.set_restrict_paths(changed, deleted);
+                }
+                Err(e) => {
+                    // A bad ref shouldn't silently morph into a full walk —
+                    // the operator picked --since deliberately. Surface and
+                    // bail so they catch a typo before it eats CPU.
+                    anyhow::bail!("abyss index --since {reference}: {e}");
+                }
+            }
+        }
     }
 
     let stats = pipeline.run_structural(&repo)?;

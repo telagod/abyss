@@ -38,6 +38,20 @@ fn to_rel(workspace: &Path, path: &Path) -> String {
 pub struct IndexPipeline {
     config: Config,
     max_files: Option<u64>,
+    /// When set, the structural pass skips the workspace walker and only
+    /// considers these absolute paths. Used by `abyss index --since <ref>`
+    /// where git already knows the exact change set — no point walking
+    /// the whole tree just to throw most of it away.
+    ///
+    /// IMPORTANT: when restricted, the "delete files missing from the
+    /// walker output" pass is skipped — the subset is NOT a workspace
+    /// inventory, so absence here means "not changed", not "deleted".
+    /// Deletions must be fed through `delete_paths` explicitly.
+    restrict_paths: Option<Vec<std::path::PathBuf>>,
+    /// Workspace-relative paths to delete from the index in a restricted
+    /// run. Populated by the `--since` driver from
+    /// `git diff --diff-filter=D` output.
+    delete_paths: Vec<String>,
 }
 
 impl IndexPipeline {
@@ -45,6 +59,8 @@ impl IndexPipeline {
         Self {
             config,
             max_files: None,
+            restrict_paths: None,
+            delete_paths: Vec::new(),
         }
     }
 
@@ -52,12 +68,40 @@ impl IndexPipeline {
         self.max_files = Some(n);
     }
 
+    /// Restrict the next `run_structural` pass to a fixed set of paths
+    /// (absolute or workspace-relative). Used by `--since <ref>`. Caller
+    /// owns the filter — pipeline does no extra walking or globbing.
+    pub fn set_restrict_paths(&mut self, paths: Vec<std::path::PathBuf>, deleted_rel: Vec<String>) {
+        self.restrict_paths = Some(paths);
+        self.delete_paths = deleted_rel;
+    }
+
     /// Fast structural index only: parse + chunk + symbols + FTS5.
     /// Returns immediately, no embedding. Searchable via symbols + fulltext.
     pub fn run_structural(&self, repo: &Repository) -> Result<IndexStats> {
         let start = Instant::now();
-        let walker = FileWalker::new(&self.config.workspace);
-        let mut files = walker.walk()?;
+        let restricted = self.restrict_paths.is_some();
+        let mut files: Vec<std::path::PathBuf> = if let Some(subset) = &self.restrict_paths {
+            // Subset path: skip the walker. We still canonicalize/relativize
+            // through to_rel() below, so callers may pass either absolute
+            // paths or workspace-rooted relative paths and get identical
+            // behaviour. Non-existent paths are silently dropped — the
+            // caller (e.g. git-diff driver) shouldn't have to pre-filter.
+            subset
+                .iter()
+                .map(|p| {
+                    if p.is_absolute() {
+                        p.clone()
+                    } else {
+                        self.config.workspace.join(p)
+                    }
+                })
+                .filter(|p| p.exists())
+                .collect()
+        } else {
+            let walker = FileWalker::new(&self.config.workspace);
+            walker.walk()?
+        };
 
         // v0.5.5: honour `[ignore].patterns` from `.code-abyss/arch.toml`
         // at the walker level so excluded paths never enter the index in
@@ -88,7 +132,11 @@ impl IndexPipeline {
 
         info!("found {} indexable files", files.len());
 
-        if let Some(limit) = self.max_files
+        // The workspace-safety circuit breaker only fires on full walks —
+        // `--since` is bounded by what git already reported and a 50k diff
+        // would be its own red flag elsewhere.
+        if !restricted
+            && let Some(limit) = self.max_files
             && files.len() as u64 > limit
         {
             anyhow::bail!(
@@ -130,15 +178,27 @@ impl IndexPipeline {
             to_index.push((path.clone(), rel_path));
         }
 
-        // Deleted files
-        let current_paths: std::collections::HashSet<String> = files
-            .iter()
-            .map(|p| to_rel(&self.config.workspace, p))
-            .collect();
-        for (path, (id, _)) in &existing_map {
-            if !current_paths.contains(path) {
-                repo.delete_file(*id)?;
-                stats.deleted += 1;
+        // Deleted files: in a full walk, anything in the DB that no longer
+        // appears in `files` is gone — delete it. In a restricted run the
+        // subset isn't a workspace inventory (missing != deleted), so we
+        // honour the caller's explicit `delete_paths` instead.
+        if restricted {
+            for rel in &self.delete_paths {
+                if let Some((id, _)) = existing_map.get(rel) {
+                    repo.delete_file(*id)?;
+                    stats.deleted += 1;
+                }
+            }
+        } else {
+            let current_paths: std::collections::HashSet<String> = files
+                .iter()
+                .map(|p| to_rel(&self.config.workspace, p))
+                .collect();
+            for (path, (id, _)) in &existing_map {
+                if !current_paths.contains(path) {
+                    repo.delete_file(*id)?;
+                    stats.deleted += 1;
+                }
             }
         }
 
