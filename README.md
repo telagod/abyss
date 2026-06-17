@@ -143,6 +143,8 @@ abyss indexed gin in **~150ms**; scip-go took ~40s. Full method, per-tier tables
 
 **Pre-edit hooks**: `abyss hook pre-edit` reads the tool-call JSON any agent platform pipes to its hooks (Claude Code, Codex CLI, Gemini CLI, Pi, Hermes, OpenClaw payload shapes auto-detected), refreshes the index incrementally, and warns about production callers, ambiguous references, and hotspots — before the edit happens. [code-abyss](https://github.com/telagod/code-abyss) installs the per-platform hook configs in one command.
 
+**Arch layers**: every file gets an architectural layer (`api`, `domain`, `infra`, `util`, …) via a built-in path-segment dictionary. Project-specific directory names? Drop a `.code-abyss/arch.toml` at the workspace root — see [docs/ARCH-LAYERS.md](docs/ARCH-LAYERS.md).
+
 ## Features
 
 | Build | Contents | Size |
