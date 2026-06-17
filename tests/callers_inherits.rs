@@ -147,3 +147,59 @@ fn types_only_filter_does_not_include_inherit() {
         result.callers,
     );
 }
+
+#[test]
+fn all_deps_filter_matches_default_set() {
+    // v0.5.2 L4 clarity fix: `--all-deps` is a self-documenting alias for
+    // the default (no-flag) behaviour. It returns the same superset as
+    // `Both` and must be byte-identical to the default — anything else
+    // would defeat the whole point of "explicit alias".
+    //
+    // Pin: under the base_class_fixture (3 inheritors + 1 invocation user
+    // of `helper`), Base's callers under `Both` and under the default must
+    // match in count, kind, and file paths.
+    let fx = base_class_fixture();
+    let gq = GraphQuery::new(&fx.repo);
+
+    let default_set = gq
+        .find_callers_filtered("Base", 20, 0.0, true)
+        .expect("default query");
+    let all_deps = gq
+        .find_callers_filtered_kinds("Base", 20, 0.0, true, CallerKindFilter::Both)
+        .expect("Both query");
+
+    assert_eq!(
+        default_set.callers.len(),
+        all_deps.callers.len(),
+        "default and Both must return the same number of callers; \
+         default={:?}, all_deps={:?}",
+        default_set.callers,
+        all_deps.callers,
+    );
+
+    let default_paths: Vec<&str> = default_set
+        .callers
+        .iter()
+        .map(|c| c.file_path.as_str())
+        .collect();
+    let all_deps_paths: Vec<&str> = all_deps
+        .callers
+        .iter()
+        .map(|c| c.file_path.as_str())
+        .collect();
+    assert_eq!(
+        default_paths, all_deps_paths,
+        "default and Both must return the same file paths in the same order",
+    );
+
+    let default_kinds: Vec<&str> = default_set
+        .callers
+        .iter()
+        .map(|c| c.kind.as_str())
+        .collect();
+    let all_deps_kinds: Vec<&str> = all_deps.callers.iter().map(|c| c.kind.as_str()).collect();
+    assert_eq!(
+        default_kinds, all_deps_kinds,
+        "default and Both must return the same kind sequence",
+    );
+}

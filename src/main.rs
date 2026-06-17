@@ -69,12 +69,18 @@ enum Commands {
     },
     /// Find all callers of a symbol.
     ///
-    /// By default returns invocation users (`call`/`field_access`),
-    /// type-position users (`type_ref` — annotations, generics, extends),
-    /// AND inheritance users (`inherit` — every subclass of a base class).
-    /// Use `--calls-only` to recover the legacy invocation-only behaviour,
-    /// `--types-only` for interface-refactor focus, or `--inherits-only`
-    /// for "every subclass of this base".
+    /// Default returns ALL dependent kinds — call expressions, field
+    /// accesses, type-position uses (annotations, generics, extends), AND
+    /// inheritance edges. This matches what most agents mean by "who
+    /// depends on this".
+    ///
+    /// Use one of the restricting flags to narrow the view:
+    ///   * `--calls-only` — only direct call expressions (kind=`call`)
+    ///   * `--types-only` — only type-position uses (kind=`type_ref`)
+    ///   * `--inherits-only` — only inheritance (kind=`inherit`)
+    ///   * `--all-deps` — explicit alias for the default (no-op; useful
+    ///     for self-documenting scripts and pair-programming flows where
+    ///     "I want everything" needs to be said out loud)
     Callers {
         symbol: String,
         /// Max results (default: 20). Use `0` for unlimited (50_000 internal
@@ -89,21 +95,33 @@ enum Commands {
         /// Include callers from test files (default: hide them so agents see prod call sites first)
         #[arg(long)]
         include_tests: bool,
-        /// Restrict to invocation edges (`call` + `field_access`). Mutually
-        /// exclusive with `--types-only` / `--inherits-only`.
-        #[arg(long, conflicts_with_all = ["types_only", "inherits_only"])]
+        /// Restrict to direct call expressions (kind=`call`, plus
+        /// `field_access` for the method-style invocations the resolver
+        /// emits as method calls). Drops type-position users and
+        /// inheritance edges. Mutually exclusive with `--types-only` /
+        /// `--inherits-only` / `--all-deps`.
+        #[arg(long, conflicts_with_all = ["types_only", "inherits_only", "all_deps"])]
         calls_only: bool,
-        /// Restrict to type-position edges (`type_ref` — annotations,
-        /// generics, extends). Mutually exclusive with `--calls-only` /
-        /// `--inherits-only`.
-        #[arg(long, conflicts_with_all = ["calls_only", "inherits_only"])]
+        /// Restrict to type-position uses (kind=`type_ref` — annotations,
+        /// generics, extends/implements clauses). Drops invocations and
+        /// inheritance edges. Mutually exclusive with `--calls-only` /
+        /// `--inherits-only` / `--all-deps`.
+        #[arg(long, conflicts_with_all = ["calls_only", "inherits_only", "all_deps"])]
         types_only: bool,
-        /// Restrict to inheritance edges (`inherit` — every subclass of a
-        /// base class). Mutually exclusive with `--calls-only` /
-        /// `--types-only`. Surfaces every Django Model subclass when run
+        /// Restrict to inheritance edges (kind=`inherit` — every subclass
+        /// of a base class). Drops invocations and type-position users.
+        /// Mutually exclusive with `--calls-only` / `--types-only` /
+        /// `--all-deps`. Surfaces every Django Model subclass when run
         /// against `Model`.
-        #[arg(long, conflicts_with_all = ["calls_only", "types_only"])]
+        #[arg(long, conflicts_with_all = ["calls_only", "types_only", "all_deps"])]
         inherits_only: bool,
+        /// Explicit alias for the default behaviour: returns ALL dependent
+        /// kinds (calls, field access, type uses, inheritance). Same set
+        /// as passing no flag — provided as self-documenting sugar for
+        /// scripts that want to say out loud "I want everything". Mutually
+        /// exclusive with the restricting flags.
+        #[arg(long, conflicts_with_all = ["calls_only", "types_only", "inherits_only"])]
+        all_deps: bool,
     },
     /// Analyze blast radius of changing a symbol.
     ///
@@ -264,6 +282,7 @@ fn main() -> Result<()> {
             calls_only,
             types_only,
             inherits_only,
+            all_deps,
         } => cmd_callers(
             config,
             &symbol,
@@ -273,6 +292,7 @@ fn main() -> Result<()> {
             calls_only,
             types_only,
             inherits_only,
+            all_deps,
             json,
         ),
         Commands::Impact {
@@ -468,11 +488,17 @@ fn cmd_callers(
     calls_only: bool,
     types_only: bool,
     inherits_only: bool,
+    _all_deps: bool,
     json: bool,
 ) -> Result<()> {
     use code_abyss::graph::CallerKindFilter;
     let repo = Repository::open(&config.db_path, config.model.dimensions)?;
     let gq = code_abyss::graph::GraphQuery::new(&repo);
+    // `--all-deps` is a self-documenting alias for the default — it
+    // collapses to the same `Both` branch as "no flag at all". Kept as a
+    // dedicated arg so scripts can spell intent and so clap's
+    // `conflicts_with_all` machinery enforces mutual exclusion with the
+    // restricting flags.
     let kind_filter = match (calls_only, types_only, inherits_only) {
         (true, false, false) => CallerKindFilter::CallsOnly,
         (false, true, false) => CallerKindFilter::TypesOnly,
