@@ -126,6 +126,16 @@ fn collect_refs(
                     // Associated function: the qualifier's last segment IS
                     // the receiver type (`IndexPipeline::new()`, every type
                     // has a `new` — name tiers alone pick the wrong one).
+                    //
+                    // v0.5.4: when the inferred receiver type is a Rust
+                    // std-lib collection (Vec, Box, HashMap, …) we drop
+                    // the receiver_type hint — there is no user symbol
+                    // for it, so feeding `receiver_type=Vec` to L0d
+                    // would silently bind to a user-defined `struct Vec`
+                    // anywhere in the workspace. The same denylist is
+                    // applied at the SQL guard level for the global
+                    // tiers (L2/L4/L4b/L5); dropping it here pre-empts
+                    // L0d's type-name lookup.
                     let receiver_type = qualifier
                         .rsplit("::")
                         .next()
@@ -134,6 +144,7 @@ fn collect_refs(
                             s.chars().next().is_some_and(|c| c.is_uppercase())
                                 && s.chars().all(|c| c.is_alphanumeric() || c == '_')
                         })
+                        .filter(|s| !is_rust_collection_builtin(s))
                         .map(String::from);
                     refs.push(RawReference {
                         line,
@@ -517,5 +528,37 @@ fn is_builtin_rust_type(name: &str) -> bool {
             | "Pin"
             | "Cow"
             | "PhantomData"
+    )
+}
+
+/// Rust std-lib collection / smart-pointer / wrapper types that user
+/// code routinely calls associated functions on (`Vec::new`, `Box::new`,
+/// `Arc::clone`, …) but for which we have no symbol in the workspace
+/// index. When these appear as a path-call receiver type, suppressing
+/// the receiver_type hint prevents L0d from binding the call to a
+/// user-defined `struct Vec` / `enum Result` elsewhere in the repo.
+/// Mirrors the SQL-level RUST_BUILTIN_GUARD applied at L2/L4/L4b/L5.
+fn is_rust_collection_builtin(name: &str) -> bool {
+    matches!(
+        name,
+        "Vec"
+            | "HashMap"
+            | "BTreeMap"
+            | "HashSet"
+            | "BTreeSet"
+            | "VecDeque"
+            | "Box"
+            | "Rc"
+            | "Arc"
+            | "Cell"
+            | "RefCell"
+            | "Mutex"
+            | "RwLock"
+            | "Option"
+            | "Result"
+            | "String"
+            | "Path"
+            | "PathBuf"
+            | "Cow"
     )
 }

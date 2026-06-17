@@ -588,6 +588,45 @@ impl IndexPipeline {
                 'BigInt', 'ArrayBuffer', 'Iterator', 'AsyncIterator'\
              ))";
 
+        // Rust collection-name guard — parallel to TS_BUILTIN_GUARD but for
+        // rust-family sources. Same shape of bug: a Rust file calling
+        // `Vec::new()` / `HashMap::new()` / `Box::new()` has no symbol in
+        // the user's index for the std-lib types. When a user-defined
+        // `struct Vec` or `enum Result` happens to exist somewhere in the
+        // workspace (test fixtures, vendored deps that escaped the
+        // walker), L4/L5 will globally name-match the std-lib reference
+        // to that user type — polluting the call graph the same way
+        // hono's `Set` interface caught 17 false callers (v0.5.1 B4).
+        //
+        // Names cover the high-confusion subset of `std::*` types that
+        // user code regularly redefines in tests/mocks (the source of
+        // most false positives) — `Vec`, `Option`, `Result`, `String`
+        // are the typical offenders. Smart pointers (`Box`/`Rc`/`Arc`)
+        // and interior-mutability wrappers (`Cell`/`RefCell`/`Mutex`/
+        // `RwLock`) round out the list. `Cow`, `Path`, `PathBuf`, `str`
+        // included for completeness.
+        // COALESCE on target_qualifier so a NULL qualifier compares as
+        // empty string and the IN-clause cleanly returns FALSE for the
+        // common no-qualifier case. Without it, `NULL IN (...)` yields
+        // NULL, the outer `NOT (cond AND (... OR NULL))` becomes NULL,
+        // and the WHERE clause silently skips the row — broke
+        // `cross_language_resolver::same_language_global_unique_still_resolves`
+        // during initial v0.5.4 wiring.
+        const RUST_BUILTIN_GUARD: &str = "NOT (\
+             (SELECT lang_family FROM files WHERE id = refs.source_file_id) = 'rust' \
+             AND (\
+                refs.target_name IN (\
+                    'Vec', 'HashMap', 'BTreeMap', 'HashSet', 'BTreeSet', 'VecDeque', \
+                    'Box', 'Rc', 'Arc', 'Cell', 'RefCell', 'Mutex', 'RwLock', \
+                    'Option', 'Result', 'String', 'Path', 'PathBuf', 'Cow'\
+                ) \
+                OR COALESCE(refs.target_qualifier, '') IN (\
+                    'Vec', 'HashMap', 'BTreeMap', 'HashSet', 'BTreeSet', 'VecDeque', \
+                    'Box', 'Rc', 'Arc', 'Cell', 'RefCell', 'Mutex', 'RwLock', \
+                    'Option', 'Result', 'String', 'Path', 'PathBuf', 'Cow'\
+                )\
+             ))";
+
         // Level 0: Receiver-type match (confidence = 0.95).
         // The call site knows its receiver's static type (x.M() where x: T,
         // inferred lite from receivers/params/local literals) and exactly one
@@ -792,6 +831,7 @@ impl IndexPipeline {
              WHERE confidence = 0.0 AND kind NOT IN ('import', 'import_binding')
                AND receiver_type IS NULL
                AND {TS_BUILTIN_GUARD}
+               AND {RUST_BUILTIN_GUARD}
                AND (target_qualifier IS NULL
                     OR COALESCE((SELECT language FROM files
                         WHERE id = refs.source_file_id), '') != 'rust')
@@ -887,6 +927,7 @@ impl IndexPipeline {
              WHERE confidence = 0.0 AND kind NOT IN ('import', 'import_binding')
                AND receiver_type IS NULL
                AND {TS_BUILTIN_GUARD}
+               AND {RUST_BUILTIN_GUARD}
                AND (SELECT COUNT(DISTINCT s.file_id) FROM symbols s JOIN files f ON s.file_id = f.id
                    WHERE s.name = refs.target_name
                      AND f.lang_family = (SELECT lang_family FROM files WHERE id = refs.source_file_id)
@@ -960,6 +1001,7 @@ impl IndexPipeline {
                  confidence = 0.6
              WHERE confidence = 0.0 AND kind NOT IN ('import', 'import_binding')
                AND {TS_BUILTIN_GUARD}
+               AND {RUST_BUILTIN_GUARD}
                AND EXISTS (SELECT 1 FROM symbols s JOIN files f ON s.file_id = f.id
                    WHERE s.name = refs.target_name
                      AND f.dir = (SELECT dir FROM files WHERE id = refs.source_file_id)
@@ -1002,6 +1044,7 @@ impl IndexPipeline {
                  confidence = 0.5
              WHERE confidence = 0.0 AND kind NOT IN ('import', 'import_binding')
                AND {TS_BUILTIN_GUARD}
+               AND {RUST_BUILTIN_GUARD}
                AND EXISTS (SELECT 1 FROM symbols s JOIN files f ON s.file_id = f.id
                    WHERE s.name = refs.target_name
                      AND f.lang_family = (SELECT lang_family FROM files WHERE id = refs.source_file_id)
