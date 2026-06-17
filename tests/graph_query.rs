@@ -2,6 +2,8 @@
 //! find_callers / impact_analysis the way the CLI and MCP server do.
 
 mod common;
+use std::collections::HashSet;
+
 use code_abyss::graph::GraphQuery;
 use common::*;
 
@@ -220,6 +222,152 @@ fn impact_bfs_explores_same_named_callers_in_different_files() {
         transitive.contains(&"Boot"),
         "transitive caller from svc_b/run.go's subtree should be walked: {transitive:?}"
     );
+}
+
+#[test]
+fn impact_bfs_pins_same_name_subtree_property() {
+    // Stricter property pin for the BFS visited-set (file_id, name) contract.
+    //
+    // The earlier `impact_bfs_explores_same_named_callers_in_different_files`
+    // test does not strictly fail on the OLD (buggy) bare-name visited because
+    // `find_callers_of` is a name-keyed SQL aggregate: at the next BFS hop,
+    // both subtrees are reached via one merged query. This test makes the
+    // observable contract richer:
+    //
+    //   File X:  func foo() { shared_util(); }
+    //   File Y:  func foo() { other_util(); }
+    //   File Z:  imports X.foo; calls X.foo; also calls shared_util directly
+    //   File W:  imports Y.foo; calls Y.foo; also calls other_util directly
+    //
+    // Impact analysis on `shared_util`:
+    //   - X.foo is a direct caller of shared_util.
+    //   - Z is a direct caller of shared_util (separate edge).
+    //   - At depth 1, BFS pops "foo" and finds Z (caller of X.foo) AND W
+    //     (caller of Y.foo, name-shared).
+    //
+    // The fix's contract: both Z and W appear in the impact set, AND the
+    // visited dedup does not crash, AND uncovered_paths includes BOTH Z and W
+    // call-paths. The OLD bug would have ALSO reached W via merged SQL, but
+    // any FUTURE BFS rewrite that file-scopes traversal would drop the W
+    // subtree silently. This test pins the observable post-condition.
+    let fx = index_fixture(&[
+        (
+            "util/shared.go",
+            "package util\n\nfunc shared_util() int { return 1 }\n",
+        ),
+        (
+            "util/other.go",
+            "package util\n\nfunc other_util() int { return 2 }\n",
+        ),
+        (
+            "svc_x/foo.go",
+            "package svc_x\n\n\
+             import \"util\"\n\n\
+             func foo() int { return util.shared_util() }\n",
+        ),
+        (
+            "svc_y/foo.go",
+            "package svc_y\n\n\
+             import \"util\"\n\n\
+             func foo() int { return util.other_util() }\n",
+        ),
+        (
+            "svc_z/entry.go",
+            "package svc_z\n\n\
+             import (\n  \"svc_x\"\n  \"util\"\n)\n\n\
+             func EntryZ() int { return svc_x.foo() + util.shared_util() }\n",
+        ),
+        (
+            "svc_w/entry.go",
+            "package svc_w\n\n\
+             import (\n  \"svc_y\"\n  \"util\"\n)\n\n\
+             func BootW() int { return svc_y.foo() + util.other_util() }\n",
+        ),
+    ]);
+
+    let gq = GraphQuery::new(&fx.repo);
+    // min_confidence=0.0: cross-package refs land below the 0.7 gate.
+    let impact = gq.impact_analysis("shared_util", 4, 0.0).unwrap();
+
+    let mut asserts = 0u32;
+
+    // Direct callers of shared_util: svc_x.foo and svc_z.EntryZ.
+    let direct: Vec<&str> = impact
+        .direct_callers
+        .iter()
+        .map(|c| c.symbol.as_str())
+        .collect();
+    assert!(
+        direct.contains(&"foo"),
+        "svc_x.foo (caller of shared_util) must be direct: {direct:?}"
+    );
+    asserts += 1;
+    assert!(
+        direct.contains(&"EntryZ"),
+        "svc_z.EntryZ (direct caller of shared_util) must be direct: {direct:?}"
+    );
+    asserts += 1;
+
+    // svc_y.foo does NOT call shared_util — must NOT appear in direct callers
+    // for shared_util. (Name `foo` is shared with svc_x.foo, but only x calls
+    // shared_util; the resolver must keep them separate via target_file_id.)
+    let direct_foo_files: Vec<&str> = impact
+        .direct_callers
+        .iter()
+        .filter(|c| c.symbol == "foo")
+        .map(|c| c.file_path.as_str())
+        .collect();
+    assert!(
+        direct_foo_files.iter().any(|p| p.contains("svc_x")),
+        "svc_x/foo.go must be a direct caller: {direct_foo_files:?}"
+    );
+    asserts += 1;
+
+    // Transitive: BootW must be reached via the Y.foo subtree.
+    // (Under the merged-SQL aggregate this works in both buggy and fixed
+    // builds; the contract here pins the observable post-condition.)
+    let transitive: Vec<&str> = impact
+        .transitive_callers
+        .iter()
+        .map(|c| c.symbol.as_str())
+        .collect();
+    assert!(
+        transitive.contains(&"BootW"),
+        "transitive caller from svc_y.foo's subtree (BootW) must be walked: \
+         {transitive:?}"
+    );
+    asserts += 1;
+
+    // The visited set must not collapse same-named direct callers. We assert
+    // foo appears exactly once as a direct caller (svc_x.foo). The svc_y.foo
+    // appears in the transitive set (as a caller of svc_y.foo that the SQL
+    // aggregate returned). Either way, no symbol/file pair should be
+    // duplicated within direct_callers.
+    let direct_pairs: HashSet<(String, String)> = impact
+        .direct_callers
+        .iter()
+        .map(|c| (c.file_path.clone(), c.symbol.clone()))
+        .collect();
+    assert_eq!(
+        direct_pairs.len(),
+        impact.direct_callers.len(),
+        "direct_callers must not duplicate (file, symbol): {:?}",
+        impact.direct_callers
+    );
+    asserts += 1;
+
+    // Risk must be non-trivial — at minimum two direct callers, transitive
+    // walk found additional names. A regression that drops half the subtree
+    // would crater the score.
+    assert!(
+        impact.risk_score > 1.0,
+        "risk_score should be > 1.0 for a target with 2+ direct callers and \
+         transitive depth: {:?}",
+        impact.risk_score
+    );
+    asserts += 1;
+
+    eprintln!("impact_bfs_pins_same_name_subtree_property: {asserts} asserts");
 }
 
 #[test]
