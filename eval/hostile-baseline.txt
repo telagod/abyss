@@ -32,3 +32,22 @@ AFTER W3/L0 (+ arch_facts populated via dir+name+entry+PageRank+SCC+Louvain)
 
   abyss arch step itself: 4ms on 91 files / 10 modules at the tail of
   IndexPipeline::run_structural — 3% of total cold-index time.
+
+Big repos (2026-06-17)
+==================================================================
+
+SQLAlchemy (687 .py files, 37210 symbols, 212634 refs, cold-index 8.4s)
+runs the same BURST=10/100/500 envelope as the abyss self-bench. p99
+at BURST=500 lands at 32.5ms — still ~7x under the 250ms third-edit-
+in-burst KPI. Card bodies grow 2-3x vs the self-index (90-3000 bytes
+→ 900-5200 bytes), reflecting the larger ref/symbol counts the
+renderer surfaces; well inside any reasonable token budget.
+
+Django (~250K LOC) — not present at /tmp/abyss-dogfood-django on
+this run, skipped. Re-run hostile-bench-repos.sh when the corpus is
+local; the wrapper auto-discovers.
+
+[sqlalchemy]  (/tmp/abyss-dogfood-sqlalchemy/sqlalchemy)
+  BURST=10   | p50=6.01    ms p95=9.71    ms p99=9.71    ms | card p50=905 p95=2254 p99=2254
+  BURST=100  | p50=5.72    ms p95=16.22   ms p99=29.28   ms | card p50=975 p95=2288 p99=3583
+  BURST=500  | p50=5.44    ms p95=20.53   ms p99=32.52   ms | card p50=938 p95=2602 p99=5195
