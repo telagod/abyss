@@ -576,6 +576,22 @@ impl IndexPipeline {
             [],
         )?;
 
+        // Level 0e: Python MRO walk for inherited methods (confidence = 0.95).
+        // L0/L0c/L0d resolve typed-receiver calls when the method lives on the
+        // SAME class as the receiver. When the method is inherited
+        // (`group: Group = Group(...); group.invoke(ctx)` where `invoke` is
+        // defined on `Command`, not `Group`), they all miss — the receiver
+        // type is `Group` but no `invoke` symbol is scoped to `Group`.
+        //
+        // V1 approximation: left-to-right DFS up the class hierarchy via the
+        // `inherit` refs emitted by the Python extractor. Matches Python's
+        // C3 linearization for single inheritance and for the dominant
+        // multi-inheritance shape (mixins where one base contributes a
+        // method); pathological diamond-with-override-conflict cases will
+        // resolve to whichever base appears first in the DFS, which is what
+        // Python does too in the common case. Capped at 6 hops.
+        let l0e = self.resolve_python_mro(repo)?;
+
         // Level 0b: Named-import binding (confidence = 0.95). A bare call
         // whose name is bound by `import { x } from './mod'` resolves to the
         // module's file — the strongest evidence short of a compiler, and it
@@ -842,11 +858,196 @@ impl IndexPipeline {
         )?;
 
         info!(
-            "resolved: L0(receiver-type)={}, L0c(type-binding)={}, L0d(type-file)={}, L0b(import-binding)={}, L1(same-file)={}, L2(same-pkg-unique)={}, L3(qualifier)={}, L4(global-unique)={}, L4a(same-file-qual)={}, L4b(same-pkg-multi)={}, L5(ambiguous)={}",
-            l0, l0c, l0d, l0b, l1, l2, l3q, l3, l4a, l2b, l4
+            "resolved: L0(receiver-type)={}, L0c(type-binding)={}, L0d(type-file)={}, L0e(py-mro)={}, L0b(import-binding)={}, L1(same-file)={}, L2(same-pkg-unique)={}, L3(qualifier)={}, L4(global-unique)={}, L4a(same-file-qual)={}, L4b(same-pkg-multi)={}, L5(ambiguous)={}",
+            l0, l0c, l0d, l0e, l0b, l1, l2, l3q, l3, l4a, l2b, l4
         );
 
         Ok(())
+    }
+
+    /// Python MRO walker (L0e). For each unresolved Python call ref with a
+    /// known receiver type, walks `inherit` refs up the class hierarchy
+    /// looking for a base class whose defining file owns `target_name`.
+    ///
+    /// The walk is left-to-right DFS — V1 approximation of C3 linearization.
+    /// Depth cap is 6 hops (deeper inheritance chains are rare and the cost
+    /// of mis-resolving in pathological diamonds is bounded). Each resolution
+    /// lands at confidence 0.95 — same as L0/L0c/L0d, since the evidence
+    /// (typed receiver + inheritance edge + method-on-base) is type-grade.
+    ///
+    /// Returns the number of refs resolved.
+    fn resolve_python_mro(&self, repo: &Repository) -> Result<usize> {
+        use std::collections::HashMap;
+
+        let conn = repo.conn();
+
+        // class_name → file_ids that define a class symbol with that name.
+        // Multiple files can declare same-named classes; the walker takes
+        // each candidate's inherit chain separately.
+        let mut class_files: HashMap<String, Vec<i64>> = HashMap::new();
+        {
+            let mut stmt = conn.prepare(
+                "SELECT s.name, s.file_id FROM symbols s
+                 JOIN files f ON s.file_id = f.id
+                 WHERE s.kind = 'class' AND f.language = 'python'",
+            )?;
+            let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?;
+            for row in rows {
+                let (name, fid) = row?;
+                class_files.entry(name).or_default().push(fid);
+            }
+        }
+        if class_files.is_empty() {
+            return Ok(0);
+        }
+
+        // (defining_file_id, class_name) → bases (just names — qualified
+        // bases like `click.Command` are emitted with qualifier = "click",
+        // unresolvable to a repo file and skipped for V1).
+        let mut bases_of: HashMap<(i64, String), Vec<String>> = HashMap::new();
+        {
+            let mut stmt = conn.prepare(
+                "SELECT r.source_file_id, r.source_symbol, r.target_name
+                 FROM refs r
+                 JOIN files f ON r.source_file_id = f.id
+                 WHERE r.kind = 'inherit' AND f.language = 'python'
+                   AND r.source_symbol IS NOT NULL
+                   AND r.target_qualifier IS NULL",
+            )?;
+            let rows = stmt.query_map([], |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                ))
+            })?;
+            for row in rows {
+                let (fid, sub, base) = row?;
+                bases_of.entry((fid, sub)).or_default().push(base);
+            }
+        }
+
+        // (file_id, symbol_name) → symbol_id for the method-on-base lookup.
+        // We use file_id + name because the same name can be a method on
+        // multiple classes in one file; we don't care which scope here, just
+        // whether the file owns the name at all.
+        let mut symbol_in_file: HashMap<(i64, String), i64> = HashMap::new();
+        {
+            let mut stmt = conn.prepare(
+                "SELECT s.file_id, s.name, s.id FROM symbols s
+                 JOIN files f ON s.file_id = f.id
+                 WHERE f.language = 'python'",
+            )?;
+            let rows = stmt.query_map([], |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, i64>(2)?,
+                ))
+            })?;
+            for row in rows {
+                let (fid, name, sid) = row?;
+                // First hit wins — we just need ONE symbol with that name in
+                // the file to claim a method-on-base match.
+                symbol_in_file.entry((fid, name)).or_insert(sid);
+            }
+        }
+
+        // Unresolved Python typed-receiver calls.
+        struct Pending {
+            ref_id: i64,
+            receiver_type: String,
+            target_name: String,
+        }
+        let pending: Vec<Pending> = {
+            let mut stmt = conn.prepare(
+                "SELECT r.id, r.receiver_type, r.target_name
+                 FROM refs r
+                 JOIN files f ON r.source_file_id = f.id
+                 WHERE r.confidence = 0.0
+                   AND r.kind = 'call'
+                   AND r.receiver_type IS NOT NULL
+                   AND f.language = 'python'",
+            )?;
+            let rows = stmt.query_map([], |r| {
+                Ok(Pending {
+                    ref_id: r.get::<_, i64>(0)?,
+                    receiver_type: r.get::<_, String>(1)?,
+                    target_name: r.get::<_, String>(2)?,
+                })
+            })?;
+            rows.collect::<std::result::Result<_, _>>()?
+        };
+        if pending.is_empty() {
+            return Ok(0);
+        }
+
+        // DFS the inheritance chain from `start_class` until a base file owns
+        // `method_name`. Returns (file_id, symbol_id). 6-hop cap is generous
+        // for real Python (most chains are 2-3).
+        const MAX_DEPTH: usize = 6;
+        let walk = |start_class: &str, method_name: &str| -> Option<(i64, i64)> {
+            let starts = class_files.get(start_class)?;
+            // Each defining file of the start class anchors its own DFS;
+            // we visit each anchor's chain independently. Visited tracks
+            // (file_id, class_name) to bound work in the multi-base case.
+            let mut visited: std::collections::HashSet<(i64, String)> =
+                std::collections::HashSet::new();
+            for &start_fid in starts {
+                // Stack entries: (file_id_of_class_decl, class_name, depth).
+                // We always skip the start class itself (L0/L0c/L0d already
+                // tried it and failed) — only its bases count.
+                let mut stack: Vec<(i64, String, usize)> = Vec::new();
+                if let Some(bases) = bases_of.get(&(start_fid, start_class.to_string())) {
+                    for base in bases.iter().rev() {
+                        stack.push((start_fid, base.clone(), 1));
+                    }
+                }
+                while let Some((_, base_name, depth)) = stack.pop() {
+                    if depth > MAX_DEPTH {
+                        continue;
+                    }
+                    let base_files = match class_files.get(&base_name) {
+                        Some(v) => v,
+                        None => continue,
+                    };
+                    for &base_fid in base_files {
+                        if !visited.insert((base_fid, base_name.clone())) {
+                            continue;
+                        }
+                        if let Some(&sid) = symbol_in_file.get(&(base_fid, method_name.to_string()))
+                        {
+                            return Some((base_fid, sid));
+                        }
+                        // Recurse into THIS base's bases (left-to-right →
+                        // pushed reversed so the leftmost is popped first).
+                        if let Some(deeper) = bases_of.get(&(base_fid, base_name.clone())) {
+                            for b in deeper.iter().rev() {
+                                stack.push((base_fid, b.clone(), depth + 1));
+                            }
+                        }
+                    }
+                }
+            }
+            None
+        };
+
+        let mut resolved = 0usize;
+        let tx = conn.unchecked_transaction()?;
+        {
+            let mut update = tx.prepare(
+                "UPDATE refs SET target_file_id = ?1, target_symbol_id = ?2, confidence = 0.95
+                 WHERE id = ?3 AND confidence = 0.0",
+            )?;
+            for p in &pending {
+                if let Some((fid, sid)) = walk(&p.receiver_type, &p.target_name) {
+                    let n = update.execute(rusqlite::params![fid, sid, p.ref_id])?;
+                    resolved += n;
+                }
+            }
+        }
+        tx.commit()?;
+        Ok(resolved)
     }
 
     /// Embed all un-embedded chunks. Can be called separately after run_structural.
