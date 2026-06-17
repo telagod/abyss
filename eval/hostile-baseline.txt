@@ -51,3 +51,22 @@ local; the wrapper auto-discovers.
   BURST=10   | p50=6.01    ms p95=9.71    ms p99=9.71    ms | card p50=905 p95=2254 p99=2254
   BURST=100  | p50=5.72    ms p95=16.22   ms p99=29.28   ms | card p50=975 p95=2288 p99=3583
   BURST=500  | p50=5.44    ms p95=20.53   ms p99=32.52   ms | card p50=938 p95=2602 p99=5195
+
+Concurrent (2026-06-17)
+==================================================================
+
+WAL reader+writer race on the abyss self-repo (162 files, 1052 symbols,
+8169 refs). 50 concurrent `abyss hook pre-edit` calls (parallelism=8)
+racing 5 background `abyss index --force` writer rounds. SQLite WAL is
+supposed to handle N readers + 1 writer cleanly; this run measures the
+actual behaviour under operator-grade contention.
+
+  hooks      total=50 ok=50 fail=0
+  writer     planned=5 completed=5
+  latency    p50=3.73ms p95=81.36ms p99=82.46ms max=83.21ms
+  race wall  131.02ms
+
+  ZERO hook failures under sustained writer contention. The p99 tail
+  (~82ms) is dominated by the brief windows where xargs schedules a
+  hook against a freshly-rotated WAL — well inside the 250ms
+  third-edit-in-burst KPI even at p99/max.

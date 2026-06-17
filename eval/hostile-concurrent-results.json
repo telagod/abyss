@@ -1,0 +1,23 @@
+{
+  "timestamp": "2026-06-17T15:55:51Z",
+  "repo": "/home/telagod/project/code-abyss-dev/.claude/worktrees/wf_4aeac0bf-f84-1",
+  "host": "Linux 6.17.0-35-generic x86_64",
+  "abyss_version": "0.5.6",
+  "parallelism": 8,
+  "writer": {
+    "rounds_planned": 5,
+    "rounds_completed": 5
+  },
+  "hooks": {
+    "total": 50,
+    "ok": 50,
+    "fail": 0
+  },
+  "hook_latency_ms": {
+    "p50": 3.73,
+    "p95": 81.36,
+    "p99": 82.46,
+    "max": 83.21
+  },
+  "race_wall_ms": 131.02
+}
