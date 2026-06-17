@@ -136,7 +136,7 @@ This is not a compiler. Measured against SCIP (compiler-grade) ground truth — 
 \* hono assigns router verbs (`app.get/post/use`) at runtime — statically
 unresolvable by design; they surface as `possible_callers`.
 
-abyss indexed gin in **~150ms**; scip-go took ~40s. Full method, per-tier tables, and known weaknesses: [eval/RESULTS.md](eval/RESULTS.md). Reproduce: `eval/run.sh`.
+abyss indexed gin in **~150ms**; scip-go took ~40s. Full method, per-tier tables, and known weaknesses: [eval/RESULTS.md](eval/RESULTS.md). Reproduce: `bash eval/setup-indexers.sh && bash eval/run.sh` — prereqs in [eval/README.md](eval/README.md).
 
 ## Agent integration
 
