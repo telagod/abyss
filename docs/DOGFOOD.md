@@ -12,6 +12,7 @@ score, and a bug list that drives the next release's UX fixes.
 
 | Project | Date | Language | Files | Cold index | Score | Report |
 |---------|------|----------|------:|-----------:|------:|--------|
+| Django 5.1.4 | 2026-06-17 | Python (ORM/CBV/Admin) | 3 292 | 6.91 s | **8 / 10** | [django-2026-06-17.md](dogfood/django-2026-06-17.md) |
 | helix-editor @ `43bf7c2` | 2026-06-17 | Rust workspace (~243 .rs) | 545 | 1.57 s | **7.5 / 10** | [helix-editor-2026-06-17.md](dogfood/helix-editor-2026-06-17.md) |
 | vite v5.4.0 | 2026-06-17 | TS / JS monorepo | 1 793 | 0.91 s | **7 / 10** | [vite-2026-06-17.md](dogfood/vite-2026-06-17.md) |
 | FastAPI 0.115.4 | 2026-06-17 | Python | 2 164 | 1.07 s | **6.5 / 10** | [fastapi-2026-06-17.md](dogfood/fastapi-2026-06-17.md) |
@@ -23,6 +24,29 @@ right now, two visible gaps"; `6.5` means "still useful, one falsified
 hypothesis".
 
 ## Per-project summary
+
+### Django 5.1.4 (Python, ORM + CBV + Admin)
+
+The validation case for L0e — the MRO walker FastAPI gave 0 hits.
+**Django fired it 9 450 times.** Hypothesis from FastAPI's surprises
+("MRO value lives where inheritance stays in-repo and deep — Django
+Model/Forms/Admin/Generic Views are the classic example") landed
+exactly: of 9 450 L0e resolutions, ~536 are in production
+`django/` proper (SessionStore → SessionBase, UserAdmin → ModelAdmin,
+BaseDateListView → MultipleObjectMixin, AsGeoJSON → Expression chain),
+the rest are tests/ subclassing Django's TestCase — also legitimate
+in-repo MRO walks. Cold 6.9 s / warm 1.6 s / hook 10 ms on 3 292
+files, 39 K symbols, 192 K refs. Peak RSS 217 MB. Two new bugs:
+**B1 — `kind='inherit'` is invisible to `abyss callers`**: `callers
+Model` returns 7 (instantiation calls) when the DB has 983 inherit
+refs at confidence ≥ 0.9 — the v0.5.0 `kind='call'` bug pattern
+recurring on a different edge type. **B2 — L0e collides on sibling-
+name classes**: `DatabaseSchemaEditor.execute()` from oracle/mysql/
+sqlite3 all resolve into postgresql/schema.py because the walker
+picks first-globally instead of preferring same-directory siblings.
+Module clustering still pulls `models/base.py` into `module=tests-27`
+(carry-over from FastAPI). Read:
+[dogfood/django-2026-06-17.md](dogfood/django-2026-06-17.md).
 
 ### helix-editor (Rust workspace, 100K LOC)
 
@@ -106,13 +130,15 @@ labels still aren't human-meaningful. Read the full report:
 - **Test-path filters need to be anchored, not just substring-matched.**
   FastAPI's top-level `tests/` slipped past `%/tests/%` — a 1-line SQL
   fix worth a regression test.
-- **Predictions get falsified more often than we'd like to admit.**
-  L0e was sold on FastAPI; FastAPI delivered 0 hits. The honest
-  response was to log the falsification (PRINCIPLES.md §2,
+- **Predictions get falsified more often than we'd like to admit —
+  and validated when the corpus is right.** L0e was sold on FastAPI;
+  FastAPI delivered 0 hits. The honest response was to log the
+  falsification (PRINCIPLES.md §2,
   [eval/notes/click-mro-walker-2026-06-17.md](../eval/notes/click-mro-walker-2026-06-17.md))
-  and pick a better corpus next time (Django ORM, SQLAlchemy core —
-  somewhere the hierarchy stays in-repo). Don't quietly bury the bad
-  number.
+  AND pick a better corpus next time. The next-corpus prediction was
+  Django (in-repo Model/View/Admin/Form hierarchy). **Django delivered
+  9 450 L0e hits — 94× the floor.** The mechanism was right, the
+  FastAPI baseline was wrong. Falsify in public; re-validate in public.
 - **The pre-edit card is the load-bearing artifact.** Across all four
   dogfoods, the highest-rated probe was the card itself — `where` +
   `depended-on` + `contracts` + `recent activity`, delivered ambiently
