@@ -2,6 +2,18 @@
 
 Published whatever the numbers say. Reproduce with `eval/run.sh`.
 
+> **2026-06-17 — same-language-family filter on the demoted tiers.**
+> Cross-file resolution tiers L2/L3/L4/L4b/L5 now require the candidate's
+> `files.lang_family` to equal the source file's. Found by dogfooding: a
+> Rust `target()` call (petgraph edge endpoint) was claimed by an
+> unrelated JS `function target()` because L5 ran a pure name match
+> across the whole `symbols` table. Families: rust, go, python, ts
+> (typescript+tsx+javascript), c (c+cpp), java, bash. Single-corpus eval
+> impact should be ~zero — every corpus is single-language — but the
+> demoted tiers on polyglot repos (Go/JS, Rust/JS, …) get noticeably
+> cleaner. Binding-driven tiers (L0/L0b/L0c/L0d) and same-file tiers
+> (L1/L4a) are unchanged.
+
 ## Method
 
 For every call reference abyss extracts, SCIP (compiler-grade indexing) tells
