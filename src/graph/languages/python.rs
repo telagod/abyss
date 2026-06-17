@@ -107,34 +107,56 @@ fn collect_refs(
 
         // Inheritance: `class Sub(Base, OtherBase):` → one Inherit ref per
         // base. Feeds the MRO walker in the resolver (L0e tier). Skip
-        // `metaclass=...` / kwarg bases, and skip parameterized generics
-        // (Generic[T]) for V1 — only bare `identifier` and `attribute`
-        // bases. `attribute` bases (`click.Command`) reuse the same
-        // import-binding path as call qualifiers.
+        // `metaclass=...` / kwarg bases. For parameterized generics
+        // (`Base[T]`), the base is a `subscript` node — unwrap its `value`
+        // (the base name, before `[`) and treat it as the real base, but
+        // skip typing-system markers (`Generic[T]`, `Protocol[T]`, …)
+        // which aren't real superclasses. `attribute` bases (`click.Command`)
+        // reuse the same import-binding path as call qualifiers.
         if let Some(bases) = node.child_by_field_name("superclasses") {
             let mut bc = bases.walk();
             for base in bases.named_children(&mut bc) {
-                let (name, qualifier) = match base.kind() {
-                    "identifier" => (text(&base, source), None),
-                    "attribute" => {
-                        let attr = base.child_by_field_name("attribute");
-                        let obj = base.child_by_field_name("object");
-                        match (attr, obj) {
-                            (Some(a), Some(o)) if o.kind() == "identifier" => {
-                                (text(&a, source), Some(text(&o, source)))
-                            }
-                            (Some(a), _) => (text(&a, source), None),
-                            _ => continue,
-                        }
+                let resolved = match base.kind() {
+                    "identifier" => Some((text(&base, source), None, base)),
+                    "attribute" => extract_attribute_base(&base, source).map(|(n, q)| (n, q, base)),
+                    "subscript" => {
+                        // `Base[T]` → `value` is the base name (identifier
+                        // or attribute), `slice` is the type args. Recurse
+                        // into the value node, then apply the typing-marker
+                        // denylist so `Generic[T]` / `Protocol[T]` / …
+                        // don't leak into the inheritance graph.
+                        base.child_by_field_name("value")
+                            .and_then(|v| match v.kind() {
+                                "identifier" => {
+                                    let name = text(&v, source);
+                                    if is_typing_marker(&name) {
+                                        None
+                                    } else {
+                                        Some((name, None, v))
+                                    }
+                                }
+                                "attribute" => {
+                                    let (name, qualifier) = extract_attribute_base(&v, source)?;
+                                    if is_typing_marker(&name) {
+                                        None
+                                    } else {
+                                        Some((name, qualifier, v))
+                                    }
+                                }
+                                _ => None,
+                            })
                     }
-                    // `metaclass=...`, `Generic[T]`, comments → skip.
-                    _ => continue,
+                    // `metaclass=...`, comments → skip.
+                    _ => None,
+                };
+                let Some((name, qualifier, anchor)) = resolved else {
+                    continue;
                 };
                 if name.is_empty() || is_builtin_py_type(&name) {
                     continue;
                 }
                 refs.push(RawReference {
-                    line: base.start_position().row as u32,
+                    line: anchor.start_position().row as u32,
                     source_symbol: class_name.clone(),
                     target_name: name,
                     target_qualifier: qualifier,
@@ -365,6 +387,45 @@ fn base_py_type_name(annotation: &Node, source: &str) -> Option<String> {
 
 fn text(node: &Node, source: &str) -> String {
     source[node.start_byte()..node.end_byte()].to_string()
+}
+
+/// `obj.Attr` → (Attr, Some(obj)). Falls back to (Attr, None) when the
+/// receiver isn't a bare identifier (dotted paths, calls, etc.).
+fn extract_attribute_base(attr_node: &Node, source: &str) -> Option<(String, Option<String>)> {
+    let attr = attr_node.child_by_field_name("attribute")?;
+    let obj = attr_node.child_by_field_name("object");
+    let qualifier = match obj {
+        Some(o) if o.kind() == "identifier" => Some(text(&o, source)),
+        _ => None,
+    };
+    Some((text(&attr, source), qualifier))
+}
+
+/// PEP 484 / typing module markers that appear in base-class position but
+/// aren't real superclasses (`class Foo(Generic[T])` declares that Foo is
+/// generic, not that it inherits from Generic). Treating these as real
+/// inherits pollutes the MRO walker with phantom edges and can flip
+/// resolver tiers.
+fn is_typing_marker(name: &str) -> bool {
+    matches!(
+        name,
+        "Generic"
+            | "Protocol"
+            | "TypeVar"
+            | "Callable"
+            | "Union"
+            | "Optional"
+            | "List"
+            | "Dict"
+            | "Tuple"
+            | "Set"
+            | "FrozenSet"
+            | "Type"
+            | "ClassVar"
+            | "Final"
+            | "Annotated"
+            | "Literal"
+    )
 }
 
 fn is_builtin_py_type(name: &str) -> bool {

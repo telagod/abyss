@@ -211,6 +211,44 @@ fn python_class_inheritance_refs() {
     assert_eq!(qual_inh.source_symbol.as_deref(), Some("Q"));
 }
 
+#[test]
+fn python_generic_base_inheritance_refs() {
+    // SQLAlchemy-shape: `class ColumnElement(SomeBase[_T]):` — the
+    // parameterized base is a `subscript` node whose `value` field is
+    // the real base name. The pre-fix extractor dropped it entirely,
+    // leaving subclasses orphaned from their bases (B3 dogfood).
+    let refs = extract(
+        "python",
+        "from typing import Generic, TypeVar\nimport other\n\nT = TypeVar('T')\n\nclass Concrete(Base[T]):\n    pass\n\nclass GenericMixin(Generic[T]):\n    pass\n\nclass Multi(Base1[int], Base2):\n    pass\n\nclass FromModule(other.Base[T]):\n    pass\n",
+    );
+    // 1. `class Concrete(Base[T])` → inherit ref to Base (not "Base[T]").
+    let concrete_inh = find(&refs, "Base", RefKind::Inherit).expect("Concrete -> Base");
+    assert_eq!(concrete_inh.source_symbol.as_deref(), Some("Concrete"));
+    assert!(concrete_inh.target_qualifier.is_none());
+    // 2. `class GenericMixin(Generic[T])` → NO inherit ref (Generic is a
+    //    typing marker, not a real base class).
+    assert!(
+        find(&refs, "Generic", RefKind::Inherit).is_none(),
+        "Generic[T] must not become an inheritance edge"
+    );
+    // 3. `class Multi(Base1[int], Base2)` → both bases emitted.
+    let base1_inh = find(&refs, "Base1", RefKind::Inherit).expect("Multi -> Base1");
+    assert_eq!(base1_inh.source_symbol.as_deref(), Some("Multi"));
+    let base2_inh = find(&refs, "Base2", RefKind::Inherit).expect("Multi -> Base2");
+    assert_eq!(base2_inh.source_symbol.as_deref(), Some("Multi"));
+    // 4. `class FromModule(other.Base[T])` → inherit ref to Base, qualified
+    //    by `other` (so the resolver can chase the import binding).
+    let qual_generic = refs
+        .iter()
+        .find(|r| {
+            r.target_name == "Base"
+                && r.kind == RefKind::Inherit
+                && r.source_symbol.as_deref() == Some("FromModule")
+        })
+        .expect("FromModule -> other.Base");
+    assert_eq!(qual_generic.target_qualifier.as_deref(), Some("other"));
+}
+
 // --- TypeScript / JavaScript ---
 
 #[test]
