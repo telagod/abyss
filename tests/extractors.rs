@@ -699,6 +699,63 @@ fn cpp_test_file_detection() {
     assert!(!ex.is_test_file("src/engine.cpp"));
 }
 
+// --- Bash ---
+//
+// Bash function DEFINITIONS were already picked up as symbols by the
+// chunker (tree-sitter-bash exposes `function_definition` with a `name`
+// field). The missing piece was Call refs on the INVOCATION side:
+// `eval/hostile.sh` had zero outgoing call edges in the dogfood index.
+//
+// The BashExtractor below walks every `command` node and emits a Call
+// against its `name` field, after filtering shell builtins and tools
+// that would otherwise flood the call graph.
+
+#[test]
+fn bash_function_call_extracted() {
+    let refs = extract(
+        "bash",
+        "my_helper() {\n    echo x\n}\n\nrun() {\n    my_helper one two\n}\n",
+    );
+    let call =
+        find(&refs, "my_helper", RefKind::Call).expect("my_helper invocation must emit a Call ref");
+    // The invocation lives inside `run`, so source_symbol must attribute
+    // the edge to the enclosing function — this is what `abyss callers
+    // my_helper` reads to surface "run() calls my_helper".
+    assert_eq!(
+        call.source_symbol.as_deref(),
+        Some("run"),
+        "call ref should be attributed to the enclosing function `run`",
+    );
+}
+
+#[test]
+fn bash_builtins_are_filtered() {
+    // A real script invokes echo / cd / grep / git constantly. Letting
+    // those into the call graph turns every hand-written function into
+    // a noise generator — `abyss callers echo` would explode on any
+    // shell-heavy repo. Pin the filter so a refactor can't silently
+    // re-enable noise.
+    let refs = extract(
+        "bash",
+        "main() {\n    echo hi\n    cd /tmp\n    grep foo bar\n    git status\n}\n",
+    );
+    for builtin in ["echo", "cd", "grep", "git"] {
+        assert!(
+            find(&refs, builtin, RefKind::Call).is_none(),
+            "builtin {builtin} must be filtered from Call refs",
+        );
+    }
+}
+
+#[test]
+fn bash_test_file_detection() {
+    let ex = get_extractor("bash").unwrap();
+    assert!(ex.is_test_file("ci/tests/smoke.sh"));
+    assert!(ex.is_test_file("scripts/run_test.sh"));
+    assert!(ex.is_test_file("integration/foo.bats"));
+    assert!(!ex.is_test_file("scripts/deploy.sh"));
+}
+
 // --- Python .pyi stub files ---
 //
 // PEP 561 / stub-only libraries publish a `.pyi` that defines the API

@@ -1,3 +1,4 @@
+pub mod bash;
 pub mod c_cpp;
 pub mod go;
 pub mod java;
@@ -16,6 +17,7 @@ pub fn get_extractor(language: &str) -> Option<Box<dyn LanguageRefExtractor>> {
         "python" => Some(Box::new(python::PythonExtractor)),
         "c" => Some(Box::new(c_cpp::CExtractor)),
         "cpp" => Some(Box::new(c_cpp::CppExtractor)),
+        "bash" => Some(Box::new(bash::BashExtractor)),
         _ => None,
     }
 }
