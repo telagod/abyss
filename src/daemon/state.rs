@@ -3,8 +3,22 @@
 //! Kept deliberately small for V1 — pid, start time, last-reindex telemetry,
 //! and a paths handle so the socket layer can read counts directly from the
 //! same DB the watcher writes to.
+//!
+//! V1.5 additions:
+//! - Full `Config` reference so the socket layer can build its own
+//!   [`IndexPipeline`] when the `reindex` verb arrives.
+//! - `reindex_lock` — a `try_lock`-gated mutex that serializes operator-
+//!   triggered reindex requests against each other. The watcher itself
+//!   doesn't honor it (it's the canonical writer, runs only on debounced
+//!   FS events, and concurrent SQLite WAL writes are short enough to ride
+//!   out via SQLite's own busy handler), so a `reindex` verb arriving
+//!   mid-debounce burst can still briefly contend at the SQLite layer —
+//!   that's acceptable for V1.5 and documented in the daemon README.
+//! - `log_path` — so the `logs` verb can `tail -n` the daemon log without
+//!   the socket layer re-deriving paths from `Config`.
 
 use std::path::PathBuf;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
@@ -25,10 +39,20 @@ pub struct DaemonState {
     pub workspace: PathBuf,
     /// Dimensions for opening the read-only repo handle in the socket layer.
     pub dimensions: usize,
+    /// Full config — handed to the socket worker so it can spin up its own
+    /// [`crate::indexer::IndexPipeline`] on the `reindex` verb without
+    /// re-deriving workspace flags.
+    pub config: Config,
+    /// Path to the daemon log file — fed to the `logs` verb's tail helper.
+    pub log_path: PathBuf,
+    /// Operator-reindex serialization. `try_lock`'d by the `reindex` verb so
+    /// two concurrent socket requests don't both try to write — the loser
+    /// gets a structured `lock contention` error rather than a SQLite BUSY.
+    pub reindex_lock: Mutex<()>,
 }
 
 impl DaemonState {
-    pub fn new(pid: u32, config: &Config) -> Self {
+    pub fn new(pid: u32, config: &Config, log_path: PathBuf) -> Self {
         Self {
             pid,
             started_at: Instant::now(),
@@ -37,6 +61,9 @@ impl DaemonState {
             db_path: config.db_path.clone(),
             workspace: config.workspace.clone(),
             dimensions: config.model.dimensions,
+            config: config.clone(),
+            log_path,
+            reindex_lock: Mutex::new(()),
         }
     }
 

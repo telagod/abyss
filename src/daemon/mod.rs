@@ -1,17 +1,23 @@
-//! Background daemon V1 — single-instance pidfile lock + Unix-socket
+//! Background daemon (V1 + V1.5) — single-instance pidfile lock + Unix-socket
 //! request/response loop in front of the existing [`FileWatcher`].
 //!
-//! V1 scope (intentionally narrow):
+//! V1 scope:
 //! - `abyss daemon start [--foreground]` — claim pidfile, bind socket, watch.
 //! - `abyss daemon stop` — SIGTERM the recorded pid, wait up to 5s for cleanup.
 //! - `abyss daemon status` — print pid + uptime + last reindex + socket path.
-//! - Protocol: newline-delimited JSON. Two verbs — `ping`, `stats`. The full
-//!   MCP-over-socket surface is V2 territory.
+//! - Protocol verbs: `ping`, `stats`.
 //!
-//! Backgrounding: V1 does *not* double-fork. Users run
-//! `abyss daemon start &` (or use a service manager). We only own the
-//! pidfile, the socket, the log file, and clean shutdown — keeping the
-//! single-binary install story honest.
+//! V1.5 additions:
+//! - `abyss daemon start --detach` — proper double-fork + setsid so the
+//!   daemon survives the shell that launched it without `&`. Stdin is
+//!   closed, stdout/stderr land in `.code-abyss/daemon.log`.
+//! - `abyss daemon logs [--tail N]` — tail the daemon log. Goes through the
+//!   socket when the daemon is live; falls back to a direct file read when
+//!   it's not.
+//! - Socket verbs: `reindex` (synchronous hash-incremental run on a worker
+//!   thread, serialized via a try_lock'd mutex so two operator requests
+//!   surface a structured "lock contention" error instead of fighting at
+//!   the SQLite layer), `logs` (returns the trailing N lines).
 //!
 //! Unix-only — the watcher's inotify backend is already POSIX-shaped, and
 //! `UnixListener` is unavailable on Windows. The Windows path lives in
@@ -36,9 +42,10 @@ use crate::config::Config;
 
 /// Subcommand routing — kept here so `main.rs` stays a thin clap dispatcher.
 pub enum DaemonAction {
-    Start { foreground: bool },
+    Start { foreground: bool, detach: bool },
     Stop,
     Status,
+    Logs { tail: usize },
 }
 
 /// Standard paths under `<workspace>/.code-abyss/` — shared by every daemon
@@ -65,9 +72,10 @@ impl DaemonPaths {
 #[cfg(unix)]
 pub fn run(config: Config, action: DaemonAction) -> Result<()> {
     match action {
-        DaemonAction::Start { foreground } => unix_impl::start(config, foreground),
+        DaemonAction::Start { foreground, detach } => unix_impl::start(config, foreground, detach),
         DaemonAction::Stop => unix_impl::stop(config),
         DaemonAction::Status => unix_impl::status(config),
+        DaemonAction::Logs { tail } => unix_impl::logs(config, tail),
     }
 }
 
@@ -90,7 +98,7 @@ mod unix_impl {
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::time::{Duration, Instant};
 
-    pub fn start(config: Config, foreground: bool) -> Result<()> {
+    pub fn start(config: Config, foreground: bool, detach: bool) -> Result<()> {
         // Refuse early: a daemon against a non-existent index would spin
         // useless reindex loops at startup.
         if !config.db_path.exists() {
@@ -104,18 +112,34 @@ mod unix_impl {
         std::fs::create_dir_all(&paths.dir)
             .with_context(|| format!("create {}", paths.dir.display()))?;
 
-        // Pidfile lock — flock-based. Second instance fails fast with a clear
-        // message rather than racing the watcher.
-        let pidfile = PidFile::acquire(&paths.pid)
-            .context("acquire daemon.pid — is another `abyss daemon` already running?")?;
-
-        // Redirect tracing to the log file unless --foreground. We append so
-        // restarts don't clobber prior runs.
-        if !foreground {
+        // --detach: double-fork + setsid before we touch any locks. The
+        // parent process returns to the shell once the child has had a
+        // moment to acquire the pidfile, so callers can synchronously chain
+        // `daemon start --detach && daemon status` without a race.
+        // Mutually exclusive with --foreground; --detach wins (an explicit
+        // background flag overrides the "stay attached" default).
+        if detach && !foreground {
+            if let Some(_parent_done) = daemonize(&paths)? {
+                // Parent path — return from this function (and from main).
+                // The grandchild is now running independently.
+                return Ok(());
+            }
+            // Grandchild: redirect happened inside daemonize(), continue.
+        } else if !foreground {
             redirect_log(&paths.log)?;
         }
 
-        let state = Arc::new(DaemonState::new(std::process::id(), &config));
+        // Pidfile lock — flock-based. Second instance fails fast with a clear
+        // message rather than racing the watcher. (Acquired after the fork
+        // so the parent doesn't briefly hold then release it.)
+        let pidfile = PidFile::acquire(&paths.pid)
+            .context("acquire daemon.pid — is another `abyss daemon` already running?")?;
+
+        let state = Arc::new(DaemonState::new(
+            std::process::id(),
+            &config,
+            paths.log.clone(),
+        ));
 
         // Socket server in its own thread — we want the watcher loop free to
         // own the main thread (it polls a stop channel + signal flag).
@@ -264,10 +288,165 @@ mod unix_impl {
         Ok(())
     }
 
+    pub fn logs(config: Config, tail: usize) -> Result<()> {
+        let paths = DaemonPaths::from_config(&config);
+        if !paths.pid.exists() {
+            // No running daemon — fall back to a direct read of the log file
+            // so operators can still inspect the last session's output.
+            if !paths.log.exists() {
+                eprintln!(
+                    "abyss daemon: no log at {} (daemon never ran here)",
+                    paths.log.display()
+                );
+                std::process::exit(1);
+            }
+            print_tail(&paths.log, tail)?;
+            return Ok(());
+        }
+
+        // Live daemon — go through the socket so the read stays consistent
+        // with what the daemon thinks of as "its log" (matters once the
+        // daemon learns about log rotation).
+        let resp = match socket::logs(&paths.socket, tail) {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("abyss daemon: socket unreachable ({e}); falling back to log file");
+                print_tail(&paths.log, tail)?;
+                return Ok(());
+            }
+        };
+        for line in resp.lines {
+            println!("{line}");
+        }
+        Ok(())
+    }
+
+    fn print_tail(log_path: &std::path::Path, tail: usize) -> Result<()> {
+        use std::collections::VecDeque;
+        use std::io::BufRead;
+        let file = std::fs::File::open(log_path)
+            .with_context(|| format!("open {}", log_path.display()))?;
+        let reader = std::io::BufReader::new(file);
+        let mut buf: VecDeque<String> = VecDeque::with_capacity(tail);
+        for line in reader.lines() {
+            let line = line.unwrap_or_default();
+            if buf.len() == tail {
+                buf.pop_front();
+            }
+            buf.push_back(line);
+        }
+        for line in buf {
+            println!("{line}");
+        }
+        Ok(())
+    }
+
     fn read_pid(path: &std::path::Path) -> Result<u32> {
         let raw = std::fs::read_to_string(path)?;
         let pid: u32 = raw.trim().parse().context("pidfile contents not a u32")?;
         Ok(pid)
+    }
+
+    /// Double-fork + setsid daemonization.
+    ///
+    /// Returns `Ok(Some(()))` in the parent (or first child) — caller should
+    /// return up to main. Returns `Ok(None)` in the final grandchild, which
+    /// continues into the normal daemon loop. Returns `Err` on syscall
+    /// failure in the parent before the first fork.
+    ///
+    /// Why double-fork: the first fork detaches us from the shell's process
+    /// group, then `setsid()` makes the child a session leader. The second
+    /// fork re-orphans us so the daemon is *not* a session leader, which
+    /// prevents it from ever (re)acquiring a controlling terminal. This is
+    /// the standard SysV daemonization recipe.
+    ///
+    /// Stdin is closed; stdout/stderr are dup2'd to `daemon.log` *after* the
+    /// final fork so any pre-fork error still surfaces to the user's shell.
+    fn daemonize(paths: &DaemonPaths) -> Result<Option<()>> {
+        use std::os::unix::io::AsRawFd;
+
+        // Pre-open the log file in the parent so a permission error here
+        // surfaces to the user's shell, not the silent grandchild.
+        let log_file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&paths.log)
+            .with_context(|| format!("open {}", paths.log.display()))?;
+
+        // SAFETY: fork(2) is a standard POSIX call; the only Rust-side
+        // invariant is that we don't run destructors in the child that
+        // assume parent-process state — we explicitly return Ok(Some(()))
+        // from the parent path so RAII unwinds normally there.
+        let pid = unsafe { libc::fork() };
+        if pid < 0 {
+            return Err(
+                anyhow::Error::new(std::io::Error::last_os_error()).context("fork(1) failed")
+            );
+        }
+        if pid > 0 {
+            // Parent — wait briefly for the grandchild to claim the pidfile
+            // so the caller's shell can chain `start --detach && status`
+            // without a race. 500ms covers the cold-start + DB-open path on
+            // realistic hardware.
+            let deadline = std::time::Instant::now() + Duration::from_millis(500);
+            while std::time::Instant::now() < deadline {
+                if paths.pid.exists() {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            return Ok(Some(()));
+        }
+
+        // First child — become session leader so we shed the controlling tty.
+        // SAFETY: setsid(2) is a standard POSIX call with no Rust-side
+        // invariants. Failure here is a hard stop — we'd remain attached.
+        if unsafe { libc::setsid() } < 0 {
+            let err = std::io::Error::last_os_error();
+            anyhow::bail!("setsid failed: {err}");
+        }
+
+        // Second fork — orphan ourselves so we can never re-acquire a tty.
+        // SAFETY: same as the first fork.
+        let pid2 = unsafe { libc::fork() };
+        if pid2 < 0 {
+            let err = std::io::Error::last_os_error();
+            anyhow::bail!("fork(2) failed: {err}");
+        }
+        if pid2 > 0 {
+            // First-child intermediary: exit so the grandchild gets reparented
+            // to init. _exit avoids running atexit handlers / destructors that
+            // the parent process still owns.
+            // SAFETY: _exit(2) is a no-return POSIX call; nothing after this
+            // line executes in this process.
+            unsafe { libc::_exit(0) };
+        }
+
+        // Grandchild — the real daemon. Redirect stdio so any tracing or
+        // accidental println! goes to the log file, not a possibly-gone tty.
+        // SAFETY: dup2/close are standard POSIX calls; we keep `log_file`
+        // alive (via mem::forget) so the underlying fd stays open beyond
+        // this scope.
+        unsafe {
+            // /dev/null for stdin so reads return EOF instead of blocking.
+            let devnull = libc::open(c"/dev/null".as_ptr() as *const libc::c_char, libc::O_RDONLY);
+            if devnull >= 0 {
+                libc::dup2(devnull, libc::STDIN_FILENO);
+                libc::close(devnull);
+            }
+            let fd = log_file.as_raw_fd();
+            // Header — matches the redirect_log() format so log readers can't
+            // tell a --detach run apart from a backgrounded `start &` run.
+            let header = format!(
+                "--- abyss daemon pid={} start (detached) ---\n",
+                libc::getpid()
+            );
+            let _ = libc::write(fd, header.as_ptr() as *const libc::c_void, header.len());
+            libc::dup2(fd, libc::STDOUT_FILENO);
+            libc::dup2(fd, libc::STDERR_FILENO);
+        }
+        std::mem::forget(log_file);
+        Ok(None)
     }
 
     fn redirect_log(log_path: &std::path::Path) -> Result<()> {

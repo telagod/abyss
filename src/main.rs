@@ -157,17 +157,30 @@ enum Commands {
 
 #[derive(Subcommand)]
 enum DaemonCmd {
-    /// Acquire pidfile lock, bind socket, start watching. Run with `&` to
-    /// background (V1 doesn't double-fork); pass --foreground to stay attached.
+    /// Acquire pidfile lock, bind socket, start watching. Use `--detach` to
+    /// double-fork into the background; `--foreground` keeps the daemon
+    /// attached to the controlling terminal (overrides `--detach`).
     Start {
         /// Stay attached to the controlling terminal (don't redirect logs).
         #[arg(long)]
         foreground: bool,
+        /// Detach via double-fork + setsid. The shell returns once the
+        /// child has claimed the pidfile (≤500ms).
+        #[arg(long)]
+        detach: bool,
     },
     /// SIGTERM the recorded pid; wait up to 5s for cleanup.
     Stop,
     /// Print pid, uptime, last reindex, socket path. Exit 1 if not running.
     Status,
+    /// Tail the daemon log (`.code-abyss/daemon.log`). Goes through the
+    /// running daemon's socket when available, otherwise reads the file
+    /// directly.
+    Logs {
+        /// How many trailing lines to print. Default 50.
+        #[arg(long, default_value_t = 50)]
+        tail: usize,
+    },
 }
 
 #[derive(Subcommand)]
@@ -256,9 +269,10 @@ fn main() -> Result<()> {
 fn cmd_daemon(config: Config, action: DaemonCmd) -> Result<()> {
     use code_abyss::daemon::{DaemonAction, run};
     let mapped = match action {
-        DaemonCmd::Start { foreground } => DaemonAction::Start { foreground },
+        DaemonCmd::Start { foreground, detach } => DaemonAction::Start { foreground, detach },
         DaemonCmd::Stop => DaemonAction::Stop,
         DaemonCmd::Status => DaemonAction::Status,
+        DaemonCmd::Logs { tail } => DaemonAction::Logs { tail },
     };
     run(config, mapped)
 }
