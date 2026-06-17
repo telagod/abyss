@@ -121,6 +121,15 @@ pub struct FindCallersInput {
     /// remain reachable via `excluded_tests` count and an explicit retry.
     #[serde(default)]
     pub include_tests: bool,
+    /// Which edge kinds count as callers. Valid entries: `call`, `field_access`,
+    /// `type_ref`. Default is all three — for "who depends on X" the agent
+    /// almost always wants type-position users (annotations, generics,
+    /// `extends`) alongside the invocation users. To recover the legacy
+    /// invocation-only behaviour, pass `["call","field_access"]`; to look
+    /// only at type users (e.g. interface implementers), pass `["type_ref"]`.
+    /// Empty array is treated as default.
+    #[serde(default)]
+    pub kinds: Vec<String>,
 }
 
 #[derive(Serialize, schemars::JsonSchema)]
@@ -139,6 +148,10 @@ pub struct CallerItem {
     pub depth: u32,
     pub confidence: f64,
     pub is_test: bool,
+    /// Ref kind: `call`, `field_access`, or `type_ref`. Lets the agent
+    /// distinguish "X invokes this" from "X annotates with this type"
+    /// without re-querying.
+    pub kind: String,
 }
 
 #[derive(Deserialize, schemars::JsonSchema, Default)]
@@ -167,6 +180,38 @@ fn default_20() -> usize {
 }
 fn default_30() -> usize {
     30
+}
+
+/// Map a wire-level `kinds` array onto the closed [`CallerKindFilter`] enum.
+/// Returns `None` for empty / unknown inputs so the caller can fall back to
+/// `Both` (the safe superset) rather than silently dropping results.
+///
+/// The mapping is intentionally narrow: three filter shapes (CallsOnly /
+/// TypesOnly / Both) is enough until evidence says otherwise, and a strict
+/// classifier keeps a malformed `kinds: ["typeref"]` (typo) from hiding a
+/// caller list — we just return `Both` instead.
+fn classify_kinds(kinds: &[String]) -> Option<crate::graph::CallerKindFilter> {
+    use crate::graph::CallerKindFilter;
+    if kinds.is_empty() {
+        return None;
+    }
+    let mut has_call = false;
+    let mut has_field = false;
+    let mut has_type = false;
+    for k in kinds {
+        match k.as_str() {
+            "call" => has_call = true,
+            "field_access" => has_field = true,
+            "type_ref" => has_type = true,
+            _ => return None, // unknown kind → caller picks default
+        }
+    }
+    Some(match (has_call || has_field, has_type) {
+        (true, true) => CallerKindFilter::Both,
+        (true, false) => CallerKindFilter::CallsOnly,
+        (false, true) => CallerKindFilter::TypesOnly,
+        (false, false) => return None,
+    })
 }
 
 // --- Temporal tool types ---
@@ -393,20 +438,31 @@ impl McpServer {
 
     #[tool(
         name = "find_callers",
-        description = "Find all callers of a function or method. Returns who calls this symbol, from which file and line. By default test-file callers are hidden (use `include_tests: true` to see them); `excluded_tests` reports how many were dropped so the caller can decide whether to retry."
+        description = "Find who depends on a symbol. Returns callers and type-position users (interface implementers, generic instantiations, `extends`) — for an agent asking 'who uses this' both matter. Default kind set is [call, field_access, type_ref]; pass `kinds: [\"call\",\"field_access\"]` for invocation-only or `kinds: [\"type_ref\"]` for type users only. Each row carries `kind` so the agent can tell them apart. Test-file callers are hidden by default (set `include_tests: true` to include them; `excluded_tests` reports how many were dropped)."
     )]
     fn find_callers(
         &self,
         Parameters(input): Parameters<FindCallersInput>,
     ) -> Json<FindCallersOutput> {
+        use crate::graph::CallerKindFilter;
         let repo = self.repo.lock().unwrap();
         let gq = crate::graph::GraphQuery::new(&repo);
+
+        // Map the wire-level `kinds` array to the closed filter enum. The
+        // SQL layer (`find_callers_of_kinds`) is happy to take an arbitrary
+        // `&[&str]` but the rest of the codebase keeps that surface narrow
+        // on purpose — three filter shapes is enough until evidence says
+        // otherwise. Unknown / mixed inputs fall back to `Both` (the safe
+        // superset) so a malformed agent call never hides results silently.
+        let kind_filter = classify_kinds(&input.kinds).unwrap_or(CallerKindFilter::Both);
+
         let result = gq
-            .find_callers_filtered(
+            .find_callers_filtered_kinds(
                 &input.symbol,
                 input.limit,
                 input.min_confidence.unwrap_or(0.7),
                 input.include_tests,
+                kind_filter,
             )
             .ok();
         let (callers, excluded_tests) = match result {
@@ -424,6 +480,7 @@ impl McpServer {
                     depth: c.depth,
                     confidence: c.confidence,
                     is_test: c.is_test,
+                    kind: c.kind,
                 })
                 .collect(),
             excluded_tests,
@@ -457,6 +514,7 @@ impl McpServer {
                     depth: c.depth,
                     confidence: c.confidence,
                     is_test: c.is_test,
+                    kind: c.kind,
                 })
                 .collect(),
             transitive_callers: result
@@ -469,6 +527,7 @@ impl McpServer {
                     depth: c.depth,
                     confidence: c.confidence,
                     is_test: c.is_test,
+                    kind: c.kind,
                 })
                 .collect(),
             affected_tests: result
@@ -481,6 +540,7 @@ impl McpServer {
                     depth: c.depth,
                     confidence: c.confidence,
                     is_test: c.is_test,
+                    kind: c.kind,
                 })
                 .collect(),
             uncovered_paths: result.uncovered_paths,
@@ -629,5 +689,65 @@ impl McpServer {
             unique_authors: result.unique_authors,
             total_changes: result.total_changes,
         })
+    }
+}
+
+#[cfg(test)]
+mod kinds_tests {
+    //! Pins the `find_callers` `kinds` contract surfaced over MCP.
+    //!
+    //! Three filter shapes are valid; everything else falls back to the
+    //! safe superset (None → `Both`) so an agent typo like `"typeref"`
+    //! can never silently hide results.
+    use super::classify_kinds;
+    use crate::graph::CallerKindFilter;
+
+    fn k(s: &[&str]) -> Vec<String> {
+        s.iter().map(|x| x.to_string()).collect()
+    }
+
+    #[test]
+    fn empty_kinds_returns_none_so_caller_picks_default() {
+        assert!(classify_kinds(&[]).is_none());
+    }
+
+    #[test]
+    fn call_only_maps_to_calls_only() {
+        assert_eq!(
+            classify_kinds(&k(&["call"])),
+            Some(CallerKindFilter::CallsOnly)
+        );
+        assert_eq!(
+            classify_kinds(&k(&["call", "field_access"])),
+            Some(CallerKindFilter::CallsOnly)
+        );
+    }
+
+    #[test]
+    fn type_ref_only_maps_to_types_only() {
+        assert_eq!(
+            classify_kinds(&k(&["type_ref"])),
+            Some(CallerKindFilter::TypesOnly)
+        );
+    }
+
+    #[test]
+    fn mixed_call_and_type_maps_to_both() {
+        assert_eq!(
+            classify_kinds(&k(&["call", "type_ref"])),
+            Some(CallerKindFilter::Both)
+        );
+        assert_eq!(
+            classify_kinds(&k(&["call", "field_access", "type_ref"])),
+            Some(CallerKindFilter::Both)
+        );
+    }
+
+    #[test]
+    fn unknown_kind_falls_back_to_default() {
+        // Typo (`typeref` no underscore) or unrecognised future kind →
+        // caller picks default rather than us silently dropping a request.
+        assert!(classify_kinds(&k(&["typeref"])).is_none());
+        assert!(classify_kinds(&k(&["call", "wat"])).is_none());
     }
 }
