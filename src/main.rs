@@ -235,6 +235,11 @@ enum DaemonCmd {
         /// How many trailing lines to print. Default 50.
         #[arg(long, default_value_t = 50)]
         tail: usize,
+        /// Stream new lines as they're appended (think `tail -f`). After
+        /// printing the initial tail, the CLI keeps polling the log file
+        /// directly — no socket round-trip per line. Stop with Ctrl-C.
+        #[arg(long, short = 'f')]
+        follow: bool,
     },
 }
 
@@ -338,7 +343,7 @@ fn cmd_daemon(config: Config, action: DaemonCmd) -> Result<()> {
         DaemonCmd::Start { foreground, detach } => DaemonAction::Start { foreground, detach },
         DaemonCmd::Stop => DaemonAction::Stop,
         DaemonCmd::Status => DaemonAction::Status,
-        DaemonCmd::Logs { tail } => DaemonAction::Logs { tail },
+        DaemonCmd::Logs { tail, follow } => DaemonAction::Logs { tail, follow },
     };
     run(config, mapped)
 }

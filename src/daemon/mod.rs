@@ -45,7 +45,7 @@ pub enum DaemonAction {
     Start { foreground: bool, detach: bool },
     Stop,
     Status,
-    Logs { tail: usize },
+    Logs { tail: usize, follow: bool },
 }
 
 /// Standard paths under `<workspace>/.code-abyss/` — shared by every daemon
@@ -75,7 +75,7 @@ pub fn run(config: Config, action: DaemonAction) -> Result<()> {
         DaemonAction::Start { foreground, detach } => unix_impl::start(config, foreground, detach),
         DaemonAction::Stop => unix_impl::stop(config),
         DaemonAction::Status => unix_impl::status(config),
-        DaemonAction::Logs { tail } => unix_impl::logs(config, tail),
+        DaemonAction::Logs { tail, follow } => unix_impl::logs(config, tail, follow),
     }
 }
 
@@ -288,7 +288,7 @@ mod unix_impl {
         Ok(())
     }
 
-    pub fn logs(config: Config, tail: usize) -> Result<()> {
+    pub fn logs(config: Config, tail: usize, follow: bool) -> Result<()> {
         let paths = DaemonPaths::from_config(&config);
         if !paths.pid.exists() {
             // No running daemon — fall back to a direct read of the log file
@@ -301,6 +301,9 @@ mod unix_impl {
                 std::process::exit(1);
             }
             print_tail(&paths.log, tail)?;
+            if follow {
+                follow_log(&paths.log)?;
+            }
             return Ok(());
         }
 
@@ -312,13 +315,83 @@ mod unix_impl {
             Err(e) => {
                 eprintln!("abyss daemon: socket unreachable ({e}); falling back to log file");
                 print_tail(&paths.log, tail)?;
+                if follow {
+                    follow_log(&paths.log)?;
+                }
                 return Ok(());
             }
         };
         for line in resp.lines {
             println!("{line}");
         }
+        // --follow path: stream new bytes appended to the log file directly.
+        // This bypasses the socket because the daemon is the writer — the
+        // log file is the canonical source. Polling is the simplest portable
+        // strategy (inotify would need a feature gate); 200ms is fast enough
+        // to feel live without burning CPU.
+        if follow {
+            follow_log(&paths.log)?;
+        }
         Ok(())
+    }
+
+    /// Open the log file, seek to end, then poll for new bytes every
+    /// 200ms and emit any that appeared since the last read. Returns when
+    /// stdout closes (broken pipe) — that's how `Ctrl-C` exits cleanly when
+    /// the user redirects through `head` or similar. SIGINT in the bare
+    /// terminal case terminates the process before we read again.
+    ///
+    /// Handles two edge cases:
+    /// 1. File rotation (size shrinks) — re-open and continue from byte 0.
+    /// 2. File deleted then recreated — same as rotation; bounded retry.
+    pub fn follow_log(log_path: &std::path::Path) -> Result<()> {
+        use std::io::{Read, Seek, SeekFrom, Write};
+        let mut file = match std::fs::File::open(log_path) {
+            Ok(f) => f,
+            Err(e) => {
+                // File vanished between print_tail and follow — try once
+                // more then bail. Most likely a race against `daemon stop`.
+                std::thread::sleep(Duration::from_millis(200));
+                std::fs::File::open(log_path).map_err(|_| {
+                    anyhow::anyhow!("follow: open {} failed: {e}", log_path.display())
+                })?
+            }
+        };
+        let mut pos = file.seek(SeekFrom::End(0))?;
+        let mut buf = [0u8; 8192];
+        let stdout = std::io::stdout();
+        loop {
+            // Check for rotation by re-stat'ing.
+            let meta = std::fs::metadata(log_path);
+            if let Ok(m) = &meta
+                && m.len() < pos
+            {
+                // Truncated — re-open from the top.
+                file = std::fs::File::open(log_path)?;
+                pos = 0;
+            }
+            file.seek(SeekFrom::Start(pos))?;
+            loop {
+                let n = match file.read(&mut buf) {
+                    Ok(0) => break,
+                    Ok(n) => n,
+                    Err(e) => {
+                        // Surface unexpected I/O — but EAGAIN/WOULDBLOCK
+                        // shouldn't happen on a blocking File. Bail loudly.
+                        anyhow::bail!("follow: read {} failed: {e}", log_path.display());
+                    }
+                };
+                pos += n as u64;
+                let mut out = stdout.lock();
+                if out.write_all(&buf[..n]).is_err() {
+                    // Broken pipe → caller closed stdout (e.g. `| head`).
+                    // Exit cleanly without an angry error message.
+                    return Ok(());
+                }
+                let _ = out.flush();
+            }
+            std::thread::sleep(Duration::from_millis(200));
+        }
     }
 
     fn print_tail(log_path: &std::path::Path, tail: usize) -> Result<()> {
