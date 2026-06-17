@@ -28,6 +28,37 @@ impact: SetError  direct=17  transitive=521  tests=3  uncovered=319  risk=8.5/10
 abyss is not a search engine replacement — it's the **impact-awareness
 layer** agents are missing. Pair it with whatever search you like.
 
+> abyss is currently at **v0.5.20**, with **6 dogfood evaluations**
+> shipped against real-world Python / TS / JS / Rust codebases. See the
+> [Dogfood chapter](dogfood/index.md) for what running abyss against
+> SQLAlchemy / Django / hono / vite / FastAPI / helix-editor actually
+> looks like — score, bugs found, falsified predictions, all in public.
+
+## What changed in v0.5.x
+
+The v0.5.x patch sprint (v0.5.3 → v0.5.20, 17 small patches, zero
+breaking changes) hardened the daemon, matured Python coverage, and
+sanded a long backlog of operability rough edges:
+
+- **V2 daemon emerges** — `abyss mcp --via-daemon` (v0.5.2),
+  `daemon logs --follow` (v0.5.7), and a `subscribe` socket verb that
+  push-notifies reindex events to long-lived agents (v0.5.16).
+- **Python coverage matures** — generic-base inherit edges (v0.5.2),
+  first-class `type_ref` emission for typed params/returns (v0.5.3),
+  `.pyi` stub files indexed end-to-end (v0.5.13), MRO walker pinned
+  by regression test on co-located bases (v0.5.17).
+- **Dogfood-driven UX** — `callers` default-both type+call (v0.5.0),
+  small-cluster module labels by peak centrality (v0.5.2), TSX JSX
+  visitor (v0.5.2), Rust / TS built-in filters (v0.5.4 …).
+- **Operability** — shell completion (`abyss completion`, v0.5.8),
+  `abyss config show` introspection (v0.5.10), `abyss reset` (v0.5.11),
+  incremental `abyss index --since <ref>` (v0.5.12), hostile-concurrent
+  hook p99 of 82 ms with zero failures (v0.5.5 stress test).
+
+The single-page [Release Notes](https://github.com/telagod/abyss/blob/main/RELEASE-NOTES.md)
+walks through the whole series; per-version detail lives in
+[CHANGELOG.md](https://github.com/telagod/abyss/blob/main/CHANGELOG.md).
+
 ## Why not just grep / LSP / embeddings?
 
 | | grep | LSP | embedding search | **abyss** |
