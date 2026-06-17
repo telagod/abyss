@@ -127,6 +127,48 @@ impl Repository {
             .ok())
     }
 
+    /// Resolve a user-supplied file argument to a single (id, path) tuple,
+    /// preferring the most-specific reasonable match. Used by `abyss where`,
+    /// `abyss context`, and the pre-edit hook so an agent typing
+    /// `src/hono.ts` lands on the root file, not `benchmarks/jsx/src/hono.ts`.
+    ///
+    /// Priority:
+    /// 1. Exact `path = query` match.
+    /// 2. Paths starting with `query` (root-anchored), shortest first.
+    /// 3. Paths ending with `query` (suffix match), shortest first.
+    ///
+    /// Returns `None` when nothing matches.
+    pub fn find_file_fuzzy(&self, query: &str) -> Result<Option<(i64, String)>> {
+        // 1. Exact match — cheap, short-circuit.
+        if let Ok(row) =
+            self.conn
+                .query_row("SELECT id, path FROM files WHERE path = ?1", [query], |r| {
+                    Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
+                })
+        {
+            return Ok(Some(row));
+        }
+
+        // 2 & 3. Prefer prefix match over suffix match; within each bucket,
+        // shortest path wins (fewest directory hops). The CASE-when ordering
+        // is the priority bucket; LENGTH(path) breaks ties — for suffix
+        // matches that means the root-level `src/hono.ts` beats a deeply
+        // nested `benchmarks/jsx/src/hono.ts`.
+        let prefix_pattern = format!("{query}%");
+        let suffix_pattern = format!("%{query}");
+        let row = self.conn.query_row(
+            "SELECT id, path FROM files
+             WHERE path LIKE ?1 OR path LIKE ?2
+             ORDER BY
+                 CASE WHEN path LIKE ?1 THEN 0 ELSE 1 END,
+                 LENGTH(path)
+             LIMIT 1",
+            params![prefix_pattern, suffix_pattern],
+            |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)),
+        );
+        Ok(row.ok())
+    }
+
     pub fn delete_file(&self, file_id: i64) -> Result<()> {
         self.conn.execute(
             "DELETE FROM vec_chunks WHERE chunk_id IN (SELECT id FROM chunks WHERE file_id = ?1)",

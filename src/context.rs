@@ -12,17 +12,14 @@ use crate::storage::Repository;
 pub fn build_file_context(repo: &Repository, file: &str) -> Result<Option<serde_json::Value>> {
     let conn = repo.conn();
 
-    // Find file (exact relative path or suffix match)
-    let file_id: i64 = match conn.query_row(
-        "SELECT id FROM files WHERE path = ?1 OR path LIKE ?2",
-        rusqlite::params![file, format!("%{file}")],
-        |r| r.get(0),
-    ) {
-        Ok(id) => id,
-        Err(_) => return Ok(None),
+    // Find file via the shared fuzzy resolver: exact match wins, then
+    // root-anchored prefix matches, then suffix matches by shortest path.
+    // This keeps `abyss context src/hono.ts` from binding to a vendored copy
+    // like `benchmarks/jsx/src/hono.ts`.
+    let (file_id, file_path) = match repo.find_file_fuzzy(file)? {
+        Some(row) => row,
+        None => return Ok(None),
     };
-
-    let file_path: String = repo.get_file_path(file_id)?.unwrap_or_default();
 
     // Get all symbols defined in this file (used for the total count and to
     // ensure we expose symbols even when they have zero external callers).
@@ -234,15 +231,7 @@ pub fn build_file_context(repo: &Repository, file: &str) -> Result<Option<serde_
 /// Returns `Ok(None)` when the file is not indexed (so the caller can print
 /// a friendly "not found" message instead of a cryptic SQL error).
 pub fn where_summary(repo: &Repository, file: &str) -> Result<Option<serde_json::Value>> {
-    let conn = repo.conn();
-    let row: Option<(i64, String)> = conn
-        .query_row(
-            "SELECT id, path FROM files WHERE path = ?1 OR path LIKE ?2 LIMIT 1",
-            rusqlite::params![file, format!("%{file}")],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )
-        .ok();
-    let Some((file_id, file_path)) = row else {
+    let Some((file_id, file_path)) = repo.find_file_fuzzy(file)? else {
         return Ok(None);
     };
 
