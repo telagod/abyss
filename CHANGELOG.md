@@ -16,12 +16,15 @@ since v0.4.0, four lines of work:
    surface as first-class callers. New `--calls-only` / `--types-only`
    flags. MCP `find_callers` gains a `kinds` filter.
 
-3. **Three honest dogfood reports**. We ran abyss on hono (7/10), helix-
-   editor (7.5/10), vite (7/10), FastAPI (6.5/10) and committed the
-   reports as `docs/dogfood/*.md`. They surface real debts and one
+3. **Four honest dogfood reports**. We ran abyss on hono (8/10),
+   helix-editor (7.5/10), vite (7/10), FastAPI (6.5/10) and committed
+   the reports as `docs/dogfood/*.md`. They surface real debts and one
    falsified hypothesis: MRO L0e doesn't fire on FastAPI because its
    class hierarchy roots are in external libraries (Starlette, pydantic).
    We log the prediction error so future MRO discussion stays honest.
+   The hono report was backfilled post-v0.5.0 (the original v0.3.x walk
+   drove the W1 UX debts that v0.4.0 fixed) so the deltas v0.5.0 G1/G2/G3
+   closed are measured against the same workload.
 
 4. **UX polish driven by what dogfood found**. Module labels
    (`p-18` → `vite-18`, `mixed:temporal+` → `cluster-1`), contracts
@@ -80,7 +83,7 @@ since v0.4.0, four lines of work:
   FastAPI eval: **0 hits** (hierarchy roots are external libraries —
   Starlette / pydantic). Honest falsification logged in
   [eval/notes/click-mro-walker-2026-06-17.md](eval/notes/click-mro-walker-2026-06-17.md).
-- 4 dogfood reports: hono (7/10), helix-editor (7.5/10), vite (7/10),
+- 4 dogfood reports: hono (8/10), helix-editor (7.5/10), vite (7/10),
   FastAPI (6.5/10). All under `docs/dogfood/`.
 - `eval/setup-indexers.sh` — one-shot reproducible install of all five SCIP
   indexers (scip / scip-go / scip-typescript / scip-python / scip-clang)

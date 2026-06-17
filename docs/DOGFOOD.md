@@ -15,7 +15,7 @@ score, and a bug list that drives the next release's UX fixes.
 | helix-editor @ `43bf7c2` | 2026-06-17 | Rust workspace (~243 .rs) | 545 | 1.57 s | **7.5 / 10** | [helix-editor-2026-06-17.md](dogfood/helix-editor-2026-06-17.md) |
 | vite v5.4.0 | 2026-06-17 | TS / JS monorepo | 1 793 | 0.91 s | **7 / 10** | [vite-2026-06-17.md](dogfood/vite-2026-06-17.md) |
 | FastAPI 0.115.4 | 2026-06-17 | Python | 2 164 | 1.07 s | **6.5 / 10** | [fastapi-2026-06-17.md](dogfood/fastapi-2026-06-17.md) |
-| hono v4.6.14 | 2026-06-17 | TypeScript | — | — | **7 / 10** | score logged in CHANGELOG v0.5.0; informed v0.4.0 hook redesign — report not committed |
+| hono v4.6.14 | 2026-06-17 | TypeScript | 388 | 0.79 s | **8 / 10** | [hono-2026-06-17.md](dogfood/hono-2026-06-17.md) |
 
 Scores are calibrated against three axes per probe (signal density,
 noise, latency) and one overall number. `7/10` means "load-bearing
@@ -74,13 +74,22 @@ warning, contracts dedup nailed. Read:
 
 ### hono (TypeScript, v4.6.14)
 
-Score recorded in the v0.5.0 CHANGELOG. The detailed report is not
-committed (the dogfood walk drove the v0.4.0 hook redesign and the
-`abyss search` ranking work before the per-project report format was
-formalized). The three live debts surfaced — path matching preferring
-shortest exact path, search ranking impl above test/import via
-centrality + penalty, and `abyss callers` excluding tests by default —
-all landed in v0.4.0.
+abyss indexes hono's 388-file TypeScript framework in **793 ms cold /
+333 ms warm**, p95 probe latency under 25 ms. This was the first
+dogfood we ran (the W1 UX debts it surfaced fed v0.4.0), and the
+detailed report was backfilled post-v0.5.0 so the deltas v0.4.0 +
+v0.5.0 closed could be measured against the same workload. **Three
+v0.5.0 wins are directly observable**: (1) `callers Context` now
+returns 20 type-position callers annotated `(100%, type)` — under
+v0.4.0 the same command returned zero, the vite-report's headline
+finding; (2) the pre-edit card for `src/context.ts` surfaces
+`151 prod callers (46 call, 105 type) across 43 files` — call/type
+split is first-class; (3) search for "middleware" returns zero
+`*.test.ts` files in the top 10 thanks to L4 test-skip. Remaining
+debts: `callers` silently caps at 20 rows when 235 exist, `Set`
+interface collides with the JS built-in, `module=middleware-10`
+labels still aren't human-meaningful. Read the full report:
+[dogfood/hono-2026-06-17.md](dogfood/hono-2026-06-17.md).
 
 ## What dogfood taught us
 

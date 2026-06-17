@@ -203,7 +203,7 @@ score, bugs found, and honest gaps — under `docs/dogfood/`. See
 | helix-editor | Rust workspace | 7.5 / 10 | [docs/dogfood/helix-editor-2026-06-17.md](docs/dogfood/helix-editor-2026-06-17.md) |
 | vite | TS/JS monorepo | 7 / 10 | [docs/dogfood/vite-2026-06-17.md](docs/dogfood/vite-2026-06-17.md) |
 | FastAPI | Python | 6.5 / 10 | [docs/dogfood/fastapi-2026-06-17.md](docs/dogfood/fastapi-2026-06-17.md) |
-| hono | TypeScript | 7 / 10 | (score logged in CHANGELOG v0.5.0; informed v0.4.0 hook redesign) |
+| hono | TypeScript | 8 / 10 | [docs/dogfood/hono-2026-06-17.md](docs/dogfood/hono-2026-06-17.md) |
 
 Each report drove concrete fixes (TS `callers` learning type refs from
 vite, monorepo labeller from helix, `docs_src/` / top-level `tests/`
