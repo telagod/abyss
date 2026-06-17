@@ -1,9 +1,42 @@
 # Changelog
 
-## Unreleased
+## v0.5.0 — 2026-06-17
+
+The **"agent always has the map (in the background)"** release. 45 commits
+since v0.4.0, four lines of work:
+
+1. **Daemon goes background**. `abyss daemon start --detach` does a proper
+   double-fork; the watcher process survives the shell that launched it.
+   New socket verbs `reindex` and `logs` plus an `abyss daemon logs` CLI
+   make the daemon operable from outside its own log file.
+
+2. **`callers` learns to follow type references** (highest-ROI debt
+   surfaced by the vite dogfood). `callers ViteDevServer` went from 0 to
+   71 prod users — TS interfaces, generics, and `extends` clauses now
+   surface as first-class callers. New `--calls-only` / `--types-only`
+   flags. MCP `find_callers` gains a `kinds` filter.
+
+3. **Three honest dogfood reports**. We ran abyss on hono (7/10), helix-
+   editor (7.5/10), vite (7/10), FastAPI (6.5/10) and committed the
+   reports as `docs/dogfood/*.md`. They surface real debts and one
+   falsified hypothesis: MRO L0e doesn't fire on FastAPI because its
+   class hierarchy roots are in external libraries (Starlette, pydantic).
+   We log the prediction error so future MRO discussion stays honest.
+
+4. **UX polish driven by what dogfood found**. Module labels
+   (`p-18` → `vite-18`, `mixed:temporal+` → `cluster-1`), contracts
+   dedup (helix's `default × 18 impls` becomes one row), L4 stops
+   resolving common names to test fixtures, `map` empty-hotspots
+   explains itself.
 
 ### New commands
 
+- `abyss daemon start --detach` — double-forked background daemon.
+- `abyss daemon logs [--tail N]` — tail the daemon log via socket or
+  direct file read.
+- `abyss callers <sym> --calls-only / --types-only` — restrict caller
+  results by ref kind. Default is "both" (the v0.4.x behavior was
+  silently `--calls-only`).
 - `abyss daemon start [--foreground]` / `daemon stop` / `daemon status` —
   background daemon V1 (Unix only). The watcher moves out of the foreground
   process: a single-instance pidfile lock (flock) under
@@ -36,6 +69,96 @@
 - Socket verb `{"cmd":"logs","tail":N}` — last N lines of `daemon.log`,
   streamed via a bounded `VecDeque` so memory stays O(N) regardless of
   log size.
+
+### Added
+
+- Python L0e tier — MRO-aware receiver inference walks `inherits` refs from
+  `class Sub(Base):` declarations up the chain (6-hop cap, single-DFS
+  approximation of C3). When the receiver's class doesn't define the
+  called method but a base does, the call resolves to the base's file at
+  confidence 0.95. Click eval: 2 hits (hierarchy co-locates).
+  FastAPI eval: **0 hits** (hierarchy roots are external libraries —
+  Starlette / pydantic). Honest falsification logged in
+  [eval/notes/click-mro-walker-2026-06-17.md](eval/notes/click-mro-walker-2026-06-17.md).
+- 4 dogfood reports: hono (7/10), helix-editor (7.5/10), vite (7/10),
+  FastAPI (6.5/10). All under `docs/dogfood/`.
+- `eval/setup-indexers.sh` — one-shot reproducible install of all five SCIP
+  indexers (scip / scip-go / scip-typescript / scip-python / scip-clang)
+  with pinned versions. `eval/README.md` documents the policy: bumping a
+  pinned indexer requires updating baselines in the same commit.
+- Pre-existing `arch_facts` table now includes `inherits` ref edges from
+  Python class declarations.
+
+### Changed
+
+- **Module labels** got honest. Common-prefix paths used to collapse to
+  one letter + module id (`packages/` → `p-18`, `helix-view/` →
+  `helix--8`); the labeller now treats `packages` / `crates` / `libs` /
+  `src` / `lib` / `app` / `apps` / `services` / `modules` / `internal` as
+  boring prefixes and picks the modal next segment (`vite-18`,
+  `helix-view`). Cross-cutting clusters render as `cluster-{id}` instead
+  of leaking internal cluster-merge state (`mixed:{seg}+`).
+- **Contracts dedup**: `render_card` groups by `(name, kind)` and adds
+  `(N impls)` when multiple definitions share the same symbol. Helix's
+  card no longer shows `default (method) → 35 callers` eighteen times;
+  it shows one row tagged `(18 impls)`.
+- **`abyss callers` defaults to both kinds**. Old behavior — `kind='call'`
+  only — silently returned zero results for exported TS interfaces and
+  Rust types. New default includes `kind='type_ref'`. Output suffixes
+  each caller with `(call, 95%)` or `(type, 95%)` when results mix kinds.
+  The card's `depended-on` section likewise reflects both.
+- **`abyss watch`** keeps working unchanged; it's now an alias of
+  `abyss daemon start --foreground`. Use `--detach` for V1.5 background
+  semantics.
+- L4 + L4b resolver tiers now exclude test-path TARGETS from candidate
+  picks (patterns: `__tests__/`, `_test.`, `.test.`, `.spec.`, `/test/`,
+  `/tests/`, `/playground/`). Source-side unchanged — refs FROM a test
+  file still resolve to real impls. Fixes vite's `debug` import getting
+  silently routed to `playground/hmr-ssr/__tests__/hmr-ssr.spec.ts`.
+- `abyss map` explains empty hotspot lists — `(insufficient history: N
+  commits available; need ≥10)` for shallow clones,
+  `(no files changed in the last 30 days)` for historical repos.
+- SCIP indexer versions pinned in `setup-indexers.sh`; `run.sh` logs
+  `--version` of each on every run so baselines stay reproducible.
+
+### Fixed
+
+- `pipeline.reindex_file` no longer silently CASCADE-deletes the touched
+  file's outgoing refs. The function used to call `repo.delete_file()`
+  before re-inserting, which triggered `ON DELETE CASCADE` on
+  `refs.source_file_id` and nuked the file's outgoing edges. Now
+  delegates to `run_structural` (hash-incremental, runs the full batch
+  resolver). The watcher V1 already routed around it; this closes the
+  latent bug for any future caller. Verified via
+  `tests/reindex_file_preserves_refs.rs`.
+
+### Eval — gated precision / recall vs SCIP ground truth (v0.5.0)
+
+| Corpus | Lang | v0.4.0 | v0.5.0 | Δ |
+|--------|------|--------|--------|---|
+| gin v1.10.0 | Go | 99.3 / 82.6 | **99.3 / 82.6** | 0 / 0 |
+| hono v4.6.14 | TypeScript | 98.8 / 63.8 | **98.8 / 63.8** | 0 / 0 |
+| click 8.1.8 | Python | 97.9 / 93.0 | **97.9 / 93.0** | 0 / 0 |
+| ripgrep 14.1.1 | Rust | 98.5 / 75.3 | **98.5 / 75.3** | 0 / 0 |
+| abyss dogfood | Rust | 100.0 / 90.9 | **100.0 / 90.9** | 0 / 0 |
+| cmark 0.31.1 | C | 99.1 / 74.8 | **99.1 / 74.8** | 0 / 0 |
+
+Six corpora zero regression. v0.5.0 work was UX-and-operability focused —
+no resolver tier changes affecting the SCIP-ground-truth scoring axis.
+
+### Schema
+
+No schema bumps in v0.5.0. v6 (added in v0.4.0) is the current version.
+
+### Roadmap items unblocked
+
+- V2 daemon (full MCP-over-socket multi-reader) — V1.5's reindex/logs verbs
+  are the first step.
+- Python MRO retest on Django / SQLAlchemy — FastAPI falsified the "≥50
+  hits" prediction; the gap was in-repo inheritance depth, not codebase
+  size. Need a corpus where the hierarchy lives in-repo.
+
+---
 
 ## v0.4.0 — 2026-06-17
 
