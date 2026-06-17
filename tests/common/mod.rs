@@ -118,3 +118,72 @@ pub fn call_refs_to(repo: &Repository, target_name: &str) -> Vec<RefInfo> {
         .filter(|r| r.kind == "call" || r.kind == "field_access")
         .collect()
 }
+
+/// Filter a refs slice to those whose `source_path` matches — the most common
+/// trim done in resolver/MRO tests before asserting on a single ref.
+pub fn refs_from<'a>(refs: &'a [RefInfo], source_path: &str) -> Vec<&'a RefInfo> {
+    refs.iter()
+        .filter(|r| r.source_path == source_path)
+        .collect()
+}
+
+/// Assert that `refs` contains exactly one ref with `confidence == expected_conf`
+/// resolved to `target_path`. Panics on length mismatch (with the full ref list
+/// for debugging) or on confidence/path mismatch. Use this for the common
+/// resolver tier shape: `len == 1 && confidence == X && target == Y`.
+pub fn assert_unique_resolved(refs: &[RefInfo], expected_conf: f64, target_path: &str) {
+    assert_eq!(
+        refs.len(),
+        1,
+        "expected exactly one ref resolved to {target_path} at {expected_conf}, got: {refs:?}"
+    );
+    assert_eq!(
+        refs[0].confidence, expected_conf,
+        "confidence mismatch (target_path={target_path}): {:?}",
+        refs[0]
+    );
+    assert_eq!(
+        refs[0].target_path.as_deref(),
+        Some(target_path),
+        "target path mismatch: {:?}",
+        refs[0]
+    );
+}
+
+/// Same as [`assert_unique_resolved`] but also pins `source_symbol` — used by
+/// tests that care which enclosing function owns the call edge.
+pub fn assert_unique_resolved_at(
+    refs: &[RefInfo],
+    expected_conf: f64,
+    target_path: &str,
+    source_symbol: &str,
+) {
+    assert_unique_resolved(refs, expected_conf, target_path);
+    assert_eq!(
+        refs[0].source_symbol.as_deref(),
+        Some(source_symbol),
+        "source_symbol mismatch: {:?}",
+        refs[0]
+    );
+}
+
+/// Reference-slice variant of [`assert_unique_resolved`] — accepts the borrowed
+/// slice returned by [`refs_from`] without forcing the caller to clone.
+pub fn assert_unique_resolved_borrowed(refs: &[&RefInfo], expected_conf: f64, target_path: &str) {
+    assert_eq!(
+        refs.len(),
+        1,
+        "expected exactly one ref resolved to {target_path} at {expected_conf}, got: {refs:?}"
+    );
+    assert_eq!(
+        refs[0].confidence, expected_conf,
+        "confidence mismatch (target_path={target_path}): {:?}",
+        refs[0]
+    );
+    assert_eq!(
+        refs[0].target_path.as_deref(),
+        Some(target_path),
+        "target path mismatch: {:?}",
+        refs[0]
+    );
+}

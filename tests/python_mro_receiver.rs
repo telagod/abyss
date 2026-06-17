@@ -32,13 +32,8 @@ fn single_inheritance_resolves_to_base_file() {
     let refs = call_refs_to(&fx.repo, "foo");
     // Filter to just the caller.py ref (Base.foo's same-file definition
     // doesn't generate a call ref).
-    let caller_refs: Vec<_> = refs
-        .iter()
-        .filter(|r| r.source_path == "caller.py")
-        .collect();
-    assert_eq!(caller_refs.len(), 1, "{refs:?}");
-    assert_eq!(caller_refs[0].confidence, 0.95);
-    assert_eq!(caller_refs[0].target_path.as_deref(), Some("base.py"));
+    let caller_refs = refs_from(&refs, "caller.py");
+    assert_unique_resolved_borrowed(&caller_refs, 0.95, "base.py");
     assert_eq!(caller_refs[0].source_symbol.as_deref(), Some("run"));
 }
 
@@ -64,13 +59,9 @@ fn three_level_chain_walks_to_root() {
             "from leaf import Leaf\n\ndef run():\n    x: Leaf = Leaf()\n    return x.bar()\n",
         ),
     ]);
-    let refs: Vec<_> = call_refs_to(&fx.repo, "bar")
-        .into_iter()
-        .filter(|r| r.source_path == "caller.py")
-        .collect();
-    assert_eq!(refs.len(), 1, "{refs:?}");
-    assert_eq!(refs[0].confidence, 0.95);
-    assert_eq!(refs[0].target_path.as_deref(), Some("base.py"));
+    let all = call_refs_to(&fx.repo, "bar");
+    let refs = refs_from(&all, "caller.py");
+    assert_unique_resolved_borrowed(&refs, 0.95, "base.py");
 }
 
 #[test]
@@ -171,13 +162,9 @@ fn sibling_class_name_collision_picks_nearest_file() {
     // either go unresolved or land somewhere wrong. With B2 the nearest-
     // file ordering forces the oracle-anchored walk; ref resolves to
     // oracle/base.py at 0.95.
-    let refs: Vec<_> = call_refs_to(&fx.repo, "oracle_only")
-        .into_iter()
-        .filter(|r| r.source_path == "oracle/feature.py")
-        .collect();
-    assert_eq!(refs.len(), 1, "{refs:?}");
-    assert_eq!(refs[0].confidence, 0.95);
-    assert_eq!(refs[0].target_path.as_deref(), Some("oracle/base.py"));
+    let all = call_refs_to(&fx.repo, "oracle_only");
+    let refs = refs_from(&all, "oracle/feature.py");
+    assert_unique_resolved_borrowed(&refs, 0.95, "oracle/base.py");
 }
 
 #[test]

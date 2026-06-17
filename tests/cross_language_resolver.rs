@@ -86,13 +86,9 @@ fn same_language_global_unique_still_resolves() {
         // A JS file with a totally different symbol — should be ignored.
         ("npm/install.js", "function noise() { return 'js' }\n"),
     ]);
-    let refs: Vec<_> = call_refs_to(&fx.repo, "only_in_rust")
-        .into_iter()
-        .filter(|r| r.source_path == "src/main.rs")
-        .collect();
-    assert_eq!(refs.len(), 1, "{refs:?}");
-    assert_eq!(refs[0].confidence, 0.8);
-    assert_eq!(refs[0].target_path.as_deref(), Some("lib/util.rs"));
+    let all = call_refs_to(&fx.repo, "only_in_rust");
+    let refs = refs_from(&all, "src/main.rs");
+    assert_unique_resolved_borrowed(&refs, 0.8, "lib/util.rs");
 }
 
 /// Same-package same-language resolution still works at 0.95 (L2). A polyglot
@@ -114,13 +110,9 @@ fn same_language_same_package_unique_still_resolves() {
             "function only_go_helper() { return 'js' }\n",
         ),
     ]);
-    let refs: Vec<_> = call_refs_to(&fx.repo, "only_go_helper")
-        .into_iter()
-        .filter(|r| r.source_path == "app/y.go")
-        .collect();
-    assert_eq!(refs.len(), 1, "{refs:?}");
-    assert_eq!(refs[0].confidence, 0.95);
-    assert_eq!(refs[0].target_path.as_deref(), Some("app/x.go"));
+    let all = call_refs_to(&fx.repo, "only_go_helper");
+    let refs = refs_from(&all, "app/y.go");
+    assert_unique_resolved_borrowed(&refs, 0.95, "app/x.go");
 }
 
 /// ts-family POSITIVE test: a `.ts` file referencing a symbol defined in a

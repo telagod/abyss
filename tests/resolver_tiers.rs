@@ -14,10 +14,7 @@ fn tier1_same_file_resolves_at_1_0() {
         "package app\n\nfunc Helper() int { return 1 }\n\nfunc Caller() int { return Helper() }\n",
     )]);
     let refs = call_refs_to(&fx.repo, "Helper");
-    assert_eq!(refs.len(), 1, "{refs:?}");
-    assert_eq!(refs[0].confidence, 1.0);
-    assert_eq!(refs[0].target_path.as_deref(), Some("app/a.go"));
-    assert_eq!(refs[0].source_symbol.as_deref(), Some("Caller"));
+    assert_unique_resolved_at(&refs, 1.0, "app/a.go", "Caller");
 }
 
 #[test]
@@ -33,10 +30,7 @@ fn tier2_same_package_resolves_at_0_95() {
         ),
     ]);
     let refs = call_refs_to(&fx.repo, "Shared");
-    assert_eq!(refs.len(), 1, "{refs:?}");
-    assert_eq!(refs[0].confidence, 0.95);
-    assert_eq!(refs[0].target_path.as_deref(), Some("app/x.go"));
-    assert_eq!(refs[0].source_symbol.as_deref(), Some("UseShared"));
+    assert_unique_resolved_at(&refs, 0.95, "app/x.go", "UseShared");
 }
 
 #[test]
@@ -54,10 +48,7 @@ fn tier3_import_qualifier_disambiguates_at_0_9() {
         ),
     ]);
     let refs = call_refs_to(&fx.repo, "QFn");
-    assert_eq!(refs.len(), 1, "{refs:?}");
-    assert_eq!(refs[0].confidence, 0.9);
-    assert_eq!(refs[0].target_path.as_deref(), Some("util/q.go"));
-    assert_eq!(refs[0].source_symbol.as_deref(), Some("M"));
+    assert_unique_resolved_at(&refs, 0.9, "util/q.go", "M");
 }
 
 #[test]
@@ -72,9 +63,7 @@ fn tier3_python_import_qualifier() {
         ),
     ]);
     let refs = call_refs_to(&fx.repo, "pfn");
-    assert_eq!(refs.len(), 1, "{refs:?}");
-    assert_eq!(refs[0].confidence, 0.9);
-    assert_eq!(refs[0].target_path.as_deref(), Some("util.py"));
+    assert_unique_resolved(&refs, 0.9, "util.py");
 }
 
 #[test]
@@ -90,9 +79,7 @@ fn tier4_global_unique_resolves_at_0_8() {
         ),
     ]);
     let refs = call_refs_to(&fx.repo, "OnlyOnce");
-    assert_eq!(refs.len(), 1, "{refs:?}");
-    assert_eq!(refs[0].confidence, 0.8);
-    assert_eq!(refs[0].target_path.as_deref(), Some("uniq/u.go"));
+    assert_unique_resolved(&refs, 0.8, "uniq/u.go");
 }
 
 #[test]
