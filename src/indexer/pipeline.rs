@@ -555,6 +555,39 @@ impl IndexPipeline {
              AND f.path NOT LIKE 'tutorials/%' \
              AND f.path NOT LIKE '%/tutorials/%'";
 
+        // JS/TS built-in name filter applied to L4 (global-unique) and L5
+        // (ambiguous global) candidate resolution (B4).
+        //
+        // hono dogfood (2026-06-17): `Set` (a unique interface in
+        // src/context.ts) was being linked to from 17 unrelated files
+        // because L4/L5 saw `new Set()` and `map.has(...)` invocations in
+        // those files and matched them globally to the user's `Set`
+        // interface. JS prototypes are not in our symbols table — the
+        // resolver has no way to know `Set` resolves to a runtime built-in
+        // unless we tell it. So we tell it.
+        //
+        // The filter only fires for ts-family SOURCE files (where the
+        // ambient `Set`/`Map`/etc. exist). A Rust file calling a method on
+        // its own `Set` struct must NOT be filtered. Empty target-name
+        // shouldn't reach here, but the WHERE clause is safe under empty.
+        //
+        // V1 keeps the list ts-only: the bug is real on hono; Go/Rust/Python
+        // don't have this exact shape in dogfood evidence. Future
+        // languages with ambient prototypes (Java's String, C# system
+        // types) can be added by extending JS_TS_BUILTIN_NAMES and the
+        // family guard.
+        //
+        // Names sourced from MDN's JavaScript built-in objects index —
+        // restricted to the high-confusion subset where a user-defined
+        // class with the same name is plausible.
+        const TS_BUILTIN_GUARD: &str = "NOT (\
+             (SELECT lang_family FROM files WHERE id = refs.source_file_id) = 'ts' \
+             AND refs.target_name IN (\
+                'Set', 'Map', 'WeakSet', 'WeakMap', 'Promise', 'Error', 'Date', 'RegExp', \
+                'Array', 'Object', 'Number', 'String', 'Boolean', 'Symbol', 'Function', \
+                'BigInt', 'ArrayBuffer', 'Iterator', 'AsyncIterator'\
+             ))";
+
         // Level 0: Receiver-type match (confidence = 0.95).
         // The call site knows its receiver's static type (x.M() where x: T,
         // inferred lite from receivers/params/local literals) and exactly one
@@ -739,7 +772,8 @@ impl IndexPipeline {
         // modules needing `use`), so dir proximity is weak evidence there:
         // measured 76% on ripgrep vs 98% on gin (Go dirs ARE packages).
         let l2 = conn.execute(
-            "UPDATE refs SET
+            &format!(
+                "UPDATE refs SET
                  target_file_id = (SELECT s.file_id FROM symbols s
                      JOIN files f ON s.file_id = f.id
                      WHERE s.name = refs.target_name
@@ -757,6 +791,7 @@ impl IndexPipeline {
                  confidence = 0.95
              WHERE confidence = 0.0 AND kind NOT IN ('import', 'import_binding')
                AND receiver_type IS NULL
+               AND {TS_BUILTIN_GUARD}
                AND (target_qualifier IS NULL
                     OR COALESCE((SELECT language FROM files
                         WHERE id = refs.source_file_id), '') != 'rust')
@@ -764,7 +799,8 @@ impl IndexPipeline {
                    WHERE s.name = refs.target_name
                      AND f.dir = (SELECT dir FROM files WHERE id = refs.source_file_id)
                      AND s.file_id != refs.source_file_id
-                     AND f.lang_family = (SELECT lang_family FROM files WHERE id = refs.source_file_id)) = 1",
+                     AND f.lang_family = (SELECT lang_family FROM files WHERE id = refs.source_file_id)) = 1"
+            ),
             [],
         )?;
 
@@ -850,6 +886,7 @@ impl IndexPipeline {
                  confidence = 0.8
              WHERE confidence = 0.0 AND kind NOT IN ('import', 'import_binding')
                AND receiver_type IS NULL
+               AND {TS_BUILTIN_GUARD}
                AND (SELECT COUNT(DISTINCT s.file_id) FROM symbols s JOIN files f ON s.file_id = f.id
                    WHERE s.name = refs.target_name
                      AND f.lang_family = (SELECT lang_family FROM files WHERE id = refs.source_file_id)
@@ -922,6 +959,7 @@ impl IndexPipeline {
                      LIMIT 1),
                  confidence = 0.6
              WHERE confidence = 0.0 AND kind NOT IN ('import', 'import_binding')
+               AND {TS_BUILTIN_GUARD}
                AND EXISTS (SELECT 1 FROM symbols s JOIN files f ON s.file_id = f.id
                    WHERE s.name = refs.target_name
                      AND f.dir = (SELECT dir FROM files WHERE id = refs.source_file_id)
@@ -963,6 +1001,7 @@ impl IndexPipeline {
                      LIMIT 1),
                  confidence = 0.5
              WHERE confidence = 0.0 AND kind NOT IN ('import', 'import_binding')
+               AND {TS_BUILTIN_GUARD}
                AND EXISTS (SELECT 1 FROM symbols s JOIN files f ON s.file_id = f.id
                    WHERE s.name = refs.target_name
                      AND f.lang_family = (SELECT lang_family FROM files WHERE id = refs.source_file_id)
