@@ -13,8 +13,15 @@ EVAL_DIR="$(cd "$(dirname "$0")" && pwd)"
 LOCAL_BIN="${HOME}/.local/bin"
 mkdir -p "$LOCAL_BIN"
 
-SCIP_VERSION="v0.8.1"
-SCIP_CLANG_VERSION="v0.3.2"
+# Pinned SCIP indexer versions. Eval ground truth in RESULTS.md is reproducible
+# against these specific versions; bumping any of them requires re-running eval
+# and updating RESULTS.md in the same commit. See eval/README.md "Reproducibility".
+SCIP_VERSION="v0.8.1"               # sourcegraph/scip CLI
+SCIP_CLANG_VERSION="v0.3.2"         # sourcegraph/scip-clang
+SCIP_GO_VERSION="v0.2.7"            # sourcegraph/scip-go (go install @vX.Y.Z)
+SCIP_TS_VERSION="0.4.0"             # @sourcegraph/scip-typescript (npm @X.Y.Z)
+SCIP_PYTHON_VERSION="0.6.6"         # @sourcegraph/scip-python (npm @X.Y.Z)
+# rust-analyzer: pinned via rustup toolchain — leave as rustup component.
 
 ARCH="$(uname -m)"
 OS="$(uname -s)"
@@ -132,8 +139,8 @@ install_scip_go() {
     STATUS[scip-go]="skipped:no-go"
     return 0
   fi
-  note "go install scip-go"
-  if go install github.com/sourcegraph/scip-go/cmd/scip-go@latest; then
+  note "go install scip-go ${SCIP_GO_VERSION}"
+  if go install "github.com/sourcegraph/scip-go/cmd/scip-go@${SCIP_GO_VERSION}"; then
     STATUS[scip-go]="ok"
   else
     warn "scip-go: go install failed"
@@ -157,8 +164,8 @@ install_scip_ts() {
     fi
   fi
   maybe_redirect_npm_prefix
-  note "npm install -g @sourcegraph/scip-typescript"
-  if npm install -g @sourcegraph/scip-typescript >&2; then
+  note "npm install -g @sourcegraph/scip-typescript@${SCIP_TS_VERSION}"
+  if npm install -g "@sourcegraph/scip-typescript@${SCIP_TS_VERSION}" >&2; then
     STATUS[scip-typescript]="ok"
   else
     warn "scip-typescript: npm install failed"
@@ -173,8 +180,8 @@ install_scip_python() {
     return 0
   fi
   maybe_redirect_npm_prefix
-  note "npm install -g @sourcegraph/scip-python"
-  if npm install -g @sourcegraph/scip-python >&2; then
+  note "npm install -g @sourcegraph/scip-python@${SCIP_PYTHON_VERSION}"
+  if npm install -g "@sourcegraph/scip-python@${SCIP_PYTHON_VERSION}" >&2; then
     STATUS[scip-python]="ok"
   else
     warn "scip-python: npm install failed"

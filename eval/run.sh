@@ -14,6 +14,26 @@ EVAL_DIR="$(cd "$(dirname "$0")" && pwd)"
 CORPUS="$EVAL_DIR/corpus"
 mkdir -p "$CORPUS"
 
+# ── Version sanity guard ───────────────────────────────────────────────────
+# Log every indexer's --version to stderr so future eval runs document what
+# they actually ran against. SCIP indexers move silently (a scip-python
+# bump between v0.3.6 and v0.4.0 added 16 truth pairs to click, shifting the
+# baseline 98.7/94.6 → 97.9/93.0 with zero abyss code change). We never
+# error on mismatch here — pins live in eval/setup-indexers.sh; this is
+# just the audit trail.
+echo "--- indexer versions (audit trail; pins in setup-indexers.sh)" >&2
+for tool in scip scip-go scip-typescript scip-python rust-analyzer scip-clang; do
+  if command -v "$tool" >/dev/null 2>&1; then
+    # scip-go's --version writes to stdout w/o newline; others vary. Trim
+    # to first line so multi-line banners don't pollute the log.
+    ver="$("$tool" --version 2>&1 | head -1 | tr -d '\r' || true)"
+    printf '    %-18s %s\n' "$tool" "${ver:-(no --version output)}" >&2
+  else
+    printf '    %-18s (not on PATH)\n' "$tool" >&2
+  fi
+done
+echo >&2
+
 # repo|clone-url|pinned-ref|indexer
 REPOS=(
   "gin|https://github.com/gin-gonic/gin.git|v1.10.0|scip-go"
