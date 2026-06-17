@@ -595,15 +595,28 @@ mod tests {
     }
 
     #[test]
-    fn modules_cycle_is_one_community() {
+    fn modules_cycle_is_one_community_classic_gamma() {
+        // A 3-node cycle under classic Louvain (γ=1.0) collapses to one
+        // community — every node strictly increases modularity by joining
+        // its only neighbor's group.
+        //
+        // Default gamma was bumped to 1.5 for finer real-world clustering,
+        // but the classic-mode contract still holds and the test pins it.
         let (_d, repo, _) = synthetic_repo(
             &["a.rs", "b.rs", "c.rs"],
             &[(0, 1, 1.0), (1, 2, 1.0), (2, 0, 1.0)],
         );
         let g = build_arch_graph(&repo).unwrap();
-        let m = compute_modules(&g);
+        let m = compute_modules_with(
+            &g,
+            LouvainParams {
+                gamma: 1.0,
+                max_iterations: 30,
+                multi_level: false,
+            },
+        );
         let unique: HashSet<_> = m.module_id.values().collect();
-        assert_eq!(unique.len(), 1, "cycle should be one community");
+        assert_eq!(unique.len(), 1, "cycle should be one community at γ=1");
     }
 
     #[test]
