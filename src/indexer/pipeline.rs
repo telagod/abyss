@@ -1068,15 +1068,30 @@ impl IndexPipeline {
             }
         }
 
-        // Unresolved Python typed-receiver calls.
+        // Path index per file_id — used by the L0e nearest-file tiebreak.
+        // Django dogfood (2026-06-17): `DatabaseSchemaEditor` is defined in
+        // 4 sibling backend dirs (oracle/mysql/sqlite3/postgresql). Pre-B2
+        // the L0e walker visited `class_files.get("DatabaseSchemaEditor")`
+        // in SQL row order — postgresql usually won — so a self.execute()
+        // call inside oracle/ resolved to postgresql/schema.py. The fix:
+        // sort candidate start files by path distance to the source.
+        let id_to_path: HashMap<i64, String> = {
+            let mut stmt = conn.prepare("SELECT id, path FROM files")?;
+            let rows = stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))?;
+            rows.collect::<std::result::Result<_, _>>()?
+        };
+
+        // Unresolved Python typed-receiver calls, with source path so we can
+        // tiebreak ambiguous start classes by nearest file (B2).
         struct Pending {
             ref_id: i64,
+            source_path: String,
             receiver_type: String,
             target_name: String,
         }
         let pending: Vec<Pending> = {
             let mut stmt = conn.prepare(
-                "SELECT r.id, r.receiver_type, r.target_name
+                "SELECT r.id, f.path, r.receiver_type, r.target_name
                  FROM refs r
                  JOIN files f ON r.source_file_id = f.id
                  WHERE r.confidence = 0.0
@@ -1087,8 +1102,9 @@ impl IndexPipeline {
             let rows = stmt.query_map([], |r| {
                 Ok(Pending {
                     ref_id: r.get::<_, i64>(0)?,
-                    receiver_type: r.get::<_, String>(1)?,
-                    target_name: r.get::<_, String>(2)?,
+                    source_path: r.get::<_, String>(1)?,
+                    receiver_type: r.get::<_, String>(2)?,
+                    target_name: r.get::<_, String>(3)?,
                 })
             })?;
             rows.collect::<std::result::Result<_, _>>()?
@@ -1100,52 +1116,78 @@ impl IndexPipeline {
         // DFS the inheritance chain from `start_class` until a base file owns
         // `method_name`. Returns (file_id, symbol_id). 6-hop cap is generous
         // for real Python (most chains are 2-3).
+        //
+        // B2: when `start_class` is defined in multiple files (Django's
+        // 4-backend `DatabaseSchemaEditor` shape), visit candidates sorted
+        // by path distance to `source_path` — the nearest-file definition is
+        // overwhelmingly the right answer. When multiple base files also
+        // collide (rare — usually bases are shared), same tiebreak applies.
         const MAX_DEPTH: usize = 6;
-        let walk = |start_class: &str, method_name: &str| -> Option<(i64, i64)> {
-            let starts = class_files.get(start_class)?;
-            // Each defining file of the start class anchors its own DFS;
-            // we visit each anchor's chain independently. Visited tracks
-            // (file_id, class_name) to bound work in the multi-base case.
-            let mut visited: std::collections::HashSet<(i64, String)> =
-                std::collections::HashSet::new();
-            for &start_fid in starts {
-                // Stack entries: (file_id_of_class_decl, class_name, depth).
-                // We always skip the start class itself (L0/L0c/L0d already
-                // tried it and failed) — only its bases count.
-                let mut stack: Vec<(i64, String, usize)> = Vec::new();
-                if let Some(bases) = bases_of.get(&(start_fid, start_class.to_string())) {
-                    for base in bases.iter().rev() {
-                        stack.push((start_fid, base.clone(), 1));
+        let walk =
+            |start_class: &str, method_name: &str, source_path: &str| -> Option<(i64, i64)> {
+                let starts = class_files.get(start_class)?;
+                // Sort start candidates by path distance — closest first.
+                // Distance is "differing-segment count" via common-prefix length:
+                //   src=a/b/c.py, target=a/b/d.py  → common=2, dist=1+1=2
+                //   src=a/b/c.py, target=x/y/z.py  → common=0, dist=3+3=6
+                // Ties break on shorter target path (siblings beat deeper).
+                let mut starts_sorted: Vec<i64> = starts.clone();
+                starts_sorted.sort_by_key(|&fid| {
+                    let p = id_to_path.get(&fid).map(String::as_str).unwrap_or("");
+                    (path_distance(source_path, p), p.len())
+                });
+
+                // Visited tracks (file_id, class_name) to bound work in the
+                // multi-base case across all anchor walks.
+                let mut visited: std::collections::HashSet<(i64, String)> =
+                    std::collections::HashSet::new();
+                for start_fid in starts_sorted {
+                    // Stack entries: (file_id_of_class_decl, class_name, depth).
+                    // We always skip the start class itself (L0/L0c/L0d already
+                    // tried it and failed) — only its bases count.
+                    let mut stack: Vec<(i64, String, usize)> = Vec::new();
+                    if let Some(bases) = bases_of.get(&(start_fid, start_class.to_string())) {
+                        for base in bases.iter().rev() {
+                            stack.push((start_fid, base.clone(), 1));
+                        }
                     }
-                }
-                while let Some((_, base_name, depth)) = stack.pop() {
-                    if depth > MAX_DEPTH {
-                        continue;
-                    }
-                    let base_files = match class_files.get(&base_name) {
-                        Some(v) => v,
-                        None => continue,
-                    };
-                    for &base_fid in base_files {
-                        if !visited.insert((base_fid, base_name.clone())) {
+                    while let Some((_, base_name, depth)) = stack.pop() {
+                        if depth > MAX_DEPTH {
                             continue;
                         }
-                        if let Some(&sid) = symbol_in_file.get(&(base_fid, method_name.to_string()))
-                        {
-                            return Some((base_fid, sid));
-                        }
-                        // Recurse into THIS base's bases (left-to-right →
-                        // pushed reversed so the leftmost is popped first).
-                        if let Some(deeper) = bases_of.get(&(base_fid, base_name.clone())) {
-                            for b in deeper.iter().rev() {
-                                stack.push((base_fid, b.clone(), depth + 1));
+                        let base_files = match class_files.get(&base_name) {
+                            Some(v) => v,
+                            None => continue,
+                        };
+                        // Same tiebreak for base candidates — apply nearest-first
+                        // ordering so a sibling-named base resolves to the
+                        // nearest copy.
+                        let mut base_sorted: Vec<i64> = base_files.clone();
+                        base_sorted.sort_by_key(|&fid| {
+                            let p = id_to_path.get(&fid).map(String::as_str).unwrap_or("");
+                            (path_distance(source_path, p), p.len())
+                        });
+                        for base_fid in base_sorted {
+                            if !visited.insert((base_fid, base_name.clone())) {
+                                continue;
+                            }
+                            if let Some(&sid) =
+                                symbol_in_file.get(&(base_fid, method_name.to_string()))
+                            {
+                                return Some((base_fid, sid));
+                            }
+                            // Recurse into THIS base's bases (left-to-right →
+                            // pushed reversed so the leftmost is popped first).
+                            if let Some(deeper) = bases_of.get(&(base_fid, base_name.clone())) {
+                                for b in deeper.iter().rev() {
+                                    stack.push((base_fid, b.clone(), depth + 1));
+                                }
                             }
                         }
                     }
                 }
-            }
-            None
-        };
+                None
+            };
 
         let mut resolved = 0usize;
         let tx = conn.unchecked_transaction()?;
@@ -1155,7 +1197,7 @@ impl IndexPipeline {
                  WHERE id = ?3 AND confidence = 0.0",
             )?;
             for p in &pending {
-                if let Some((fid, sid)) = walk(&p.receiver_type, &p.target_name) {
+                if let Some((fid, sid)) = walk(&p.receiver_type, &p.target_name, &p.source_path) {
                     let n = update.execute(rusqlite::params![fid, sid, p.ref_id])?;
                     resolved += n;
                 }
@@ -1375,6 +1417,30 @@ pub struct EmbedStats {
     pub embedded: u64,
     pub skipped: u64,
     pub duration_ms: u64,
+}
+
+/// Path distance between two forward-slash-normalized repo-relative paths,
+/// measured in differing directory segments via common-prefix length:
+///
+///   src=a/b/c.py, target=a/b/d.py  → common=2, dist=1+1=2 (sibling files)
+///   src=a/b/c.py, target=a/x/d.py  → common=1, dist=2+2=4 (cousin)
+///   src=a/b/c.py, target=x/y/z.py  → common=0, dist=3+3=6 (unrelated)
+///
+/// Used by the L0e tier (Python MRO walker) to disambiguate sibling-named
+/// classes — Django backends have 4 `DatabaseSchemaEditor` definitions in
+/// sibling dirs, and the dogfood-correct answer is "the one in the same
+/// directory as the caller". Distance is intentionally symmetric: it
+/// expresses "how many path edits to get from src to target", which is
+/// the right metric for "are these in the same package?".
+pub(crate) fn path_distance(src: &str, target: &str) -> usize {
+    let src_segs: Vec<&str> = src.split('/').collect();
+    let tgt_segs: Vec<&str> = target.split('/').collect();
+    let common = src_segs
+        .iter()
+        .zip(tgt_segs.iter())
+        .take_while(|(a, b)| a == b)
+        .count();
+    src_segs.len() + tgt_segs.len() - 2 * common
 }
 
 /// Collapse `.` / `..` segments in a repo-relative path (no filesystem).
@@ -1627,4 +1693,54 @@ fn resolve_module_file(base: &str, paths: &std::collections::HashMap<String, i64
         }
     }
     None
+}
+
+#[cfg(test)]
+mod path_distance_tests {
+    //! Pins the L0e tiebreak metric (B2). The dogfood-correct shape:
+    //! sibling files are nearest; same-directory wins over cross-directory;
+    //! unrelated paths are farthest. Used by `resolve_python_mro` to pick
+    //! the right `DatabaseSchemaEditor` definition when 4 sibling backends
+    //! declare the same class name.
+    use super::path_distance;
+
+    #[test]
+    fn same_file_distance_is_zero() {
+        assert_eq!(path_distance("oracle/schema.py", "oracle/schema.py"), 0);
+    }
+
+    #[test]
+    fn sibling_files_in_same_dir_are_nearest() {
+        // oracle/feature.py vs oracle/schema.py → common=oracle, dist=1+1=2.
+        let d = path_distance("oracle/feature.py", "oracle/schema.py");
+        assert_eq!(d, 2, "sibling-in-same-dir should be distance 2");
+    }
+
+    #[test]
+    fn nearest_sibling_beats_far_sibling() {
+        // The Django shape: caller in oracle/ choosing between oracle/ and
+        // postgresql/ definitions. Nearest must win.
+        let oracle = path_distance("oracle/feature.py", "oracle/schema.py");
+        let postgres = path_distance("oracle/feature.py", "postgresql/schema.py");
+        assert!(
+            oracle < postgres,
+            "oracle/schema.py ({oracle}) must be closer to oracle/feature.py than postgresql/schema.py ({postgres})"
+        );
+    }
+
+    #[test]
+    fn unrelated_paths_are_farthest() {
+        let near = path_distance("a/b/c.py", "a/b/d.py");
+        let far = path_distance("a/b/c.py", "x/y/z.py");
+        assert!(near < far);
+    }
+
+    #[test]
+    fn deeper_nesting_costs_more() {
+        // a/b/c.py vs a/d.py → common=1 (a), dist=2+1=3
+        // a/b/c.py vs a/b/d.py → common=2, dist=1+1=2
+        let deeper = path_distance("a/b/c.py", "a/d.py");
+        let sibling = path_distance("a/b/c.py", "a/b/d.py");
+        assert!(sibling < deeper);
+    }
 }

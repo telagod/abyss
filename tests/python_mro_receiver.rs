@@ -96,6 +96,91 @@ fn unknown_method_stays_unresolved() {
 }
 
 #[test]
+fn sibling_class_name_collision_picks_nearest_file() {
+    // Django dogfood (2026-06-17): `DatabaseSchemaEditor` is defined in 4
+    // sibling backend dirs (oracle/mysql/sqlite3/postgresql). Pre-B2, L0e
+    // walked `class_files` in SQL row order — postgresql usually won — and
+    // a `self.execute()` call inside `oracle/feature.py` resolved to
+    // `postgresql/schema.py`. Wrong file, agent off chasing the wrong
+    // implementation.
+    //
+    // The fix sorts L0e candidates by path-segment distance to the source:
+    // a caller in `oracle/` finds the `oracle/` definition first; same
+    // for mysql / postgresql callers. Symmetric and dogfood-correct.
+    //
+    // Each backend defines its own `DatabaseSchemaEditor(Base)` where Base
+    // (`BaseSchemaEditor`) is the shared parent that owns `execute()`. So
+    // a self.execute() call MUST land on base.py — and crucially the walk
+    // must START from the SAME backend's DatabaseSchemaEditor, not a
+    // sibling's.
+    //
+    // We assert via the caller_path / source_symbol pair: the walker
+    // produces ONE resolved ref per call site, all landing on base.py.
+    // The dogfood-broken behaviour was visible because the walker would
+    // resolve via the wrong sibling — but with shared base.py here both
+    // wrong and right pick base.py. So we add a per-backend method that
+    // is ONLY defined on the local backend's Base, so the walk must
+    // anchor on the right backend.
+    let fx = index_fixture(&[
+        (
+            "base.py",
+            "class BaseSchemaEditor:\n    def execute(self):\n        return 'base'\n",
+        ),
+        // Oracle backend: its own BaseSchemaEditor mixin defines a method
+        // not on the shared BaseSchemaEditor. Anchoring on oracle's
+        // DatabaseSchemaEditor walks oracle's chain; mis-anchoring on
+        // postgresql's would miss it.
+        (
+            "oracle/base.py",
+            "from base import BaseSchemaEditor\n\nclass OracleMixin(BaseSchemaEditor):\n    def oracle_only(self):\n        return 'oracle'\n",
+        ),
+        (
+            "oracle/schema.py",
+            "from oracle.base import OracleMixin\n\nclass DatabaseSchemaEditor(OracleMixin):\n    pass\n",
+        ),
+        (
+            "oracle/feature.py",
+            "from oracle.schema import DatabaseSchemaEditor\n\ndef run():\n    s: DatabaseSchemaEditor = DatabaseSchemaEditor()\n    return s.oracle_only()\n",
+        ),
+        // postgresql sibling — same class name DatabaseSchemaEditor with
+        // its OWN parallel parent that does NOT have `oracle_only`. If the
+        // walker picks the postgresql start_fid for an oracle caller, the
+        // walk misses oracle_only and we either get an unresolved ref or
+        // a different file. The test asserts the right file.
+        (
+            "postgresql/base.py",
+            "from base import BaseSchemaEditor\n\nclass PostgresMixin(BaseSchemaEditor):\n    def pg_only(self):\n        return 'pg'\n",
+        ),
+        (
+            "postgresql/schema.py",
+            "from postgresql.base import PostgresMixin\n\nclass DatabaseSchemaEditor(PostgresMixin):\n    pass\n",
+        ),
+        (
+            "mysql/base.py",
+            "from base import BaseSchemaEditor\n\nclass MysqlMixin(BaseSchemaEditor):\n    def mysql_only(self):\n        return 'mysql'\n",
+        ),
+        (
+            "mysql/schema.py",
+            "from mysql.base import MysqlMixin\n\nclass DatabaseSchemaEditor(MysqlMixin):\n    pass\n",
+        ),
+    ]);
+
+    // oracle_only is defined only on oracle/base.py:OracleMixin. If the
+    // walker picked postgresql's DatabaseSchemaEditor for the oracle
+    // caller, the walk would never see OracleMixin and the ref would
+    // either go unresolved or land somewhere wrong. With B2 the nearest-
+    // file ordering forces the oracle-anchored walk; ref resolves to
+    // oracle/base.py at 0.95.
+    let refs: Vec<_> = call_refs_to(&fx.repo, "oracle_only")
+        .into_iter()
+        .filter(|r| r.source_path == "oracle/feature.py")
+        .collect();
+    assert_eq!(refs.len(), 1, "{refs:?}");
+    assert_eq!(refs[0].confidence, 0.95);
+    assert_eq!(refs[0].target_path.as_deref(), Some("oracle/base.py"));
+}
+
+#[test]
 fn multi_base_picks_left_first() {
     // C(A, B) where both A and B exist. Each base contributes a distinct
     // method — m on A, m_b on B. C().m() lands on a.py, C().m_b() lands on
