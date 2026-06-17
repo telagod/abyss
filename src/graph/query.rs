@@ -17,6 +17,12 @@ pub struct CallerInfo {
     pub depth: u32,
     pub confidence: f64,
     pub is_test: bool,
+    /// Ref kind from the underlying edge: `call`, `field_access`, or `type_ref`.
+    /// Surfaces use it to suffix mixed listings with `(call, 95%)` vs
+    /// `(type, 95%)`. Defaults to "call" when produced from legacy paths that
+    /// pre-date the kind expansion (callers of `find_callers` etc.).
+    #[serde(default)]
+    pub kind: String,
 }
 
 /// `find_callers_filtered` returns both the surfaced caller list and the count
@@ -27,6 +33,30 @@ pub struct CallerInfo {
 pub struct CallersResult {
     pub callers: Vec<CallerInfo>,
     pub excluded_tests: usize,
+}
+
+/// Which `refs.kind` edges count as "callers". Default is `Both` because for
+/// an agent asking "who depends on X" a type-position user is just as
+/// load-bearing as an invocation site.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CallerKindFilter {
+    /// Invocation edges: `call` + `field_access`. Legacy behaviour.
+    CallsOnly,
+    /// Type-position edges only: `type_ref`. Useful for "who annotates with
+    /// this type / extends this interface".
+    TypesOnly,
+    /// Both invocation and type-position edges. The agent-facing default.
+    Both,
+}
+
+impl CallerKindFilter {
+    pub fn as_slice(self) -> &'static [&'static str] {
+        match self {
+            CallerKindFilter::CallsOnly => &["call", "field_access"],
+            CallerKindFilter::TypesOnly => &["type_ref"],
+            CallerKindFilter::Both => &["call", "field_access", "type_ref"],
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -50,6 +80,11 @@ impl<'a> GraphQuery<'a> {
     /// to see everything. Returns *all* callers (prod + test) — agent surfaces
     /// should prefer [`Self::find_callers_filtered`], which exposes the test
     /// exclusion knob so unfamiliar codebases get prod call sites by default.
+    ///
+    /// Kind contract: returns BOTH invocation edges (`call`, `field_access`)
+    /// AND type-position edges (`type_ref`). On TS/Rust, exported types are
+    /// used in annotations far more than they're directly constructed; a
+    /// caller list that hides type users mislabels them as "no users".
     pub fn find_callers(
         &self,
         symbol_name: &str,
@@ -57,7 +92,13 @@ impl<'a> GraphQuery<'a> {
         min_confidence: f64,
     ) -> Result<Vec<CallerInfo>> {
         Ok(self
-            .find_callers_filtered(symbol_name, limit, min_confidence, true)?
+            .find_callers_filtered_kinds(
+                symbol_name,
+                limit,
+                min_confidence,
+                true,
+                CallerKindFilter::Both,
+            )?
             .callers)
     }
 
@@ -66,12 +107,34 @@ impl<'a> GraphQuery<'a> {
     /// [`Repository::is_test_file`] are removed from the returned list and
     /// counted in `excluded_tests` so the surface can render the
     /// "(N tests excluded — use --include-tests to see all)" hint.
+    ///
+    /// Default kind filter is [`CallerKindFilter::Both`] — see [`Self::find_callers`].
     pub fn find_callers_filtered(
         &self,
         symbol_name: &str,
         limit: usize,
         min_confidence: f64,
         include_tests: bool,
+    ) -> Result<CallersResult> {
+        self.find_callers_filtered_kinds(
+            symbol_name,
+            limit,
+            min_confidence,
+            include_tests,
+            CallerKindFilter::Both,
+        )
+    }
+
+    /// Full variant: same as [`Self::find_callers_filtered`] but takes a
+    /// [`CallerKindFilter`] so the surface can restrict to call-only or
+    /// type-only via `--calls-only` / `--types-only` flags.
+    pub fn find_callers_filtered_kinds(
+        &self,
+        symbol_name: &str,
+        limit: usize,
+        min_confidence: f64,
+        include_tests: bool,
+        kind_filter: CallerKindFilter,
     ) -> Result<CallersResult> {
         // Fetch a larger pool when filtering tests so the surfaced prod-only
         // list can still reach `limit`. Bounded so a pathological query can't
@@ -82,7 +145,10 @@ impl<'a> GraphQuery<'a> {
         } else {
             (limit.saturating_mul(4)).max(limit + 16)
         };
-        let refs = self.repo.find_callers_of(symbol_name, None, fetch_limit)?;
+        let kinds = kind_filter.as_slice();
+        let refs = self
+            .repo
+            .find_callers_of_kinds(symbol_name, None, kinds, fetch_limit)?;
         let mut callers = Vec::new();
         let mut excluded_tests = 0usize;
         for r in refs {
@@ -108,6 +174,7 @@ impl<'a> GraphQuery<'a> {
                 depth: 0,
                 confidence: r.confidence,
                 is_test,
+                kind: r.kind,
             });
         }
         Ok(CallersResult {
@@ -157,6 +224,7 @@ impl<'a> GraphQuery<'a> {
                 depth: 0,
                 confidence: r.confidence,
                 is_test,
+                kind: r.kind.clone(),
             };
             if is_test {
                 tests.push(caller);
@@ -194,6 +262,7 @@ impl<'a> GraphQuery<'a> {
                     depth,
                     confidence: r.confidence,
                     is_test,
+                    kind: r.kind.clone(),
                 };
 
                 if is_test {

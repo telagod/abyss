@@ -67,7 +67,12 @@ enum Commands {
         #[arg(short, long, default_value = "10")]
         limit: usize,
     },
-    /// Find all callers of a symbol
+    /// Find all callers of a symbol.
+    ///
+    /// By default returns both invocation users (`call`/`field_access`) and
+    /// type-position users (`type_ref` — annotations, generics, extends).
+    /// Use `--calls-only` to recover the legacy invocation-only behaviour or
+    /// `--types-only` to focus on type users (e.g. for interface refactors).
     Callers {
         symbol: String,
         #[arg(short, long, default_value = "20")]
@@ -78,6 +83,14 @@ enum Commands {
         /// Include callers from test files (default: hide them so agents see prod call sites first)
         #[arg(long)]
         include_tests: bool,
+        /// Restrict to invocation edges (`call` + `field_access`). Mutually
+        /// exclusive with `--types-only`.
+        #[arg(long, conflicts_with = "types_only")]
+        calls_only: bool,
+        /// Restrict to type-position edges (`type_ref` — annotations,
+        /// generics, extends). Mutually exclusive with `--calls-only`.
+        #[arg(long, conflicts_with = "calls_only")]
+        types_only: bool,
     },
     /// Analyze blast radius of changing a symbol
     Impact {
@@ -210,7 +223,18 @@ fn main() -> Result<()> {
             limit,
             min_confidence,
             include_tests,
-        } => cmd_callers(config, &symbol, limit, min_confidence, include_tests, json),
+            calls_only,
+            types_only,
+        } => cmd_callers(
+            config,
+            &symbol,
+            limit,
+            min_confidence,
+            include_tests,
+            calls_only,
+            types_only,
+            json,
+        ),
         Commands::Impact {
             symbol,
             depth,
@@ -392,17 +416,28 @@ fn cmd_search(config: Config, query: &str, limit: usize, json: bool) -> Result<(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn cmd_callers(
     config: Config,
     symbol: &str,
     limit: usize,
     min_confidence: f64,
     include_tests: bool,
+    calls_only: bool,
+    types_only: bool,
     json: bool,
 ) -> Result<()> {
+    use code_abyss::graph::CallerKindFilter;
     let repo = Repository::open(&config.db_path, config.model.dimensions)?;
     let gq = code_abyss::graph::GraphQuery::new(&repo);
-    let result = gq.find_callers_filtered(symbol, limit, min_confidence, include_tests)?;
+    let kind_filter = match (calls_only, types_only) {
+        (true, false) => CallerKindFilter::CallsOnly,
+        (false, true) => CallerKindFilter::TypesOnly,
+        _ => CallerKindFilter::Both,
+    };
+    let restricted = calls_only || types_only;
+    let result =
+        gq.find_callers_filtered_kinds(symbol, limit, min_confidence, include_tests, kind_filter)?;
 
     if json {
         println!("{}", serde_json::to_string(&result)?);
@@ -425,19 +460,41 @@ fn cmd_callers(
             format!("callers of '{symbol}' ({} prod):\n", result.callers.len())
         };
         println!("{header}");
+        // When the user did not restrict via a flag, the list may mix call
+        // and type_ref edges. Suffix each row with the edge kind so the agent
+        // can tell "X() invokes this" from "X uses this in a type position"
+        // without re-querying. When restricted, the kind is implicit — keep
+        // the legacy compact format.
         for (i, c) in result.callers.iter().enumerate() {
             let t = if c.is_test { " [test]" } else { "" };
+            let kind_suffix = if restricted {
+                String::new()
+            } else {
+                format!(", {}", short_kind(&c.kind))
+            };
             println!(
-                "  {}. {}:{} → {}(){t}  ({:.0}%)",
+                "  {}. {}:{} → {}(){t}  ({:.0}%{kind_suffix})",
                 i + 1,
                 c.file_path,
                 c.line + 1,
                 c.symbol,
-                c.confidence * 100.0
+                c.confidence * 100.0,
             );
         }
     }
     Ok(())
+}
+
+/// Short edge-kind label for the mixed callers listing: `call`, `field`,
+/// `type`. Unknown kinds round-trip verbatim so a future edge type doesn't
+/// silently masquerade as `call`.
+fn short_kind(kind: &str) -> &str {
+    match kind {
+        "call" => "call",
+        "field_access" => "field",
+        "type_ref" => "type",
+        other => other,
+    }
 }
 
 fn cmd_impact(

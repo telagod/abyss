@@ -407,47 +407,59 @@ impl Repository {
         Ok(())
     }
 
+    /// Legacy caller lookup: `('call','field_access')` only. Used by
+    /// `impact_analysis` (BFS over invocations, not type positions).
+    ///
+    /// For agent-facing `callers` queries, prefer
+    /// [`Self::find_callers_of_kinds`] — type-position users (interface
+    /// implementers, generic instantiations, `extends` clauses) are real
+    /// dependencies and showing them by default matches what the agent means
+    /// by "who depends on this".
     pub fn find_callers_of(
         &self,
         target_name: &str,
         target_file_id: Option<i64>,
         limit: usize,
     ) -> Result<Vec<RefRecord>> {
-        let mut stmt = if let Some(fid) = target_file_id {
-            let mut s = self.conn.prepare(
-                "SELECT r.id, r.source_file_id, r.source_line, r.source_symbol,
-                        r.target_name, r.kind, r.confidence, f.path
-                 FROM refs r JOIN files f ON r.source_file_id = f.id
-                 WHERE r.target_name = ?1 AND (r.target_file_id = ?2 OR r.target_file_id IS NULL)
-                 AND r.kind IN ('call','field_access')
-                 ORDER BY r.confidence DESC LIMIT ?3",
-            )?;
-            return Ok(s
-                .query_map(params![target_name, fid, limit as i64], |row| {
-                    Ok(RefRecord {
-                        id: row.get(0)?,
-                        source_file_id: row.get(1)?,
-                        source_line: row.get(2)?,
-                        source_symbol: row.get(3)?,
-                        target_name: row.get(4)?,
-                        kind: row.get(5)?,
-                        confidence: row.get(6)?,
-                        source_file_path: row.get(7)?,
-                    })
-                })?
-                .filter_map(|r| r.ok())
-                .collect());
+        self.find_callers_of_kinds(
+            target_name,
+            target_file_id,
+            &["call", "field_access"],
+            limit,
+        )
+    }
+
+    /// Caller lookup with a caller-specified kind filter. `kinds` is the SQL
+    /// `IN (...)` set used for `refs.kind`.
+    ///
+    /// Empty `kinds` is treated as the legacy default
+    /// (`('call','field_access')`) so callers can't accidentally turn off
+    /// every filter and pull `import`/`import_binding` rows.
+    pub fn find_callers_of_kinds(
+        &self,
+        target_name: &str,
+        target_file_id: Option<i64>,
+        kinds: &[&str],
+        limit: usize,
+    ) -> Result<Vec<RefRecord>> {
+        let kinds: Vec<&str> = if kinds.is_empty() {
+            vec!["call", "field_access"]
         } else {
-            self.conn.prepare(
-                "SELECT r.id, r.source_file_id, r.source_line, r.source_symbol,
-                        r.target_name, r.kind, r.confidence, f.path
-                 FROM refs r JOIN files f ON r.source_file_id = f.id
-                 WHERE r.target_name = ?1
-                 AND r.kind IN ('call','field_access')
-                 ORDER BY r.confidence DESC LIMIT ?2",
-            )?
+            kinds.to_vec()
         };
-        let rows = stmt.query_map(params![target_name, limit as i64], |row| {
+        // Build the IN list inline. Kinds come from a closed set of static
+        // strings (CLI flag dispatch + MCP enum), so no untrusted input
+        // reaches the SQL builder — we can safely interpolate.
+        debug_assert!(
+            kinds
+                .iter()
+                .all(|k| k.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')),
+            "kinds must be SQL-safe ascii idents, got {kinds:?}"
+        );
+        let placeholders: Vec<String> = kinds.iter().map(|k| format!("'{k}'")).collect();
+        let kinds_sql = placeholders.join(",");
+
+        let map_row = |row: &rusqlite::Row<'_>| -> rusqlite::Result<RefRecord> {
             Ok(RefRecord {
                 id: row.get(0)?,
                 source_file_id: row.get(1)?,
@@ -458,7 +470,33 @@ impl Repository {
                 confidence: row.get(6)?,
                 source_file_path: row.get(7)?,
             })
-        })?;
+        };
+
+        if let Some(fid) = target_file_id {
+            let sql = format!(
+                "SELECT r.id, r.source_file_id, r.source_line, r.source_symbol,
+                        r.target_name, r.kind, r.confidence, f.path
+                 FROM refs r JOIN files f ON r.source_file_id = f.id
+                 WHERE r.target_name = ?1 AND (r.target_file_id = ?2 OR r.target_file_id IS NULL)
+                 AND r.kind IN ({kinds_sql})
+                 ORDER BY r.confidence DESC LIMIT ?3"
+            );
+            let mut s = self.conn.prepare(&sql)?;
+            return Ok(s
+                .query_map(params![target_name, fid, limit as i64], map_row)?
+                .filter_map(|r| r.ok())
+                .collect());
+        }
+        let sql = format!(
+            "SELECT r.id, r.source_file_id, r.source_line, r.source_symbol,
+                    r.target_name, r.kind, r.confidence, f.path
+             FROM refs r JOIN files f ON r.source_file_id = f.id
+             WHERE r.target_name = ?1
+             AND r.kind IN ({kinds_sql})
+             ORDER BY r.confidence DESC LIMIT ?2"
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        let rows = stmt.query_map(params![target_name, limit as i64], map_row)?;
         Ok(rows.filter_map(|r| r.ok()).collect())
     }
 
