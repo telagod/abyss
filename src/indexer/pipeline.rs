@@ -189,8 +189,18 @@ impl IndexPipeline {
         // The card's `where` line reads from arch_facts; populating it here
         // keeps the cost in the indexer (one transaction per pass) rather
         // than the hot read path of every hook invocation.
+        //
+        // Load user overrides (`.code-abyss/arch.toml`) from the configured
+        // workspace — not cwd — so the indexer behaves correctly when invoked
+        // from outside the project root (e.g. CI runners, MCP server with a
+        // pinned workspace).
         let arch_start = Instant::now();
-        let arch_facts = crate::arch::inference::infer_all(repo)?;
+        let arch_overrides = crate::arch::load_overrides(&self.config.workspace);
+        let arch_facts = crate::arch::inference::infer_all_with_overrides(
+            repo,
+            Some(&self.config.workspace),
+            arch_overrides.as_ref(),
+        )?;
         repo.replace_arch_facts(&arch_facts)?;
         let arch_modules = crate::arch::inference::collect_modules(&arch_facts);
         repo.replace_arch_modules(&arch_modules)?;

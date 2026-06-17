@@ -151,3 +151,166 @@ fn where_summary_returns_none_for_unindexed_file() {
     let result = code_abyss::context::where_summary(&fx.repo, "does_not_exist.go").unwrap();
     assert!(result.is_none());
 }
+
+// ── arch.toml user override ────────────────────────────────────────────────
+
+/// Spin up a tempdir, drop an arch.toml + source files into it, then run the
+/// full structural index so the pipeline picks up the override config from
+/// `config.workspace` (not cwd).
+fn index_fixture_with_override(files: &[(&str, &str)], arch_toml: &str) -> common::Fixture {
+    let dir = tempfile::tempdir().unwrap();
+    let workspace = dir.path();
+
+    // Write the override config FIRST so the pipeline sees it on its first
+    // pass.
+    let cfg_dir = workspace.join(".code-abyss");
+    std::fs::create_dir_all(&cfg_dir).unwrap();
+    std::fs::write(cfg_dir.join("arch.toml"), arch_toml).unwrap();
+
+    common::write_files(workspace, files);
+
+    let ws_canon = std::fs::canonicalize(workspace).unwrap();
+    let config = code_abyss::config::Config::new(&ws_canon);
+    let repo =
+        code_abyss::storage::Repository::open(&config.db_path, config.model.dimensions).unwrap();
+    let pipeline = code_abyss::indexer::IndexPipeline::new(config.clone());
+    pipeline.run_structural(&repo).unwrap();
+    common::Fixture {
+        _dir: dir,
+        repo,
+        config,
+    }
+}
+
+#[test]
+fn arch_toml_override_promotes_custom_segment_to_infra() {
+    // Without the override "graph" is just a directory name with no
+    // dictionary hit, so the layer would fall through to "unknown". With the
+    // override it should land in "infra".
+    let fx = index_fixture_with_override(
+        &[(
+            "src/graph/languages/go.rs",
+            r#"pub fn extract() -> u32 { 42 }
+"#,
+        )],
+        r#"
+[layers]
+graph = { layer = "infra", weight = 0.6 }
+"#,
+    );
+
+    let conn = fx.repo.conn();
+    let layer: String = conn
+        .query_row(
+            "SELECT af.layer
+             FROM arch_facts af JOIN files f ON f.id = af.file_id
+             WHERE f.path LIKE '%graph/languages/go.rs'",
+            [],
+            |r| r.get(0),
+        )
+        .expect("arch_facts row should exist");
+    assert_eq!(
+        layer, "infra",
+        "user override should flip graph/* into infra"
+    );
+}
+
+#[test]
+fn arch_toml_override_higher_weight_beats_default_dictionary() {
+    // "service" is now in the default dictionary as `domain` at weight 0.4.
+    // Override it to `infra` at weight 0.9 and verify the higher-weight rule
+    // wins the fusion.
+    let fx = index_fixture_with_override(
+        &[(
+            "src/service/billing.rs",
+            r#"pub fn charge() -> u32 { 1 }
+"#,
+        )],
+        r#"
+[layers]
+service = { layer = "infra", weight = 0.9 }
+"#,
+    );
+
+    let conn = fx.repo.conn();
+    let layer: String = conn
+        .query_row(
+            "SELECT af.layer
+             FROM arch_facts af JOIN files f ON f.id = af.file_id
+             WHERE f.path LIKE '%service/billing.rs'",
+            [],
+            |r| r.get(0),
+        )
+        .expect("arch_facts row should exist");
+    assert_eq!(
+        layer, "infra",
+        "higher-weight override should beat the default service→domain rule"
+    );
+}
+
+#[test]
+fn arch_toml_ignore_patterns_skip_file_entirely() {
+    let fx = index_fixture_with_override(
+        &[
+            ("src/main.rs", "fn main() {}\n"),
+            ("vendor/foo/bar.rs", "pub fn bar() {}\n"),
+        ],
+        r#"
+[ignore]
+patterns = ["^vendor/"]
+"#,
+    );
+
+    let conn = fx.repo.conn();
+    let vendor_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*)
+             FROM arch_facts af JOIN files f ON f.id = af.file_id
+             WHERE f.path LIKE '%vendor/foo/bar.rs'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        vendor_count, 0,
+        "vendor/ files should be skipped by [ignore].patterns"
+    );
+
+    // Sanity: non-ignored file still gets a row.
+    let main_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*)
+             FROM arch_facts af JOIN files f ON f.id = af.file_id
+             WHERE f.path LIKE '%src/main.rs'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(main_count, 1, "non-ignored files still get arch_facts");
+}
+
+#[test]
+fn arch_toml_absent_does_not_change_default_behavior() {
+    // Without arch.toml, a "graph" segment has no dictionary entry, so the
+    // layer falls back to "unknown".
+    let fx = index_fixture(&[(
+        "src/graph/languages/go.rs",
+        r#"pub fn extract() -> u32 { 42 }
+"#,
+    )]);
+
+    let conn = fx.repo.conn();
+    let layer: String = conn
+        .query_row(
+            "SELECT af.layer
+             FROM arch_facts af JOIN files f ON f.id = af.file_id
+             WHERE f.path LIKE '%graph/languages/go.rs'",
+            [],
+            |r| r.get(0),
+        )
+        .expect("arch_facts row should exist");
+    assert_eq!(
+        layer, "unknown",
+        "without arch.toml the default dictionary should not classify 'graph'"
+    );
+}

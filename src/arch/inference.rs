@@ -18,7 +18,7 @@ use petgraph::visit::EdgeRef;
 use serde_json::json;
 
 use super::{
-    LayerHint, build_arch_graph, classify_naming, classify_path, compute_centrality,
+    ArchOverride, LayerHint, build_arch_graph, classify_naming, classify_path, compute_centrality,
     compute_modules, compute_sccs, is_entry_point,
 };
 use crate::storage::Repository;
@@ -65,12 +65,43 @@ pub struct ArchModuleRow {
 /// per-file level (entry override → dict/naming aggregate → graph-role) but
 /// each file is independent of every other file, so this loop is embarrassingly
 /// parallelizable if it ever shows up as a bottleneck.
+///
+/// Convenience wrapper: probes the current working directory for a
+/// `.code-abyss/arch.toml` override. Most callers want this. Use
+/// [`infer_all_with_overrides`] if you have a different workspace in hand
+/// (e.g. integration tests writing into a tempdir).
 pub fn infer_all(repo: &Repository) -> Result<Vec<ArchFact>> {
-    let workspace_root = workspace_root_for(repo);
+    let workspace = workspace_root_for(repo);
+    let overrides = workspace
+        .as_deref()
+        .and_then(super::override_config::load_overrides);
+    infer_all_with_overrides(repo, workspace.as_deref(), overrides.as_ref())
+}
+
+/// Full-detail entry point: caller provides the workspace root (for
+/// entry-point detection) and a pre-loaded override config. Either or both
+/// can be `None`.
+pub fn infer_all_with_overrides(
+    repo: &Repository,
+    workspace: Option<&Path>,
+    overrides: Option<&ArchOverride>,
+) -> Result<Vec<ArchFact>> {
+    let workspace_root = workspace.map(|p| p.to_path_buf());
 
     // --- Phase 1: pull every file row in one shot so we don't ping the DB
     // once per file.
-    let file_rows = collect_files(repo)?;
+    let all_file_rows = collect_files(repo)?;
+
+    // Drop any file the user asked us to ignore. Empty arch_facts row is
+    // preferable to a half-classified one, so we filter at the source.
+    let file_rows: Vec<FileRow> = if let Some(o) = overrides {
+        all_file_rows
+            .into_iter()
+            .filter(|r| !o.is_ignored(&r.path))
+            .collect()
+    } else {
+        all_file_rows
+    };
 
     // --- Phase 2: build the file→file dep graph and run the three graph
     // analyses once. They all share the same `ArchGraph` to keep cost down.
@@ -95,7 +126,13 @@ pub fn infer_all(repo: &Repository) -> Result<Vec<ArchFact>> {
         let path = row.path.as_str();
 
         // --- Signal collection ---
-        let dir_hints = classify_path(path);
+        // Defaults first, then user overrides append on top of the dir hint
+        // vec so the fusion layer sees both. User rules with higher weight
+        // naturally win the layer election in `fuse_layer`.
+        let mut dir_hints = classify_path(path);
+        if let Some(o) = overrides {
+            dir_hints.extend(o.classify_path(path));
+        }
         let name_hints = classify_naming(path);
         let entry_flag = entry_set.contains(&row.file_id);
 

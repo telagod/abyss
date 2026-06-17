@@ -18,6 +18,7 @@ pub mod entry;
 pub mod graph;
 pub mod inference;
 pub mod naming;
+pub mod override_config;
 
 pub use dictionary::{LayerHint, classify_path};
 pub use entry::is_entry_point;
@@ -27,3 +28,4 @@ pub use graph::{
 };
 pub use inference::{ArchFact, ArchModuleRow, collect_modules, infer_all};
 pub use naming::classify_naming;
+pub use override_config::{ArchOverride, LayerOverride, load_overrides};
