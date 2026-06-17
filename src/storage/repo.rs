@@ -647,23 +647,50 @@ impl Repository {
         }
 
         let tx = self.conn.unchecked_transaction()?;
+        // Two-phase label derivation: first compute each module's preferred
+        // label, then de-collide so the agent never sees two modules with
+        // identical labels (e.g. two communities both deriving as "tests").
+        let mut prelim: Vec<(i64, String, String, i64, String)> = Vec::with_capacity(modules.len());
+        let mut counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+        for m in modules {
+            let paths = member_paths.get(&m.id).cloned().unwrap_or_default();
+            let centroid_path = longest_common_prefix(&paths);
+            let label = derive_label(&centroid_path, &paths, m.id);
+            *counts.entry(label.clone()).or_insert(0) += 1;
+            prelim.push((
+                m.id,
+                label,
+                centroid_path,
+                m.file_count,
+                m.dominant_layer.clone(),
+            ));
+        }
+        // Sort so the larger community keeps the un-suffixed label; later
+        // collisions get -{module_id} appended (file_count would collide
+        // again when N modules have the same size, which is common for
+        // tests-only mash-ups).
+        prelim.sort_by(|a, b| b.3.cmp(&a.3).then(a.0.cmp(&b.0)));
+        let mut taken: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut final_labels: Vec<(i64, String, String, i64, String)> =
+            Vec::with_capacity(prelim.len());
+        for (mid, label, centroid, fcount, dom) in prelim {
+            let label_final = if taken.contains(&label) {
+                format!("{label}-{mid}")
+            } else {
+                label
+            };
+            taken.insert(label_final.clone());
+            final_labels.push((mid, label_final, centroid, fcount, dom));
+        }
+
         tx.execute("DELETE FROM arch_modules", [])?;
         {
             let mut stmt = tx.prepare(
                 "INSERT INTO arch_modules(id, label, file_count, dominant_layer, centroid_path)
                  VALUES (?1,?2,?3,?4,?5)",
             )?;
-            for m in modules {
-                let paths = member_paths.get(&m.id).cloned().unwrap_or_default();
-                let centroid_path = longest_common_prefix(&paths);
-                let label = derive_label(&centroid_path, &paths, m.id);
-                stmt.execute(params![
-                    m.id,
-                    label,
-                    m.file_count,
-                    m.dominant_layer,
-                    centroid_path,
-                ])?;
+            for (mid, label, centroid, fcount, dom) in final_labels {
+                stmt.execute(params![mid, label, fcount, dom, centroid])?;
             }
         }
         tx.commit()?;
@@ -825,10 +852,9 @@ fn derive_label(centroid: &str, paths: &[String], id: i64) -> String {
     // almost always "src"/"pkg"/"internal" and not discriminative.
     use std::collections::HashMap;
     let mut counts: HashMap<&str, usize> = HashMap::new();
+    let mut considered = 0usize;
     for p in paths {
         let segs: Vec<&str> = p.split('/').collect();
-        // Prefer 2nd segment (segs[1]) when there's at least 3 segments;
-        // fall back to 1st when path is shallow (e.g. "cmd/main.go").
         let pick = if segs.len() >= 3 {
             segs[1]
         } else if segs.len() == 2 {
@@ -838,10 +864,19 @@ fn derive_label(centroid: &str, paths: &[String], id: i64) -> String {
         };
         if !pick.is_empty() {
             *counts.entry(pick).or_insert(0) += 1;
+            considered += 1;
         }
     }
-    if let Some((seg, _)) = counts.iter().max_by_key(|(_, n)| **n) {
-        return (*seg).to_string();
+    if let Some((seg, n)) = counts.iter().max_by_key(|(_, n)| **n) {
+        // Modal segment must be a clear majority — otherwise labeling the
+        // community after it is misleading (e.g. a mega-cluster of
+        // {storage×2, search×2, temporal×4, indexer×2} would render as
+        // "temporal" despite being a cross-cutting mash-up). Below 50% we
+        // surface that fact honestly.
+        if *n * 2 > considered {
+            return (*seg).to_string();
+        }
+        return format!("mixed:{seg}+");
     }
     format!("module-{id}")
 }
