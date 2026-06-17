@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use clap::{CommandFactory, Parser, Subcommand};
@@ -232,6 +232,16 @@ enum Commands {
         /// Target shell. One of: bash, zsh, fish, powershell, elvish.
         shell: clap_complete::Shell,
     },
+    /// Ingest SCIP (Source Code Intelligence Protocol) ground truth from
+    /// an LSP-grade indexer. Prototype — v0.5.15 ships the wiring +
+    /// `--dry-run --print-summary` against `scip print --json` output.
+    /// Full DB ingest (promoting refs to confidence=1.0 as an L-1 tier)
+    /// is the next iteration. Binary `.scip` files surface an actionable
+    /// error pointing at `eval/setup-indexers.sh`.
+    Ingest {
+        #[command(subcommand)]
+        action: IngestCmd,
+    },
     /// Inspect the effective abyss config: workspace paths, schema
     /// version, arch.toml overrides, dictionary rule counts, per-layer
     /// fact counts on the current index, and daemon liveness.
@@ -261,6 +271,31 @@ enum Commands {
         /// Print what would be removed without touching the filesystem.
         #[arg(long)]
         dry_run: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum IngestCmd {
+    /// Ingest a SCIP index file. v0.5.15 prototype: only
+    /// `--dry-run --print-summary` against a `scip print --json` blob
+    /// is supported; full DB writes land in a follow-up patch.
+    Scip {
+        /// Path to a `scip print --json` JSON file. Binary `.scip`
+        /// inputs error out for now with a pointer to the conversion
+        /// command (`scip print --json <file>.scip > /tmp/index.json`).
+        path: PathBuf,
+        /// Parse the input and print the summary without writing to
+        /// the index DB. Required in v0.5.15 — the real ingest path
+        /// is not wired yet, so dropping `--dry-run` is also a no-op
+        /// today. Kept on the CLI so scripts can pin the future shape.
+        #[arg(long)]
+        dry_run: bool,
+        /// Print document / occurrence / ref-candidate counts on
+        /// stderr (or JSON via the global `--json` flag). The summary
+        /// is the contract the v0.5.16 MCP `ingest_scip` tool will
+        /// surface verbatim.
+        #[arg(long)]
+        print_summary: bool,
     },
 }
 
@@ -403,7 +438,79 @@ fn main() -> Result<()> {
             daemon,
             dry_run,
         } => cmd_reset(config, all, daemon, dry_run, json),
+        Commands::Ingest { action } => cmd_ingest(action, json),
     }
+}
+
+/// `abyss ingest` dispatcher. v0.5.15 ships only the SCIP subverb in
+/// dry-run-summary mode; other languages of ingest (LSIF, raw
+/// rust-analyzer JSON, …) can land as siblings under this same
+/// command tree without re-arranging the CLI.
+fn cmd_ingest(action: IngestCmd, json: bool) -> Result<()> {
+    match action {
+        IngestCmd::Scip {
+            path,
+            dry_run,
+            print_summary,
+        } => cmd_ingest_scip(&path, dry_run, print_summary, json),
+    }
+}
+
+/// SCIP ingest prototype (v0.5.15). Parses the JSON output of
+/// `scip print --json`, prints a summary, and refuses to mutate the
+/// index DB until the L-1 tier wiring lands in a follow-up patch.
+///
+/// The signature is deliberately wider than today's minimum (we accept
+/// both `--dry-run` and `--print-summary`) so the CLI shape stays
+/// stable when the real ingest path comes online — scripts pinning the
+/// `--dry-run --print-summary` invocation today keep working unchanged.
+fn cmd_ingest_scip(path: &Path, dry_run: bool, print_summary: bool, json: bool) -> Result<()> {
+    use code_abyss::ingest::{IngestSummary, parse_scip_input};
+
+    let index = parse_scip_input(path)?;
+    let summary = IngestSummary::from_index(&index);
+
+    // Without `--dry-run`, refuse rather than silently no-op so an
+    // operator can't be misled into thinking the index was updated.
+    // The future L-1 tier will lift this gate.
+    if !dry_run {
+        anyhow::bail!(
+            "abyss ingest scip: full DB ingest is not implemented in v0.5.15 \
+             (prototype). Pass `--dry-run --print-summary` to inspect the input; \
+             tracking the L-1 tier write path for a follow-up patch."
+        );
+    }
+
+    if json {
+        println!("{}", serde_json::to_string(&summary)?);
+        return Ok(());
+    }
+
+    if print_summary {
+        eprintln!(
+            "scip ingest (dry-run): {} documents, {} occurrences, {} ref-candidates, \
+             {} definitions across {} language(s)",
+            summary.documents,
+            summary.occurrences,
+            summary.ref_candidates,
+            summary.definitions,
+            summary.languages.len(),
+        );
+        if !summary.languages.is_empty() {
+            eprintln!("  languages: {}", summary.languages.join(", "));
+        }
+        eprintln!(
+            "  note: v0.5.15 prototype — refs are NOT written to the index. \
+             The L-1 ingest tier lands in a follow-up patch.",
+        );
+    } else {
+        eprintln!(
+            "scip ingest (dry-run): pass --print-summary to see the counts \
+             ({} occurrences parsed).",
+            summary.occurrences,
+        );
+    }
+    Ok(())
 }
 
 /// Generate a shell completion script for the given shell and write it to
