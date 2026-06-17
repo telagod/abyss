@@ -656,6 +656,35 @@ fn cmd_context(config: Config, file: &str, json: bool) -> Result<()> {
     Ok(())
 }
 
+/// Minimum git history we need before the hotspot ranking is informative.
+/// Below this the change_count_30d signal is mostly zero (shallow clone or
+/// fresh repo) and the empty list reads as "no risk" instead of "no data".
+const MAP_MIN_COMMITS_FOR_HOTSPOTS: i64 = 10;
+
+/// Hint to print under an empty Hotspots heading. Pure function so tests can
+/// pin the string without spinning up a binary. Returns `None` when the
+/// hotspot list is non-empty (the heading already has content).
+///
+/// Two failure modes deserve distinct hints:
+/// * shallow / fresh repo (`total_commits < MAP_MIN_COMMITS_FOR_HOTSPOTS`)
+///   → "insufficient history" so the agent knows to try a deeper clone
+/// * historical repo with no recent activity → "no files changed in the
+///   last 30 days" so the agent doesn't keep retrying / blames the index
+fn empty_hotspots_hint(is_empty: bool, total_commits: i64) -> Option<String> {
+    if !is_empty {
+        return None;
+    }
+    Some(if total_commits < MAP_MIN_COMMITS_FOR_HOTSPOTS {
+        format!(
+            "  (insufficient history: {total_commits} commits available; need ≥{MAP_MIN_COMMITS_FOR_HOTSPOTS} — try a deeper clone)"
+        )
+    } else {
+        String::from(
+            "  (no files changed in the last 30 days — try `abyss history <path>` for older activity)",
+        )
+    })
+}
+
 fn cmd_map(config: Config, limit: usize, json: bool) -> Result<()> {
     let repo = Repository::open(&config.db_path, config.model.dimensions)?;
     let hotspots = code_abyss::temporal::hotspot::top_hotspots(&repo, limit)?;
@@ -680,6 +709,19 @@ fn cmd_map(config: Config, limit: usize, json: bool) -> Result<()> {
                 h.complexity,
                 h.unique_authors
             );
+        }
+        if hotspots.is_empty() {
+            // Distinguishing "no risk" from "no data" matters: on a shallow
+            // clone the empty hotspot list reads as a green light. Mirror
+            // the coupling suppression message style so the two failure
+            // modes look related.
+            let total_commits: i64 = repo
+                .conn()
+                .query_row("SELECT COUNT(*) FROM commits", [], |r| r.get(0))
+                .unwrap_or(0);
+            if let Some(hint) = empty_hotspots_hint(true, total_commits) {
+                println!("{hint}");
+            }
         }
         if !coupled.is_empty() {
             println!("\n═══ Coupling ═══");
@@ -1053,4 +1095,64 @@ fn cmd_mcp(config: Config) -> Result<()> {
     })?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod map_hint_tests {
+    //! Pins the empty-hotspots hint contract. Two failure modes ("no data"
+    //! vs "no recent activity") must render as distinct, agent-readable
+    //! strings, mirroring the coupling suppression style.
+    use super::{MAP_MIN_COMMITS_FOR_HOTSPOTS, empty_hotspots_hint};
+
+    #[test]
+    fn non_empty_hotspots_get_no_hint() {
+        assert!(empty_hotspots_hint(false, 0).is_none());
+        assert!(empty_hotspots_hint(false, 1000).is_none());
+    }
+
+    #[test]
+    fn shallow_clone_renders_insufficient_history() {
+        let hint = empty_hotspots_hint(true, 3).expect("hint expected");
+        assert!(
+            hint.contains("insufficient history"),
+            "want shallow-clone hint, got: {hint}",
+        );
+        assert!(
+            hint.contains("3 commits available"),
+            "should surface the actual count, got: {hint}",
+        );
+        assert!(
+            hint.contains(&format!("≥{MAP_MIN_COMMITS_FOR_HOTSPOTS}")),
+            "should surface the required threshold, got: {hint}",
+        );
+    }
+
+    #[test]
+    fn historical_repo_no_recent_activity_renders_separate_hint() {
+        // Plenty of commits, just none in the last 30 days. We must NOT
+        // say "insufficient history" — the agent would chase a deeper
+        // clone for nothing.
+        let hint = empty_hotspots_hint(true, 500).expect("hint expected");
+        assert!(
+            hint.contains("no files changed in the last 30 days"),
+            "want no-recent-activity hint, got: {hint}",
+        );
+        assert!(
+            !hint.contains("insufficient history"),
+            "must not blame history when commits exist: {hint}",
+        );
+    }
+
+    #[test]
+    fn threshold_boundary_is_lt_not_le() {
+        // At exactly the threshold we treat the repo as "enough history":
+        // the empty list means "no recent change", not "shallow clone".
+        let below = empty_hotspots_hint(true, MAP_MIN_COMMITS_FOR_HOTSPOTS - 1).unwrap();
+        assert!(below.contains("insufficient history"), "{below}");
+        let at = empty_hotspots_hint(true, MAP_MIN_COMMITS_FOR_HOTSPOTS).unwrap();
+        assert!(
+            !at.contains("insufficient history"),
+            "boundary must flip to 'no recent activity', got: {at}",
+        );
+    }
 }
