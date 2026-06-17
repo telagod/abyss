@@ -75,6 +75,9 @@ enum Commands {
         /// Hide references resolved below this confidence (0 shows everything)
         #[arg(long, default_value = "0.7")]
         min_confidence: f64,
+        /// Include callers from test files (default: hide them so agents see prod call sites first)
+        #[arg(long)]
+        include_tests: bool,
     },
     /// Analyze blast radius of changing a symbol
     Impact {
@@ -185,7 +188,8 @@ fn main() -> Result<()> {
             symbol,
             limit,
             min_confidence,
-        } => cmd_callers(config, &symbol, limit, min_confidence, json),
+            include_tests,
+        } => cmd_callers(config, &symbol, limit, min_confidence, include_tests, json),
         Commands::Impact {
             symbol,
             depth,
@@ -361,21 +365,35 @@ fn cmd_callers(
     symbol: &str,
     limit: usize,
     min_confidence: f64,
+    include_tests: bool,
     json: bool,
 ) -> Result<()> {
     let repo = Repository::open(&config.db_path, config.model.dimensions)?;
     let gq = code_abyss::graph::GraphQuery::new(&repo);
-    let callers = gq.find_callers(symbol, limit, min_confidence)?;
+    let result = gq.find_callers_filtered(symbol, limit, min_confidence, include_tests)?;
 
     if json {
-        println!("{}", serde_json::to_string(&callers)?);
+        println!("{}", serde_json::to_string(&result)?);
     } else {
-        if callers.is_empty() {
+        if result.callers.is_empty() && result.excluded_tests == 0 {
             eprintln!("no callers found for '{symbol}'");
             return Ok(());
         }
-        println!("callers of '{symbol}' ({} found):\n", callers.len());
-        for (i, c) in callers.iter().enumerate() {
+        // Header surfaces the test-exclusion contract so an agent that sees an
+        // empty or short list knows whether to retry with --include-tests.
+        let header = if include_tests {
+            format!("callers of '{symbol}' ({} found):\n", result.callers.len())
+        } else if result.excluded_tests > 0 {
+            format!(
+                "callers of '{symbol}' ({} prod, {} tests excluded — use --include-tests to see all):\n",
+                result.callers.len(),
+                result.excluded_tests
+            )
+        } else {
+            format!("callers of '{symbol}' ({} prod):\n", result.callers.len())
+        };
+        println!("{header}");
+        for (i, c) in result.callers.iter().enumerate() {
             let t = if c.is_test { " [test]" } else { "" };
             println!(
                 "  {}. {}:{} → {}(){t}  ({:.0}%)",

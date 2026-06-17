@@ -116,11 +116,19 @@ pub struct FindCallersInput {
     pub limit: usize,
     /// Hide references resolved below this confidence (default: 0.7; 0 shows all)
     pub min_confidence: Option<f64>,
+    /// Include callers from test files. Defaults to false so agents working
+    /// in unfamiliar codebases see production call sites first; test callers
+    /// remain reachable via `excluded_tests` count and an explicit retry.
+    #[serde(default)]
+    pub include_tests: bool,
 }
 
 #[derive(Serialize, schemars::JsonSchema)]
 pub struct FindCallersOutput {
     pub callers: Vec<CallerItem>,
+    /// Number of test-file callers omitted from `callers` because
+    /// `include_tests` was false. Always 0 when `include_tests` is true.
+    pub excluded_tests: usize,
 }
 
 #[derive(Serialize, schemars::JsonSchema)]
@@ -385,7 +393,7 @@ impl McpServer {
 
     #[tool(
         name = "find_callers",
-        description = "Find all callers of a function or method. Returns who calls this symbol, from which file and line."
+        description = "Find all callers of a function or method. Returns who calls this symbol, from which file and line. By default test-file callers are hidden (use `include_tests: true` to see them); `excluded_tests` reports how many were dropped so the caller can decide whether to retry."
     )]
     fn find_callers(
         &self,
@@ -393,13 +401,18 @@ impl McpServer {
     ) -> Json<FindCallersOutput> {
         let repo = self.repo.lock().unwrap();
         let gq = crate::graph::GraphQuery::new(&repo);
-        let callers = gq
-            .find_callers(
+        let result = gq
+            .find_callers_filtered(
                 &input.symbol,
                 input.limit,
                 input.min_confidence.unwrap_or(0.7),
+                input.include_tests,
             )
-            .unwrap_or_default();
+            .ok();
+        let (callers, excluded_tests) = match result {
+            Some(r) => (r.callers, r.excluded_tests),
+            None => (Vec::new(), 0),
+        };
 
         Json(FindCallersOutput {
             callers: callers
@@ -413,6 +426,7 @@ impl McpServer {
                     is_test: c.is_test,
                 })
                 .collect(),
+            excluded_tests,
         })
     }
 

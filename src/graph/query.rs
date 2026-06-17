@@ -19,6 +19,16 @@ pub struct CallerInfo {
     pub is_test: bool,
 }
 
+/// `find_callers_filtered` returns both the surfaced caller list and the count
+/// of test callers that were dropped by the filter. CLI/MCP surfaces use the
+/// `excluded_tests` count to print "N tests excluded — use --include-tests to
+/// see all" so agents know they're seeing a curated view, not the full graph.
+#[derive(Debug, Clone, Serialize)]
+pub struct CallersResult {
+    pub callers: Vec<CallerInfo>,
+    pub excluded_tests: usize,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct ImpactResult {
     pub target: String,
@@ -37,20 +47,60 @@ impl<'a> GraphQuery<'a> {
 
     /// Find callers of a symbol. Refs below `min_confidence` are dropped so
     /// low-confidence (ambiguous) matches don't poison agent context; pass 0.0
-    /// to see everything.
+    /// to see everything. Returns *all* callers (prod + test) — agent surfaces
+    /// should prefer [`Self::find_callers_filtered`], which exposes the test
+    /// exclusion knob so unfamiliar codebases get prod call sites by default.
     pub fn find_callers(
         &self,
         symbol_name: &str,
         limit: usize,
         min_confidence: f64,
     ) -> Result<Vec<CallerInfo>> {
-        let refs = self.repo.find_callers_of(symbol_name, None, limit)?;
+        Ok(self
+            .find_callers_filtered(symbol_name, limit, min_confidence, true)?
+            .callers)
+    }
+
+    /// Same as [`Self::find_callers`] but lets the caller hide test files by
+    /// default. When `include_tests=false`, callers detected by
+    /// [`Repository::is_test_file`] are removed from the returned list and
+    /// counted in `excluded_tests` so the surface can render the
+    /// "(N tests excluded — use --include-tests to see all)" hint.
+    pub fn find_callers_filtered(
+        &self,
+        symbol_name: &str,
+        limit: usize,
+        min_confidence: f64,
+        include_tests: bool,
+    ) -> Result<CallersResult> {
+        // Fetch a larger pool when filtering tests so the surfaced prod-only
+        // list can still reach `limit`. Bounded so a pathological query can't
+        // explode memory: prod + excluded test callers together cap at 4× the
+        // user-visible limit, with a hard floor for tiny callsite counts.
+        let fetch_limit = if include_tests {
+            limit
+        } else {
+            (limit.saturating_mul(4)).max(limit + 16)
+        };
+        let refs = self.repo.find_callers_of(symbol_name, None, fetch_limit)?;
         let mut callers = Vec::new();
+        let mut excluded_tests = 0usize;
         for r in refs {
             if r.confidence < min_confidence {
                 continue;
             }
             let is_test = self.repo.is_test_file(r.source_file_id).unwrap_or(false);
+            if !include_tests && is_test {
+                excluded_tests += 1;
+                continue;
+            }
+            if callers.len() >= limit {
+                // Already at the user-visible cap. Keep scanning only so we
+                // can finish counting excluded test callers honestly; stop
+                // once we've exhausted the fetched pool. Prod callers past
+                // the cap are silently dropped (same as the legacy contract).
+                continue;
+            }
             callers.push(CallerInfo {
                 file_path: r.source_file_path,
                 symbol: r.source_symbol.unwrap_or_default(),
@@ -60,7 +110,10 @@ impl<'a> GraphQuery<'a> {
                 is_test,
             });
         }
-        Ok(callers)
+        Ok(CallersResult {
+            callers,
+            excluded_tests,
+        })
     }
 
     pub fn impact_analysis(
