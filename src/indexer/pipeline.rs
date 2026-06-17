@@ -654,6 +654,13 @@ impl IndexPipeline {
         // demoted 0.6 tier below. Eval on gin showed these collisions dominate
         // resolution errors (see eval/RESULTS.md).
         //
+        // Same-language-family guard: cross-file tiers without binding evidence
+        // must NOT cross language boundaries — a polyglot `vendor/`-style dir
+        // can mix Go and JS, and the only thing keeping a Go `target()` call
+        // from claiming a JS `function target()` is this filter. ts/tsx/js
+        // collapse to one family so the routine TS-importing-JS case still
+        // resolves. (See storage::language_family.)
+        //
         // Rust only: qualified calls (x.m(), unknown receiver) are excluded —
         // a Rust dir is NOT a namespace (files in one dir are separate
         // modules needing `use`), so dir proximity is weak evidence there:
@@ -665,12 +672,14 @@ impl IndexPipeline {
                      WHERE s.name = refs.target_name
                        AND f.dir = (SELECT dir FROM files WHERE id = refs.source_file_id)
                        AND s.file_id != refs.source_file_id
+                       AND f.lang_family = (SELECT lang_family FROM files WHERE id = refs.source_file_id)
                      LIMIT 1),
                  target_symbol_id = (SELECT s.id FROM symbols s
                      JOIN files f ON s.file_id = f.id
                      WHERE s.name = refs.target_name
                        AND f.dir = (SELECT dir FROM files WHERE id = refs.source_file_id)
                        AND s.file_id != refs.source_file_id
+                       AND f.lang_family = (SELECT lang_family FROM files WHERE id = refs.source_file_id)
                      LIMIT 1),
                  confidence = 0.95
              WHERE confidence = 0.0 AND kind NOT IN ('import', 'import_binding')
@@ -681,7 +690,8 @@ impl IndexPipeline {
                AND (SELECT COUNT(DISTINCT s.file_id) FROM symbols s JOIN files f ON s.file_id = f.id
                    WHERE s.name = refs.target_name
                      AND f.dir = (SELECT dir FROM files WHERE id = refs.source_file_id)
-                     AND s.file_id != refs.source_file_id) = 1",
+                     AND s.file_id != refs.source_file_id
+                     AND f.lang_family = (SELECT lang_family FROM files WHERE id = refs.source_file_id)) = 1",
             [],
         )?;
 
@@ -691,6 +701,10 @@ impl IndexPipeline {
         // `util.Fn()` resolves to a file in a dir named `util/` (or file `util.ext`)
         // when the source file imports a path whose last segment is `util`.
         // Disambiguates same-named symbols across packages before the global tiers.
+        //
+        // Same-language-family guard: the qualifier GLOB can match across
+        // languages by accident (`util/` containing both Go and JS files),
+        // so we also require the candidate's family to match the source's.
         let l3q = conn.execute(
             "UPDATE refs SET
                  target_file_id = (SELECT s.file_id FROM symbols s JOIN files f ON s.file_id = f.id
@@ -698,12 +712,14 @@ impl IndexPipeline {
                        AND (f.dir GLOB '*' || refs.target_qualifier || '/'
                             OR f.path GLOB '*/' || refs.target_qualifier || '.*'
                             OR f.path GLOB refs.target_qualifier || '.*')
+                       AND f.lang_family = (SELECT lang_family FROM files WHERE id = refs.source_file_id)
                      LIMIT 1),
                  target_symbol_id = (SELECT s.id FROM symbols s JOIN files f ON s.file_id = f.id
                      WHERE s.name = refs.target_name
                        AND (f.dir GLOB '*' || refs.target_qualifier || '/'
                             OR f.path GLOB '*/' || refs.target_qualifier || '.*'
                             OR f.path GLOB refs.target_qualifier || '.*')
+                       AND f.lang_family = (SELECT lang_family FROM files WHERE id = refs.source_file_id)
                      LIMIT 1),
                  confidence = 0.9
              WHERE confidence = 0.0 AND kind NOT IN ('import', 'import_binding')
@@ -717,7 +733,8 @@ impl IndexPipeline {
                    WHERE s.name = refs.target_name
                      AND (f.dir GLOB '*' || refs.target_qualifier || '/'
                           OR f.path GLOB '*/' || refs.target_qualifier || '.*'
-                          OR f.path GLOB refs.target_qualifier || '.*')) = 1",
+                          OR f.path GLOB refs.target_qualifier || '.*')
+                     AND f.lang_family = (SELECT lang_family FROM files WHERE id = refs.source_file_id)) = 1",
             [],
         )?;
 
@@ -727,17 +744,31 @@ impl IndexPipeline {
         // measured on hono, x.foo() resolving to an unscoped free function
         // was 6% precision (app.use() → the JSX `use` hook, 47×), while
         // member-shaped candidates were 96.7%.
+        //
+        // Same-language-family guard: the global tier is the most likely to
+        // produce cross-language pollution (a unique name in one language
+        // can collide with one in another); the family filter applies to
+        // BOTH the picked candidate and the uniqueness count.
         let l3 = conn.execute(
             "UPDATE refs SET
-                 target_file_id = (SELECT s.file_id FROM symbols s WHERE s.name = refs.target_name LIMIT 1),
-                 target_symbol_id = (SELECT s.id FROM symbols s WHERE s.name = refs.target_name LIMIT 1),
+                 target_file_id = (SELECT s.file_id FROM symbols s JOIN files f ON s.file_id = f.id
+                     WHERE s.name = refs.target_name
+                       AND f.lang_family = (SELECT lang_family FROM files WHERE id = refs.source_file_id)
+                     LIMIT 1),
+                 target_symbol_id = (SELECT s.id FROM symbols s JOIN files f ON s.file_id = f.id
+                     WHERE s.name = refs.target_name
+                       AND f.lang_family = (SELECT lang_family FROM files WHERE id = refs.source_file_id)
+                     LIMIT 1),
                  confidence = 0.8
              WHERE confidence = 0.0 AND kind NOT IN ('import', 'import_binding')
                AND receiver_type IS NULL
-               AND (SELECT COUNT(DISTINCT file_id) FROM symbols WHERE name = refs.target_name) = 1
+               AND (SELECT COUNT(DISTINCT s.file_id) FROM symbols s JOIN files f ON s.file_id = f.id
+                   WHERE s.name = refs.target_name
+                     AND f.lang_family = (SELECT lang_family FROM files WHERE id = refs.source_file_id)) = 1
                AND (target_qualifier IS NULL
-                    OR EXISTS (SELECT 1 FROM symbols s
+                    OR EXISTS (SELECT 1 FROM symbols s JOIN files f ON s.file_id = f.id
                         WHERE s.name = refs.target_name
+                          AND f.lang_family = (SELECT lang_family FROM files WHERE id = refs.source_file_id)
                           AND (s.scope IS NOT NULL OR s.kind = 'method')))",
             [],
         )?;
@@ -761,6 +792,9 @@ impl IndexPipeline {
 
         // Level 4b: Same-package, multiple candidates (confidence = 0.6).
         // Below the default 0.7 gate: surfaced as possible_callers, not facts.
+        // Same-language-family guard: even below the gate, a JS file
+        // shouldn't be listed as a possible caller of a Rust function — the
+        // hint is actively misleading. Apply the same family filter.
         let l2b = conn.execute(
             "UPDATE refs SET
                  target_file_id = (SELECT s.file_id FROM symbols s
@@ -768,30 +802,46 @@ impl IndexPipeline {
                      WHERE s.name = refs.target_name
                        AND f.dir = (SELECT dir FROM files WHERE id = refs.source_file_id)
                        AND s.file_id != refs.source_file_id
+                       AND f.lang_family = (SELECT lang_family FROM files WHERE id = refs.source_file_id)
                      LIMIT 1),
                  target_symbol_id = (SELECT s.id FROM symbols s
                      JOIN files f ON s.file_id = f.id
                      WHERE s.name = refs.target_name
                        AND f.dir = (SELECT dir FROM files WHERE id = refs.source_file_id)
                        AND s.file_id != refs.source_file_id
+                       AND f.lang_family = (SELECT lang_family FROM files WHERE id = refs.source_file_id)
                      LIMIT 1),
                  confidence = 0.6
              WHERE confidence = 0.0 AND kind NOT IN ('import', 'import_binding')
                AND EXISTS (SELECT 1 FROM symbols s JOIN files f ON s.file_id = f.id
                    WHERE s.name = refs.target_name
                      AND f.dir = (SELECT dir FROM files WHERE id = refs.source_file_id)
-                     AND s.file_id != refs.source_file_id)",
+                     AND s.file_id != refs.source_file_id
+                     AND f.lang_family = (SELECT lang_family FROM files WHERE id = refs.source_file_id))",
             [],
         )?;
 
-        // Level 5: Ambiguous global (confidence = 0.5)
+        // Level 5: Ambiguous global (confidence = 0.5).
+        // Dogfood-found 2026-06-17: src/arch/graph.rs's `e.target()` (petgraph
+        // edge endpoint) was being claimed by npm/install.js's `function
+        // target()` — pure name match across all symbols. Same-language-family
+        // guard plugs the leak; the hint is still surfaced below the gate
+        // when a same-family candidate exists.
         let l4 = conn.execute(
             "UPDATE refs SET
-                 target_file_id = (SELECT s.file_id FROM symbols s WHERE s.name = refs.target_name LIMIT 1),
-                 target_symbol_id = (SELECT s.id FROM symbols s WHERE s.name = refs.target_name LIMIT 1),
+                 target_file_id = (SELECT s.file_id FROM symbols s JOIN files f ON s.file_id = f.id
+                     WHERE s.name = refs.target_name
+                       AND f.lang_family = (SELECT lang_family FROM files WHERE id = refs.source_file_id)
+                     LIMIT 1),
+                 target_symbol_id = (SELECT s.id FROM symbols s JOIN files f ON s.file_id = f.id
+                     WHERE s.name = refs.target_name
+                       AND f.lang_family = (SELECT lang_family FROM files WHERE id = refs.source_file_id)
+                     LIMIT 1),
                  confidence = 0.5
              WHERE confidence = 0.0 AND kind NOT IN ('import', 'import_binding')
-               AND EXISTS (SELECT 1 FROM symbols WHERE name = refs.target_name)",
+               AND EXISTS (SELECT 1 FROM symbols s JOIN files f ON s.file_id = f.id
+                   WHERE s.name = refs.target_name
+                     AND f.lang_family = (SELECT lang_family FROM files WHERE id = refs.source_file_id))",
             [],
         )?;
 
