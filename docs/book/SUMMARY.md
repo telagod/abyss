@@ -33,13 +33,16 @@
 - [Per-corpus results](./eval/results.md)
 - [Notes: click microregression](./eval/notes-click-microregression.md)
 - [Notes: MRO falsification](./eval/notes-mro-walker.md)
+- [Notes: Django MRO validation](./eval/notes-django-mro-validation.md)
 
 # Dogfood
 
 - [Index](./dogfood/index.md)
+- [Django](./dogfood/django.md)
 - [helix-editor](./dogfood/helix-editor.md)
 - [vite](./dogfood/vite.md)
 - [FastAPI](./dogfood/fastapi.md)
+- [hono](./dogfood/hono.md)
 
 ---
 

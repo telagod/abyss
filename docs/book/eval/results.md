@@ -3,7 +3,10 @@
 The numbers below mirror [`eval/RESULTS.md`](https://github.com/telagod/abyss/blob/main/eval/RESULTS.md)
 in the repo — the source of truth that ships with every release.
 
-## Headline — 2026-06-17, abyss v0.4.0+
+## SCIP-graded corpora — 2026-06-17, abyss v0.5.1
+
+These six corpora carry SCIP (compiler-grade) ground truth and gate
+every release. Regressions here are release-blockers.
 
 | Corpus | Lang | Truth pairs | Gated precision | Gated recall | All precision | All recall |
 |--------|------|------------:|----------------:|-------------:|--------------:|-----------:|
@@ -19,6 +22,23 @@ Gated = `--min-confidence 0.7`. abyss index time per corpus is
 
 > Captured against: scip v0.8.1, scip-go v0.2.7, scip-typescript
 > 0.4.0, scip-python 0.6.6, scip-clang v0.3.2, rust-analyzer 1.95.0.
+
+## Dogfood corpora — 2026-06-17, abyss v0.5.1
+
+Five real third-party codebases run end-to-end against the live
+agent surface (`where` / `context` / `callers` / `impact` / pre-edit
+card). No SCIP ground truth — these score on signal density, noise,
+and latency per probe, then a final 0–10. Full reports under
+[`docs/dogfood/`](https://github.com/telagod/abyss/tree/main/docs/dogfood);
+index at [`docs/DOGFOOD.md`](https://github.com/telagod/abyss/blob/main/docs/DOGFOOD.md).
+
+| Project | Lang | Files | Cold index | Score | Notable surface |
+|---------|------|------:|-----------:|------:|-----------------|
+| Django 5.1.4 | Python | 3 292 | 6.91 s | **8 / 10** | L0e fired 9 450× (validates the FastAPI-falsified MRO walker on in-repo inheritance — see [Notes: Django MRO validation](notes-django-mro-validation.md)) |
+| helix-editor @ `43bf7c2` | Rust workspace | 545 | 1.57 s | **7.5 / 10** | best-in-class blast radius card; rust-workspace labelling debt |
+| vite v5.4.0 | TS/JS monorepo | 1 793 | 0.91 s | **7 / 10** | drove v0.5.0 `kind='type_ref'` default on `callers` |
+| FastAPI 0.115.4 | Python | 2 164 | 1.07 s | **6.5 / 10** | falsified MRO ≥50-hits prediction (external bases — re-validated on Django) |
+| hono v4.6.14 | TypeScript | 388 | 0.79 s | **8 / 10** | drove v0.5.1 `callers --limit` + built-in name-shadow filter |
 
 ## Per-tier breakdowns
 

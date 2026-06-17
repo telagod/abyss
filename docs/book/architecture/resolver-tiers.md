@@ -63,3 +63,38 @@ coupling −90%.
 Agent-facing APIs default to `--min-confidence 0.7`. Changes to
 tier thresholds require eval validation against all SCIP corpora —
 regressions are release-blockers.
+
+## Ref kinds — `call` vs `type_ref` vs `inherit`
+
+Every row in `refs` carries a `kind` column that records *how* the
+source file uses the target symbol. The three structural kinds the
+resolver currently emits:
+
+- **`call`** — direct invocation. `foo()`, `x.bar()`, `obj->baz()`,
+  `Type()` as constructor. The original v0.4.x `kind`. This is what
+  most readers picture when they hear "caller graph".
+- **`type_ref`** — type-position use. TS interface references
+  (`Promise<MyType>`, `extends MyInterface`), Rust type paths in
+  signatures (`fn(x: MyType)`), Python `from x import Type` used in
+  annotations, Go embedded types. v0.5.0 made this kind first-class
+  on the `callers` surface — pre-v0.5.0 it lived in the DB but the
+  CLI silently filtered it to `kind='call'` only (vite dogfood B1).
+- **`inherit`** — class/struct/trait/interface inheritance.
+  `class Sub(Base):`, `class X extends Y`, `struct X: Y`,
+  `impl Trait for X`, Java `extends` / `implements`. Emitted by the
+  Python extractor (since v0.5.0), the C++ extractor (base-class
+  clauses), and the Rust extractor (`impl Trait for X`). The
+  Django dogfood surfaced 9 129 in-repo `inherit` rows on 5.1.4 and
+  showed that hiding them at the `callers` surface answered the
+  load-bearing Django question ("who subclasses `Model`?") with
+  random instantiation-call false positives.
+
+`abyss callers <sym>` in v0.5.1+ defaults to all three kinds. Each
+result is annotated with its kind (`(call, 95%)` / `(type, 95%)` /
+`(inherit, 95%)`) so an agent can disambiguate runtime callers from
+type-position uses from subclasses. Restrict with `--calls-only`,
+`--types-only`, or `--inherits-only` when the question is about
+one specific kind. Future kinds (`field_access`, `decorator_use`)
+will join the default set behind a single "type-position alias"
+once added — the design goal is that adding a new structural kind
+to the resolver must NOT silently shrink the `callers` answer.
