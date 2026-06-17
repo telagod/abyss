@@ -78,6 +78,8 @@ abyss history <file>          Evolution: commits, churn, coupled files [--symbol
 abyss search "query"          Symbol + fulltext fusion search
 abyss map                     Codebase map: hotspots, coupling, risk areas
 abyss watch                   Foreground daemon-lite: reindex on file save (debounced)
+abyss daemon start            Background daemon (Unix): pidfile + socket [--foreground]
+abyss daemon stop|status      Stop daemon / report pid + uptime + last reindex
 abyss stats                   Index statistics
 abyss mcp                     MCP server (stdio) — 7 tools for any MCP client
 ```
@@ -146,14 +148,29 @@ abyss indexed gin in **~150ms**; scip-go took ~40s. Full method, per-tier tables
 
 **Arch layers**: every file gets an architectural layer (`api`, `domain`, `infra`, `util`, …) via a built-in path-segment dictionary. Project-specific directory names? Drop a `.code-abyss/arch.toml` at the workspace root — see [docs/ARCH-LAYERS.md](docs/ARCH-LAYERS.md).
 
-**Ambient reindex (`abyss watch`)**: foreground daemon-lite that subscribes to file-system events and reindexes on save. The 150ms debounce coalesces editor write bursts (atomic-rename saves, formatter passes) into one update; hash-incremental skip keeps cost proportional to what actually changed.
+**Ambient reindex (`abyss daemon` / `abyss watch`)**: subscribes to file-system events and reindexes on save. The 150ms debounce coalesces editor write bursts (atomic-rename saves, formatter passes) into one update; hash-incremental skip keeps cost proportional to what actually changed.
+
+Two flavors share the same watcher:
 
 ```sh
+# V1 background daemon (Unix only) — pidfile-locked, Unix-socket fronted.
+# Run `start` with `&` to background; we don't double-fork.
+abyss daemon start &               # claim .code-abyss/daemon.{pid,sock,log}, start watching
+abyss daemon status                # prints pid, uptime, last reindex; exit 1 if not running
+abyss daemon stop                  # SIGTERM the recorded pid, wait ≤5s for cleanup
+
+# Foreground equivalent — unchanged from v0.4.0, alias of `daemon start --foreground`.
 abyss watch                        # default 150ms debounce
 abyss watch --debounce-ms 300      # tune for slower disks / heavier formatters
 ```
 
-This is the V1 daemon-lite — a single foreground process per workspace. The V2 daemon (Unix-socket multi-reader so the hook, the MCP server, and an editor extension can share one index) is on the roadmap.
+The V1 socket protocol is newline-delimited JSON and exposes two verbs — `{"cmd":"ping"}` returns uptime + last-reindex telemetry, `{"cmd":"stats"}` returns file/symbol/ref counts. Useful sanity probe:
+
+```sh
+echo '{"cmd":"ping"}' | nc -U .code-abyss/daemon.sock
+```
+
+The full MCP-over-socket surface (so the hook, the MCP server, and an editor extension can share one in-process index) is V2 territory. Hooks still read SQLite directly — no daemon round-trip for the pre-edit fast path.
 
 ## Features
 

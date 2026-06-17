@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased
+
+### New commands
+
+- `abyss daemon start [--foreground]` / `daemon stop` / `daemon status` —
+  background daemon V1 (Unix only). The watcher moves out of the foreground
+  process: a single-instance pidfile lock (flock) under
+  `.code-abyss/daemon.pid` and a Unix socket at `.code-abyss/daemon.sock`
+  serve a minimal newline-delimited JSON protocol. Two verbs in V1:
+  `{"cmd":"ping"}` returns `uptime_secs` + `last_reindex_ms` + `epoch`,
+  `{"cmd":"stats"}` returns file/symbol/ref counts. SIGTERM/SIGINT trigger a
+  clean shutdown that unlinks the pidfile and the socket. `abyss watch`
+  keeps working unchanged as the foreground alias (equivalent to
+  `daemon start --foreground`). V2 (full MCP-over-socket multi-reader) is on
+  the roadmap; the V1 pre-edit hook still reads SQLite directly — no daemon
+  round-trip on the fast path.
+
 ## v0.4.0 — 2026-06-17
 
 The "agent always has the map" release. 39 commits since v0.3.6, organized
