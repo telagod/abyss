@@ -61,6 +61,8 @@ notify = "8"
 notify-debouncer-full = "0.5"
 ignore = "0.4"
 walkdir = "2"
+# Cross-platform home directory (Windows %USERPROFILE% / *nix $HOME)
+dirs = "6"
 
 # Serialization
 serde = { version = "1", features = ["derive"] }

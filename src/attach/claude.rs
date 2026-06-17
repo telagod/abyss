@@ -17,7 +17,7 @@
 
 use std::path::PathBuf;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, anyhow};
 use serde_json::{Value, json};
 
 const MATCHER: &str = "Edit|Write";
@@ -27,14 +27,19 @@ const POST_CMD: &str = "abyss hook post-edit";
 /// Resolve the target `settings.json` path.
 ///
 /// * `--local` → `<cwd>/.claude/settings.json`
-/// * default   → `$HOME/.claude/settings.json`
+/// * default   → `<home>/.claude/settings.json`, where `<home>` is the platform
+///   home directory: `$HOME` on Unix, `%USERPROFILE%` on Windows. Resolved
+///   through the `dirs` crate so Claude Code on Windows finds the same
+///   `~/.claude/settings.json` it created.
 fn settings_path(local: bool) -> Result<PathBuf> {
     if local {
         let cwd = std::env::current_dir().context("cannot read current dir")?;
         return Ok(cwd.join(".claude").join("settings.json"));
     }
-    let home = std::env::var("HOME").context("HOME not set; cannot locate ~/.claude")?;
-    Ok(PathBuf::from(home).join(".claude").join("settings.json"))
+    let home = dirs::home_dir().ok_or_else(|| {
+        anyhow!("could not determine home directory (HOME / USERPROFILE not set)")
+    })?;
+    Ok(home.join(".claude").join("settings.json"))
 }
 
 /// Install (or upgrade) the abyss hook entries. Returns the path that was
@@ -276,5 +281,57 @@ mod tests {
         install_at(&path).unwrap();
         let v: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(count_cmds(&v, "PreToolUse", PRE_CMD), 1);
+    }
+
+    /// `--local` builds `<cwd>/.claude/settings.json` regardless of platform —
+    /// no env-var lookup, so the shape must hold on Windows too.
+    #[test]
+    fn settings_path_local_is_cwd_relative() {
+        let p = settings_path(true).unwrap();
+        let tail: PathBuf = p
+            .iter()
+            .rev()
+            .take(2)
+            .collect::<Vec<_>>()
+            .iter()
+            .rev()
+            .collect();
+        assert_eq!(tail, PathBuf::from(".claude").join("settings.json"));
+        assert!(
+            p.is_absolute(),
+            "cwd-derived path should be absolute: {}",
+            p.display()
+        );
+    }
+
+    /// The home-dir branch must not panic on the host platform. We don't
+    /// assert the exact prefix (the test runner's `$HOME` / `%USERPROFILE%`
+    /// can be anything), only that resolution succeeds *or* fails cleanly
+    /// with our error message — never a panic. This is the regression guard
+    /// for the Windows bug where `std::env::var("HOME")` silently failed.
+    #[test]
+    fn settings_path_home_branch_does_not_panic() {
+        match settings_path(false) {
+            Ok(p) => {
+                let tail: PathBuf = p
+                    .iter()
+                    .rev()
+                    .take(2)
+                    .collect::<Vec<_>>()
+                    .iter()
+                    .rev()
+                    .collect();
+                assert_eq!(tail, PathBuf::from(".claude").join("settings.json"));
+            }
+            Err(e) => {
+                // The only acceptable failure is the explicit "no home" path,
+                // which means `dirs::home_dir()` returned None on this host.
+                let msg = e.to_string();
+                assert!(
+                    msg.contains("home directory"),
+                    "unexpected error from settings_path(false): {msg}"
+                );
+            }
+        }
     }
 }
