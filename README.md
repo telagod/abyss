@@ -55,6 +55,8 @@ cargo binstall code-abyss   # or: cargo install code-abyss
 
 Windows: `npm install -g @code-abyss/cli`, `cargo binstall code-abyss`, or prebuilt `.zip` on [GitHub Releases](https://github.com/telagod/abyss/releases).
 
+Shell tab-completion (bash / zsh / fish / powershell): run `abyss completion --help` for the supported shells, then dump the script to the shell's completion directory, e.g. `abyss completion bash | sudo tee /etc/bash_completion.d/abyss`.
+
 ## Quickstart (60 seconds)
 
 ```sh

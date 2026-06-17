@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand};
 use tracing::info;
 use tracing_subscriber::EnvFilter;
 
@@ -26,7 +26,10 @@ struct Cli {
     #[arg(short, long, global = true, default_value = ".")]
     workspace: PathBuf,
 
-    #[arg(short, long, global = true)]
+    // No `short` here: `-d` is claimed by `impact --depth`. Globals conflict
+    // with subcommand-local shorts when clap_complete walks the full command
+    // tree, so we keep `--db` long-only.
+    #[arg(long, global = true)]
     db: Option<PathBuf>,
 
     #[arg(long, global = true)]
@@ -208,6 +211,17 @@ enum Commands {
         #[command(subcommand)]
         action: DaemonCmd,
     },
+    /// Print a shell-completion script to stdout (`eval`-able). Supports
+    /// bash, zsh, fish, powershell, and elvish.
+    ///
+    /// Examples:
+    ///   abyss completion bash | sudo tee /etc/bash_completion.d/abyss
+    ///   abyss completion zsh  > ~/.config/zsh/_abyss
+    ///   abyss completion fish > ~/.config/fish/completions/abyss.fish
+    Completion {
+        /// Target shell. One of: bash, zsh, fish, powershell, elvish.
+        shell: clap_complete::Shell,
+    },
 }
 
 #[derive(Subcommand)]
@@ -334,7 +348,18 @@ fn main() -> Result<()> {
         }
         Commands::Watch { debounce_ms } => cmd_watch(config, debounce_ms),
         Commands::Daemon { action } => cmd_daemon(config, action),
+        Commands::Completion { shell } => cmd_completion(shell),
     }
+}
+
+/// Generate a shell completion script for the given shell and write it to
+/// stdout. Pure stdout output so operators can pipe straight into the
+/// shell's completion-directory file (`/etc/bash_completion.d/abyss`,
+/// `~/.config/fish/completions/abyss.fish`, etc.) without post-processing.
+fn cmd_completion(shell: clap_complete::Shell) -> Result<()> {
+    let mut cmd = Cli::command();
+    clap_complete::generate(shell, &mut cmd, "abyss", &mut std::io::stdout());
+    Ok(())
 }
 
 fn cmd_daemon(config: Config, action: DaemonCmd) -> Result<()> {

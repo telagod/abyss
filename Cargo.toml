@@ -74,6 +74,7 @@ blake3 = "1"
 
 # CLI
 clap = { version = "4", features = ["derive"] }
+clap_complete = "4"
 
 # Logging
 tracing = "0.1"
