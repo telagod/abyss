@@ -1,3 +1,3 @@
 pub mod incremental;
 
-pub use incremental::FileWatcher;
+pub use incremental::{DEFAULT_DEBOUNCE_MS, FileWatcher};

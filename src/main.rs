@@ -299,7 +299,7 @@ fn cmd_index_all(config: Config, watch: bool) -> Result<()> {
 
     if watch {
         let watcher = code_abyss::watcher::FileWatcher::new(config);
-        watcher.watch(&repo, &embedder, &pipeline)?;
+        watcher.watch(&repo, Some(&embedder), &pipeline)?;
     }
 
     Ok(())

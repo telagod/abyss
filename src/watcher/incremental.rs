@@ -1,9 +1,10 @@
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
-use notify::{Event, EventKind, RecursiveMode, Watcher};
+use notify::{EventKind, RecursiveMode};
+use notify_debouncer_full::{DebounceEventResult, new_debouncer};
 use tracing::{debug, info, warn};
 
 use crate::config::Config;
@@ -12,75 +13,161 @@ use crate::indexer::IndexPipeline;
 use crate::indexer::parser;
 use crate::storage::Repository;
 
+/// Default debounce window: 150ms matches the "tier-A debounce" target —
+/// fast enough that a save → reindex feels instant, slow enough to coalesce
+/// editor write bursts (e.g. atomic-rename saves) into a single update.
+pub const DEFAULT_DEBOUNCE_MS: u64 = 150;
+
+/// Polling tick for the receiver loop. Keeps Ctrl-C / stop-signal responsive
+/// without busy-spinning.
+const POLL_TICK: Duration = Duration::from_millis(200);
+
 pub struct FileWatcher {
     config: Config,
+    debounce: Duration,
 }
 
 impl FileWatcher {
     pub fn new(config: Config) -> Self {
-        Self { config }
+        Self {
+            config,
+            debounce: Duration::from_millis(DEFAULT_DEBOUNCE_MS),
+        }
     }
 
+    /// Override the debounce window. Use [`FileWatcher::new`] for the default
+    /// (150ms — matches the daemon-lite blueprint).
+    pub fn with_debounce(mut self, debounce: Duration) -> Self {
+        self.debounce = debounce;
+        self
+    }
+
+    /// Watch the workspace and incrementally reindex changed files until the
+    /// debounce channel disconnects (process termination / dropped watcher).
+    ///
+    /// In slim builds pass `None` for the embedder — semantic-only paths are
+    /// skipped. Semantic builds pass `Some(&embedder)` to keep vectors fresh.
     pub fn watch(
         &self,
         repo: &Repository,
-        embedder: &Embedder,
+        embedder: Option<&Embedder>,
         pipeline: &IndexPipeline,
     ) -> Result<()> {
-        let (tx, rx) = mpsc::channel();
+        self.watch_with_cancel(repo, embedder, pipeline, None)
+    }
 
-        let mut watcher =
-            notify::recommended_watcher(move |res: Result<Event, notify::Error>| match res {
-                Ok(event) => {
-                    let _ = tx.send(event);
-                }
-                Err(e) => warn!("watch error: {e}"),
-            })?;
+    /// Same as [`FileWatcher::watch`] but accepts a cancel receiver so tests
+    /// (and future explicit stop paths) can break the loop deterministically.
+    /// A unit-payload send on `stop_rx` triggers a clean shutdown.
+    pub fn watch_with_cancel(
+        &self,
+        repo: &Repository,
+        embedder: Option<&Embedder>,
+        pipeline: &IndexPipeline,
+        stop_rx: Option<mpsc::Receiver<()>>,
+    ) -> Result<()> {
+        let (tx, rx) = mpsc::channel::<DebounceEventResult>();
 
-        watcher.watch(self.config.workspace.as_ref(), RecursiveMode::Recursive)?;
-        info!("watching {} for changes", self.config.workspace.display());
-
-        let debounce = Duration::from_millis(500);
-        let mut pending: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
-        let mut last_event = std::time::Instant::now();
+        // notify-debouncer-full coalesces a burst of FS events into one callback
+        // per debounce window — no hand-rolled timeout loop needed.
+        let mut debouncer = new_debouncer(self.debounce, None, tx)?;
+        debouncer.watch(&self.config.workspace, RecursiveMode::Recursive)?;
+        info!(
+            "watching {} for changes (debounce {:?})",
+            self.config.workspace.display(),
+            self.debounce
+        );
 
         loop {
-            match rx.recv_timeout(debounce) {
-                Ok(event) => {
-                    for path in &event.paths {
-                        if self.should_index(path) {
+            if let Some(rx) = stop_rx.as_ref()
+                && rx.try_recv().is_ok()
+            {
+                debug!("watcher: stop signal received");
+                break;
+            }
+
+            match rx.recv_timeout(POLL_TICK) {
+                Ok(Ok(events)) => {
+                    let start = Instant::now();
+                    let mut pending: std::collections::HashSet<PathBuf> =
+                        std::collections::HashSet::new();
+                    let mut removed: Vec<PathBuf> = Vec::new();
+
+                    for event in events {
+                        for path in &event.paths {
+                            if !self.should_index(path) {
+                                continue;
+                            }
                             match event.kind {
                                 EventKind::Create(_) | EventKind::Modify(_) => {
                                     pending.insert(path.clone());
                                 }
                                 EventKind::Remove(_) => {
-                                    repo.begin_transaction().ok();
-                                    if let Err(e) = pipeline.remove_file(repo, path) {
-                                        warn!("failed to remove {}: {e}", path.display());
-                                    }
-                                    repo.commit().ok();
-                                    debug!("removed: {}", path.display());
+                                    removed.push(path.clone());
                                 }
                                 _ => {}
                             }
                         }
                     }
-                    last_event = std::time::Instant::now();
-                }
-                Err(mpsc::RecvTimeoutError::Timeout) => {
-                    if !pending.is_empty() && last_event.elapsed() >= debounce {
-                        let paths: Vec<PathBuf> = pending.drain().collect();
+
+                    if pending.is_empty() && removed.is_empty() {
+                        continue;
+                    }
+
+                    // Removes are handled per-path: the file no longer exists,
+                    // so cascade-delete its rows + drop incoming refs to NULL.
+                    if !removed.is_empty() {
                         repo.begin_transaction().ok();
-                        for path in &paths {
-                            match pipeline.reindex_file(repo, embedder, path) {
-                                Ok(n) => debug!("reindexed {} ({n} chunks)", path.display()),
-                                Err(e) => warn!("reindex failed {}: {e}", path.display()),
+                        for path in &removed {
+                            if let Err(e) = pipeline.remove_file(repo, path) {
+                                warn!("failed to remove {}: {e}", path.display());
+                            } else {
+                                debug!("removed: {}", path.display());
                             }
                         }
                         repo.commit().ok();
-                        info!("incremental update: {} files", paths.len());
+                    }
+
+                    // Modifies go through the full structural pipeline because
+                    // refs only get re-resolved in the batch resolver — a
+                    // per-file reindex would silently drop the file's outgoing
+                    // call edges. `run_structural` is hash-incremental: it
+                    // skips unchanged files, so the cost stays proportional
+                    // to what actually changed.
+                    if !pending.is_empty() {
+                        match pipeline.run_structural(repo) {
+                            Ok(stats) => debug!(
+                                "structural rerun: {} files, {} refs in {}ms",
+                                stats.total_files, stats.refs, stats.duration_ms
+                            ),
+                            Err(e) => warn!("structural rerun failed: {e}"),
+                        }
+
+                        // Semantic builds: refresh vectors only for the files
+                        // that changed (the structural batch doesn't touch
+                        // embeddings, so this is the seam where they catch up).
+                        if let Some(emb) = embedder {
+                            for path in &pending {
+                                if let Err(e) = pipeline.reindex_file(repo, emb, path) {
+                                    warn!("embed refresh failed {}: {e}", path.display());
+                                }
+                            }
+                        }
+                    }
+
+                    info!(
+                        "incremental update: {} reindexed, {} removed in {}ms",
+                        pending.len(),
+                        removed.len(),
+                        start.elapsed().as_millis()
+                    );
+                }
+                Ok(Err(errors)) => {
+                    for e in errors {
+                        warn!("watch error: {e}");
                     }
                 }
+                Err(mpsc::RecvTimeoutError::Timeout) => continue,
                 Err(mpsc::RecvTimeoutError::Disconnected) => break,
             }
         }
