@@ -90,11 +90,12 @@ impl Repository {
             Some(pos) => &path[..pos + 1],
             None => "",
         };
+        let lang_family = language_family(language);
         self.conn.execute(
-            "INSERT INTO files(path, hash, language, mtime, size, dir, generated)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
-             ON CONFLICT(path) DO UPDATE SET hash=?2, language=?3, mtime=?4, size=?5, dir=?6, generated=?7",
-            params![path, hash, language, mtime, size, dir, generated as i64],
+            "INSERT INTO files(path, hash, language, mtime, size, dir, generated, lang_family)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+             ON CONFLICT(path) DO UPDATE SET hash=?2, language=?3, mtime=?4, size=?5, dir=?6, generated=?7, lang_family=?8",
+            params![path, hash, language, mtime, size, dir, generated as i64, lang_family],
         )?;
         Ok(self.conn.last_insert_rowid())
     }
@@ -798,6 +799,38 @@ impl Repository {
             Ok((r.get::<_, String>(0)?, r.get::<_, f64>(1)?))
         })?;
         Ok(rows.filter_map(|r| r.ok()).collect())
+    }
+}
+
+/// Map a `parser::detect_language` token to its resolution family.
+///
+/// The cross-file resolver tiers (L2/L3/L4/L4b/L5) use this column to ensure
+/// a same-name match across the symbols table is also a same-language match
+/// — otherwise a Rust `target()` call gets claimed by a JS `function target()`
+/// that happens to live in the repo (dogfood-found, 2026-06-17).
+///
+/// Families are coarser than the tree-sitter language token because real
+/// projects mix dialects in one source tree:
+///
+/// - `ts`  — TypeScript / TSX / JavaScript / JSX (and the `.m/cjs` flavors).
+///   A `.ts` importing from `.js` is the norm; they must resolve to each other.
+/// - `c`   — C and C++ share a translation model close enough that headers
+///   and `extern "C"` decls cross the boundary routinely.
+/// - everything else is one language → one family.
+///
+/// Unknown / non-code languages (json, toml, yaml, md, css, html) collapse to
+/// the empty string — they don't extract refs anyway, but the empty family is
+/// also non-matchable, so they're invisible to the resolver tiers.
+pub fn language_family(language: Option<&str>) -> &'static str {
+    match language {
+        Some("rust") => "rust",
+        Some("go") => "go",
+        Some("python") => "python",
+        Some("typescript") | Some("tsx") | Some("javascript") => "ts",
+        Some("c") | Some("cpp") => "c",
+        Some("java") => "java",
+        Some("bash") => "bash",
+        _ => "",
     }
 }
 

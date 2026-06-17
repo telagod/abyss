@@ -1,7 +1,7 @@
 use anyhow::Result;
 use rusqlite::Connection;
 
-pub const SCHEMA_VERSION: u32 = 5;
+pub const SCHEMA_VERSION: u32 = 6;
 
 pub fn init_db(conn: &Connection) -> Result<()> {
     conn.execute_batch("PRAGMA journal_mode = WAL;")?;
@@ -24,10 +24,12 @@ pub fn init_db(conn: &Connection) -> Result<()> {
             mtime    INTEGER NOT NULL,
             size     INTEGER NOT NULL,
             dir      TEXT NOT NULL DEFAULT '',
-            generated INTEGER NOT NULL DEFAULT 0  -- machine-generated (DO NOT EDIT); refs skipped
+            generated INTEGER NOT NULL DEFAULT 0,  -- machine-generated (DO NOT EDIT); refs skipped
+            lang_family TEXT NOT NULL DEFAULT ''   -- v6: denormalized language family for the cross-file resolver tiers (ts/tsx/js collapse to 'ts', etc.)
         );
         CREATE INDEX IF NOT EXISTS idx_files_path ON files(path);
         CREATE INDEX IF NOT EXISTS idx_files_dir ON files(dir);
+        CREATE INDEX IF NOT EXISTS idx_files_lang_family ON files(lang_family);
 
         CREATE TABLE IF NOT EXISTS chunks (
             id         INTEGER PRIMARY KEY,
@@ -205,6 +207,22 @@ pub fn init_db(conn: &Connection) -> Result<()> {
         // arch_facts / arch_modules are created via the CREATE IF NOT EXISTS
         // batch above; no ALTER needed. We bump the recorded version so
         // future migrations know this snapshot already has the L0 tables.
+    }
+    if version < 6 {
+        // v6: denormalized language family on `files` so the cross-file
+        // resolver tiers (L2/L3/L4/L4b/L5) can filter same-family with a
+        // single equality JOIN instead of nested SELECTs. ALTER is
+        // idempotent — duplicate-column error means the column is already
+        // there (existing rows get the column DEFAULT '' and stay
+        // unfiltered until a reindex repopulates them).
+        let _ = conn.execute(
+            "ALTER TABLE files ADD COLUMN lang_family TEXT NOT NULL DEFAULT ''",
+            [],
+        );
+        let _ = conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_files_lang_family ON files(lang_family)",
+            [],
+        );
     }
 
     // Set schema version
