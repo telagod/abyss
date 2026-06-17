@@ -14,6 +14,12 @@
 //! → {"cmd": "logs", "tail": N}
 //! ← {"ok": true, "lines": ["...", "..."]}
 //!
+//! → {"cmd": "subscribe"}
+//! ← {"ok": true, "subscribed": true}          (ack, then…)
+//! ← {"event": "reindexed", "files": N, "epoch": E, "ts": T}
+//! ← {"event": "reindexed", "files": N, "epoch": E, "ts": T}
+//! ← … one line per reindex burst, until the client disconnects.
+//!
 //! → {"cmd": "mcp"}
 //! ← (no JSON envelope — the connection switches into MCP stdio mode and
 //!     the daemon serves the standard 7-tool surface over the same fd via
@@ -166,9 +172,10 @@ fn handle_conn(stream: UnixStream, state: Arc<DaemonState>) -> Result<()> {
             continue;
         }
 
-        // Peek the verb before dispatch so the `mcp` verb can grab the
-        // whole connection instead of returning a single response. Every
-        // other verb stays in the request/response shape.
+        // Peek the verb before dispatch so the `mcp` and `subscribe`
+        // verbs can grab the whole connection instead of returning a
+        // single response. Every other verb stays in the
+        // request/response shape.
         let parsed: serde_json::Result<Request> = serde_json::from_str(&line);
         match &parsed {
             Ok(req) if req.cmd == "mcp" => {
@@ -182,6 +189,17 @@ fn handle_conn(stream: UnixStream, state: Arc<DaemonState>) -> Result<()> {
                 writer.set_read_timeout(None).ok();
                 writer.set_write_timeout(None).ok();
                 return serve_mcp_connection(writer, state);
+            }
+            Ok(req) if req.cmd == "subscribe" => {
+                drop(read_clone);
+                // Subscribe sessions are long-lived; relax the 5s
+                // write timeout so a slow consumer doesn't reset us
+                // mid-event, but keep it bounded so a totally-stuck
+                // peer eventually closes (60s is generous yet still
+                // surfaces wedged clients).
+                writer.set_read_timeout(None).ok();
+                writer.set_write_timeout(Some(Duration::from_secs(60))).ok();
+                return serve_subscribe_connection(writer, state);
             }
             _ => {}
         }
@@ -288,6 +306,75 @@ fn serve_mcp_connection(stream: UnixStream, state: Arc<DaemonState>) -> Result<(
         Ok::<(), anyhow::Error>(())
     })?;
 
+    Ok(())
+}
+
+/// Subscribe-mode handler. Registers an mpsc receiver against the
+/// daemon's subscriber list, writes an ack line so the client knows the
+/// subscription went through, then blocks reading the receiver and
+/// forwarding each [`crate::daemon::state::ReindexEvent`] as a single
+/// newline-delimited JSON line.
+///
+/// Returns when either the watcher's sender side is dropped (daemon
+/// shutting down — `RecvError`) or a write fails (peer disconnected).
+/// Both are normal termination paths; we don't surface them as errors.
+fn serve_subscribe_connection(mut stream: UnixStream, state: Arc<DaemonState>) -> Result<()> {
+    let rx = state.register_subscriber();
+
+    // ACK so the client can synchronously distinguish "registered" from
+    // "the daemon was already going away". `subscribed: true` is the
+    // version-tagged flag; if we ever add `subscribe_v2` semantics, an
+    // older client can refuse based on the absence of a new field.
+    let ack = serde_json::json!({"ok": true, "subscribed": true});
+    writeln!(stream, "{ack}")?;
+    stream.flush()?;
+
+    loop {
+        // Block until either the watcher pushes an event or every
+        // sender drops (daemon shutdown). 60s recv_timeout lets us
+        // periodically write a no-op keepalive when nothing's
+        // happening — without it, a long-idle subscriber holds a
+        // socket fd with no liveness probe and the kernel can take
+        // hours to notice a dead peer.
+        match rx.recv_timeout(Duration::from_secs(60)) {
+            Ok(event) => {
+                let line = match serde_json::to_string(&event) {
+                    Ok(l) => l,
+                    Err(e) => {
+                        // Serialisation should be infallible for our
+                        // event shape; if it ever fails, log and skip
+                        // rather than tearing down the connection.
+                        tracing::warn!("subscribe: encode event failed: {e}");
+                        continue;
+                    }
+                };
+                if writeln!(stream, "{line}").is_err() {
+                    // Peer closed — normal shutdown path. retain() on
+                    // the next broadcast will prune our sender.
+                    break;
+                }
+                if stream.flush().is_err() {
+                    break;
+                }
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                // Keepalive — a one-byte newline is the lightest probe
+                // that still exercises the socket write path. Clients
+                // ignoring whitespace between JSON lines is the
+                // newline-delimited-JSON convention.
+                if writeln!(stream).is_err() {
+                    break;
+                }
+                if stream.flush().is_err() {
+                    break;
+                }
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                // Watcher / daemon is shutting down — all senders dropped.
+                break;
+            }
+        }
+    }
     Ok(())
 }
 

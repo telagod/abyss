@@ -177,7 +177,15 @@ mod unix_impl {
             .with_debounce(Duration::from_millis(crate::watcher::DEFAULT_DEBOUNCE_MS))
             .with_on_reindex({
                 let st = state.clone();
-                move |elapsed_ms| st.record_reindex(elapsed_ms)
+                move |elapsed_ms, files| {
+                    // record_reindex must run BEFORE the broadcast so
+                    // every subscriber sees the bumped epoch in its
+                    // event payload (otherwise a client reacting to
+                    // the event by re-querying stats might see the
+                    // pre-bump value and assume nothing changed).
+                    st.record_reindex(elapsed_ms);
+                    st.broadcast_reindex(files);
+                }
             });
 
         tracing::info!(
@@ -190,8 +198,11 @@ mod unix_impl {
         let watch_result =
             watcher.watch_with_cancel(&repo, embedder.as_ref(), &pipeline, Some(stop_rx));
 
-        // Cleanup order: signal socket thread, join it, drop pidfile guard
-        // (which also unlinks). Socket-file removal happens inside serve().
+        // Cleanup order: drop subscriber senders so push-mode handler
+        // threads wake immediately, then signal accept loop, join it,
+        // drop pidfile guard (which also unlinks). Socket-file removal
+        // happens inside serve().
+        state.clear_subscribers();
         socket_stop.store(true, Ordering::SeqCst);
         // Nudge the accept() loop with a dummy connection so it observes the flag.
         let _ = std::os::unix::net::UnixStream::connect(&paths.socket);

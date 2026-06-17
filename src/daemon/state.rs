@@ -20,9 +20,36 @@
 use std::path::PathBuf;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::mpsc;
 use std::time::Instant;
 
+use serde::Serialize;
+
 use crate::config::Config;
+
+/// Push-notification payload broadcast to every active `subscribe`
+/// connection after each watcher reindex burst. Wire shape is JSON,
+/// newline-delimited — clients read one line per event.
+///
+/// Kept intentionally small: editor extensions polling for "is the
+/// index fresh?" only need the epoch + reindex count; deeper inspection
+/// goes through `stats` / `ping` on a separate connection.
+#[derive(Debug, Clone, Serialize)]
+pub struct ReindexEvent {
+    /// Always `"reindexed"` for v0.5.16 — future event kinds (e.g.
+    /// `"removed"`, `"error"`) can land as siblings without breaking
+    /// existing subscribers.
+    pub event: &'static str,
+    /// File count touched in the burst (added + modified). Matches the
+    /// watcher's own `info!` log so the event mirrors what an operator
+    /// sees in `daemon logs`.
+    pub files: u64,
+    /// Monotonic counter from [`DaemonState::epoch`] after the bump.
+    pub epoch: u64,
+    /// Wall-clock seconds since the Unix epoch for the broadcast moment.
+    /// Lets a subscriber dedupe rapid bursts without a local clock.
+    pub ts: u64,
+}
 
 pub struct DaemonState {
     pub pid: u32,
@@ -49,6 +76,15 @@ pub struct DaemonState {
     /// two concurrent socket requests don't both try to write — the loser
     /// gets a structured `lock contention` error rather than a SQLite BUSY.
     pub reindex_lock: Mutex<()>,
+    /// Active subscribers to reindex push notifications (v0.5.16
+    /// `subscribe` verb). Each `subscribe` handler thread holds the
+    /// receiver end of an mpsc channel; the watcher's `on_reindex`
+    /// callback iterates this list and fans out a [`ReindexEvent`] to
+    /// every still-living sender. Sends are non-blocking — a slow
+    /// subscriber that lets its channel fill is silently dropped on the
+    /// next bump so the watcher thread can't be backpressured by a
+    /// stuck client.
+    pub subscribers: Mutex<Vec<mpsc::Sender<ReindexEvent>>>,
 }
 
 impl DaemonState {
@@ -64,12 +100,58 @@ impl DaemonState {
             config: config.clone(),
             log_path,
             reindex_lock: Mutex::new(()),
+            subscribers: Mutex::new(Vec::new()),
         }
     }
 
     pub fn record_reindex(&self, ms: u64) {
         self.last_reindex_ms.store(ms, Ordering::Relaxed);
         self.epoch.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Register a new subscriber channel. Returns the receiver end the
+    /// caller polls for [`ReindexEvent`] pushes. The sender end is held
+    /// inside `subscribers` until the receiver drops — at which point
+    /// the next broadcast naturally prunes the entry.
+    pub fn register_subscriber(&self) -> mpsc::Receiver<ReindexEvent> {
+        let (tx, rx) = mpsc::channel();
+        if let Ok(mut guard) = self.subscribers.lock() {
+            guard.push(tx);
+        }
+        rx
+    }
+
+    /// Drop every subscriber sender. Causes any blocked
+    /// `subscribe`-handler thread to wake with `Disconnected` on its
+    /// next recv. Called from the daemon shutdown path so push
+    /// subscribers tear down promptly instead of waiting out their
+    /// 60-second keepalive timeout.
+    pub fn clear_subscribers(&self) {
+        if let Ok(mut guard) = self.subscribers.lock() {
+            guard.clear();
+        }
+    }
+
+    /// Fan-out a reindex notification to every subscriber. Dead
+    /// receivers (peer dropped) are pruned in-place so the list stays
+    /// bounded across long-running daemons. Send failures are not
+    /// logged because they're the normal "client went away" path.
+    pub fn broadcast_reindex(&self, files: u64) {
+        let epoch = self.epoch.load(Ordering::Relaxed);
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let event = ReindexEvent {
+            event: "reindexed",
+            files,
+            epoch,
+            ts,
+        };
+        let Ok(mut guard) = self.subscribers.lock() else {
+            return;
+        };
+        guard.retain(|tx| tx.send(event.clone()).is_ok());
     }
 
     pub fn uptime_secs(&self) -> u64 {

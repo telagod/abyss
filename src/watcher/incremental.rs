@@ -23,10 +23,12 @@ pub const DEFAULT_DEBOUNCE_MS: u64 = 150;
 const POLL_TICK: Duration = Duration::from_millis(200);
 
 /// Callback fired after each incremental reindex batch completes.
-/// Receives the wall-clock milliseconds the batch took. Used by the daemon
-/// to surface "last reindex" telemetry over the socket; foreground `abyss
-/// watch` callers can ignore it.
-pub type ReindexCallback = Box<dyn Fn(u64) + Send + Sync>;
+/// Receives `(elapsed_ms, files_touched)` — files_touched counts
+/// reindexed paths only (deletions are not part of the burst from the
+/// agent's perspective). Used by the daemon to surface "last reindex"
+/// telemetry over the socket AND to fan out push notifications to
+/// `subscribe` clients; foreground `abyss watch` callers can ignore it.
+pub type ReindexCallback = Box<dyn Fn(u64, u64) + Send + Sync>;
 
 pub struct FileWatcher {
     config: Config,
@@ -56,7 +58,7 @@ impl FileWatcher {
     /// daemon.
     pub fn with_on_reindex<F>(mut self, cb: F) -> Self
     where
-        F: Fn(u64) + Send + Sync + 'static,
+        F: Fn(u64, u64) + Send + Sync + 'static,
     {
         self.on_reindex = Some(Box::new(cb));
         self
@@ -183,7 +185,7 @@ impl FileWatcher {
                         elapsed_ms
                     );
                     if let Some(cb) = self.on_reindex.as_ref() {
-                        cb(elapsed_ms);
+                        cb(elapsed_ms, pending.len() as u64);
                     }
                 }
                 Ok(Err(errors)) => {
