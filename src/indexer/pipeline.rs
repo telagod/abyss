@@ -57,7 +57,35 @@ impl IndexPipeline {
     pub fn run_structural(&self, repo: &Repository) -> Result<IndexStats> {
         let start = Instant::now();
         let walker = FileWalker::new(&self.config.workspace);
-        let files = walker.walk()?;
+        let mut files = walker.walk()?;
+
+        // v0.5.5: honour `[ignore].patterns` from `.code-abyss/arch.toml`
+        // at the walker level so excluded paths never enter the index in
+        // the first place. Before, the field was only consumed by the
+        // arch-inference rendering pass — files matching `^vendor/`
+        // still got parsed, hashed, symbol-extracted, ref-resolved, and
+        // stored; the user just saw them with a "no layer" label.
+        //
+        // Now the same `is_ignored` predicate filters the walker output,
+        // so a `^vendor/` rule actually keeps the vendored tree out of
+        // the call graph and the FTS5 index, matching user expectation.
+        // arch.toml absent / parse-failed / [ignore].patterns empty →
+        // no-op (load_overrides returns None on missing file or
+        // malformed TOML and never crashes the pipeline).
+        let ignored_before = files.len();
+        if let Some(overrides) = crate::arch::load_overrides(&self.config.workspace)
+            && overrides.ignore_rule_count() > 0
+        {
+            files.retain(|p| {
+                let rel = to_rel(&self.config.workspace, p);
+                !overrides.is_ignored(&rel)
+            });
+            let removed = ignored_before.saturating_sub(files.len());
+            if removed > 0 {
+                info!("arch.toml [ignore].patterns filtered {removed} file(s) from walker output");
+            }
+        }
+
         info!("found {} indexable files", files.len());
 
         if let Some(limit) = self.max_files
