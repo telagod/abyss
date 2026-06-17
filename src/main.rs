@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use tracing::info;
 use tracing_subscriber::EnvFilter;
@@ -181,8 +181,20 @@ enum Commands {
         #[arg(long)]
         local: bool,
     },
-    /// Run as MCP server (stdio transport)
-    Mcp,
+    /// Run as MCP server (stdio transport).
+    ///
+    /// With `--via-daemon`, instead of running a standalone server this
+    /// process connects to a running `abyss daemon` over its Unix socket
+    /// and tunnels the agent's stdio MCP traffic through that connection.
+    /// Multiple MCP clients sharing one daemon avoids per-client SQLite
+    /// open / index-load latency. If no daemon is running, the flag errors
+    /// out — drop `--via-daemon` to fall back to standalone mode.
+    Mcp {
+        /// Connect to a running `abyss daemon` instead of starting a
+        /// standalone MCP server in this process.
+        #[arg(long)]
+        via_daemon: bool,
+    },
     /// Foreground daemon-lite: watch the workspace and incrementally
     /// reindex on file save. Equivalent to `abyss daemon start --foreground`.
     Watch {
@@ -308,7 +320,13 @@ fn main() -> Result<()> {
         Commands::Stats => cmd_stats(config, json),
         Commands::Hook { action } => cmd_hook(config, action, json),
         Commands::Attach { host, local } => cmd_attach(&host, local),
-        Commands::Mcp => cmd_mcp(config),
+        Commands::Mcp { via_daemon } => {
+            if via_daemon {
+                cmd_mcp_via_daemon(config)
+            } else {
+                cmd_mcp(config)
+            }
+        }
         Commands::Watch { debounce_ms } => cmd_watch(config, debounce_ms),
         Commands::Daemon { action } => cmd_daemon(config, action),
     }
@@ -1138,6 +1156,80 @@ fn cmd_watch(config: Config, debounce_ms: u64) -> Result<()> {
     );
     watcher.watch(&repo, embedder.as_ref(), &pipeline)?;
     Ok(())
+}
+
+/// V2 daemon path: connect to `<workspace>/.code-abyss/daemon.sock`, send
+/// the `{"cmd":"mcp"}` switch verb, then pipe the agent's stdio
+/// bidirectionally through the socket until either side closes.
+///
+/// This is opt-in for two reasons:
+/// 1. Standalone `abyss mcp` keeps working unchanged so existing MCP
+///    configs (Claude Desktop, Cursor, etc.) need no migration.
+/// 2. When no daemon is running we error out with an actionable message
+///    instead of silently falling back — agents that asked for daemon
+///    sharing usually mean it (e.g. wanted multi-reader semantics or
+///    avoided re-indexing on every spawn).
+#[cfg(unix)]
+fn cmd_mcp_via_daemon(config: Config) -> Result<()> {
+    use code_abyss::daemon::DaemonPaths;
+    let paths = DaemonPaths::from_config(&config);
+    if !paths.socket.exists() {
+        anyhow::bail!(
+            "abyss mcp --via-daemon: no daemon found at {}; either start one with `abyss daemon start` or drop --via-daemon for standalone mode",
+            paths.socket.display()
+        );
+    }
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_io()
+        .enable_time()
+        .build()?;
+    rt.block_on(async move {
+        use tokio::io::AsyncWriteExt;
+        let std_stream = std::os::unix::net::UnixStream::connect(&paths.socket)
+            .with_context(|| format!("connect {}", paths.socket.display()))?;
+        std_stream.set_nonblocking(true)?;
+        let mut stream = tokio::net::UnixStream::from_std(std_stream)?;
+
+        // Switch the connection into MCP mode. Newline-terminated — the
+        // daemon's request reader looks at one line then takes the rest
+        // of the fd over for rmcp.
+        stream.write_all(b"{\"cmd\":\"mcp\"}\n").await?;
+        stream.flush().await?;
+
+        let (sock_read, sock_write) = stream.into_split();
+        let mut stdin = tokio::io::stdin();
+        let mut stdout = tokio::io::stdout();
+
+        // Two-way splice: stdin → socket, socket → stdout. Either side
+        // closing tears down the other so we don't leak fds when the
+        // agent's MCP client disconnects.
+        let up = async move {
+            let mut s = sock_write;
+            let _ = tokio::io::copy(&mut stdin, &mut s).await;
+            // Half-close upstream so the daemon sees EOF and stops its
+            // rmcp loop. Best-effort: `shutdown` can fail if the peer
+            // already went away.
+            let _ = s.shutdown().await;
+        };
+        let down = async move {
+            let mut r = sock_read;
+            let _ = tokio::io::copy(&mut r, &mut stdout).await;
+            let _ = stdout.shutdown().await;
+        };
+
+        tokio::select! {
+            _ = up => {}
+            _ = down => {}
+        }
+        Ok::<(), anyhow::Error>(())
+    })?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn cmd_mcp_via_daemon(_config: Config) -> Result<()> {
+    anyhow::bail!("`abyss mcp --via-daemon` is Unix-only; use `abyss mcp` for standalone mode");
 }
 
 fn cmd_mcp(config: Config) -> Result<()> {
