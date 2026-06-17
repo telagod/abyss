@@ -1,5 +1,72 @@
 # Changelog
 
+## v0.5.2 — 2026-06-17
+
+The "more dogfood than features" release. Six small lines of work, no
+breaking changes — opt-in features and quiet bug fixes only.
+
+1. **V2 daemon: MCP-over-socket**. `abyss mcp --via-daemon` tunnels the
+   agent's stdio through a running daemon. Backward compatible —
+   standalone `abyss mcp` unchanged; the pre-edit hook still reads SQLite
+   directly to keep its sub-12ms budget. Per-connection read-only WAL
+   handles let multiple MCP clients share the same daemon.
+
+2. **impact aligns with callers** — both now return the full superset
+   of dependent kinds (call + field_access + type_ref + inherit) by
+   default. Add `--calls-only` for the legacy function-only blast radius.
+   Closes the most-asked v0.5.1 confusion: "why is impact direct=2 but
+   callers prod=20?"
+
+3. **Python generic-base inheritance** — `class Sub(Base[T]):` used to
+   silently drop the `Base` inherit ref via a `_ => continue` arm.
+   SQLAlchemy's `callers ColumnElement` jumps from 13 to 35; FastAPI's
+   `class Sub(BaseModel)` chains stay correct; typing-system markers
+   (Generic, Protocol, TypeVar, Callable, Union, …) are denylisted.
+
+4. **TSX visitor extracts JSX refs** — component-name calls
+   (`<Foo …/>` → kind=call, Pascal-gated to skip HTML intrinsics) and
+   attribute-binding expressions (`{someValue}` in JSX) now feed the
+   resolver. Drops the `.tsx` un-resolved-ref rate observed on hono.
+
+5. **Small-cluster module labels by peak centrality** — when a Louvain
+   community has <8 members, the labeller switches from weighted-sum to
+   peak-centrality tiebreaker. Fixes FastAPI's `param_functions.py`
+   small cluster mis-labelling as `docs_src`.
+
+6. **Honest UX**: `abyss callers --all-deps` is an explicit alias for the
+   default (no-flag) behaviour, and the `--help` text spells each kind
+   filter's exact ref-kind set so users don't guess.
+
+### SQLAlchemy MRO validation
+
+The v0.4.0 L0e MRO tier got a third data point. Predicted ≥500 hits on
+SQLAlchemy's declarative-base hierarchies (from the Django note); actual
+**4,496 hits** — 9× the prediction floor. L0e/file ratio: SQLAlchemy
+**6.55** > Django 3.39 (dense mixin towers vs wide tree).
+
+| Project | L0e hits | L0e/Python file | Hierarchy shape |
+|---------|---------:|----------------:|-----------------|
+| FastAPI | 0 | 0.00 | External roots (Starlette, pydantic) |
+| click | 2 | 0.02 | Co-located in core.py |
+| Django | 9,450 | 3.39 | Wide tree (Model + Forms + Admin + CBVs) |
+| SQLAlchemy | 4,496 | **6.55** | Dense mixin tower (ColumnElement, TypeEngine) |
+
+See `docs/dogfood/sqlalchemy-2026-06-17.md` and
+`eval/notes/sqlalchemy-mro-validation-2026-06-17.md`.
+
+### Test count
+
+348 tests pass (was 336 at v0.5.1, +12).
+
+### Eval (SCIP corpora, unchanged)
+
+All six corpora identical to v0.5.0/v0.5.1 — none of this work changed
+resolver scoring tiers. The Python generic-base fix may produce a small
+positive Δ on the click corpus next round (when the eval is re-run with
+SQLAlchemy-style fixtures in the truth set).
+
+---
+
 ## Unreleased — V2 daemon
 
 ### Added
