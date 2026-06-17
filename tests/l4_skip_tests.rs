@@ -146,6 +146,91 @@ fn l4_filter_catches_fastapi_style_top_level_tests_dir() {
 }
 
 #[test]
+fn l4_skips_docs_src_tutorial_candidates() {
+    // FastAPI dogfood (v0.5.0): `docs_src/path_params_numeric_validations/
+    // tutorial001.py` defined a parallel `Query` function that competed
+    // with `fastapi/param_functions.py::Query`. Pre-fix L5 (ambiguous
+    // global) picked the tutorial because SQLite's row order put it
+    // first; the agent saw `Query` "defined in docs_src".
+    //
+    // Fix: NOT_DOC_PATH filter excludes docs_src/, docs/, examples/,
+    // tutorial*/ from L4 + L4b + L5 candidate consideration.
+    let fx = index_fixture(&[
+        ("src/caller.py", "uniqueQuery()\n"),
+        (
+            "src/fastapi/param_functions.py",
+            "def uniqueQuery():\n    return 'real'\n",
+        ),
+        (
+            "docs_src/path_params/tutorial001.py",
+            "def uniqueQuery():\n    return 'doc'\n",
+        ),
+    ]);
+
+    let refs = call_refs_to(&fx.repo, "uniqueQuery");
+    let from_caller: Vec<_> = refs
+        .iter()
+        .filter(|r| r.source_path == "src/caller.py")
+        .collect();
+    assert_eq!(
+        from_caller.len(),
+        1,
+        "expected one ref from caller, got {from_caller:?}",
+    );
+    let r = from_caller[0];
+    assert_eq!(
+        r.target_path.as_deref(),
+        Some("src/fastapi/param_functions.py"),
+        "must skip docs_src/ tutorial and bind to real param_functions.py, got {r:?}",
+    );
+}
+
+#[test]
+fn l4_doc_filter_covers_common_doc_dir_shapes() {
+    // Each doc-style path shape must, on its own, disqualify a candidate
+    // so the lone production sibling wins L4 (global-unique).
+    let cases: &[(&str, &str)] = &[
+        ("docs_src/sub/dupe.py", "docs_src top-level"),
+        ("pkg/docs_src/dupe.py", "docs_src nested"),
+        ("docs/dupe.py", "docs top-level"),
+        ("pkg/docs/dupe.py", "docs nested"),
+        ("examples/dupe.py", "examples top-level"),
+        ("pkg/examples/dupe.py", "examples nested"),
+        ("tutorial/dupe.py", "tutorial top-level"),
+        ("tutorials/dupe.py", "tutorials top-level"),
+        ("pkg/tutorial/dupe.py", "tutorial nested"),
+    ];
+
+    for (doc_path, label) in cases {
+        let fx = index_fixture(&[
+            ("src/c.py", "uniqueDocShape()\n"),
+            (
+                "src/real-impl.py",
+                "def uniqueDocShape():\n    return 'real'\n",
+            ),
+            (doc_path, "def uniqueDocShape():\n    return 'doc'\n"),
+        ]);
+
+        let refs = call_refs_to(&fx.repo, "uniqueDocShape");
+        let from_caller: Vec<_> = refs
+            .iter()
+            .filter(|r| r.source_path == "src/c.py")
+            .collect();
+        assert_eq!(
+            from_caller.len(),
+            1,
+            "[{label}] expected one ref from caller, got {from_caller:?}",
+        );
+        let r = from_caller[0];
+        assert_eq!(
+            r.target_path.as_deref(),
+            Some("src/real-impl.py"),
+            "[{label}] should bind to real-impl.py despite doc fixture at {doc_path}",
+        );
+    }
+}
+
+#[test]
 fn test_source_files_still_resolve_to_real_targets() {
     // The filter MUST be candidate-side only. A test file calling a real
     // function still resolves at L4 — we just don't pick test-path TARGETS.

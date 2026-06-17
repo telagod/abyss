@@ -524,6 +524,37 @@ impl IndexPipeline {
              AND f.path NOT LIKE 'playground/%' \
              AND f.path NOT LIKE '%/playground/%'";
 
+        // Doc-source / tutorial / example path filter — same shape and same
+        // application points as NOT_TEST_PATH. FastAPI dogfood (v0.5.0):
+        // `docs_src/path_params_numeric_validations/tutorial001.py` defined
+        // a parallel `Query` implementation that won L5's ambiguous-global
+        // tie over `fastapi/param_functions.py::Query` — purely on row
+        // order. These paths are not tests but they're not production
+        // either: they hold pedagogical copies of real APIs and routinely
+        // collide with the production symbols they're documenting.
+        //
+        // Pattern set covers the common monorepo doc layouts:
+        //   * `docs_src/`        — FastAPI tutorial sources
+        //   * `docs/`            — sphinx / mkdocs default
+        //   * `examples/`        — Rust crates, Python libraries
+        //   * `tutorial*/`       — Click, Flask, generic tutorial dirs
+        //
+        // Trade-off: a project whose `docs/` directory ACTUALLY holds
+        // production code will see those candidates demoted to below the
+        // gate. This is rare enough to accept; the alternative (no
+        // filter) is the FastAPI failure mode where every agent query
+        // for `Query`/`Path`/`Header` was steered into tutorial code.
+        const NOT_DOC_PATH: &str = "f.path NOT LIKE 'docs_src/%' \
+             AND f.path NOT LIKE '%/docs_src/%' \
+             AND f.path NOT LIKE 'docs/%' \
+             AND f.path NOT LIKE '%/docs/%' \
+             AND f.path NOT LIKE 'examples/%' \
+             AND f.path NOT LIKE '%/examples/%' \
+             AND f.path NOT LIKE 'tutorial/%' \
+             AND f.path NOT LIKE '%/tutorial/%' \
+             AND f.path NOT LIKE 'tutorials/%' \
+             AND f.path NOT LIKE '%/tutorials/%'";
+
         // Level 0: Receiver-type match (confidence = 0.95).
         // The call site knows its receiver's static type (x.M() where x: T,
         // inferred lite from receivers/params/local literals) and exactly one
@@ -797,6 +828,10 @@ impl IndexPipeline {
         // tie just because the real impl lives next to other same-named
         // symbols. Source file is unrestricted — a test file calling a real
         // function still resolves.
+        //
+        // Doc-source filter pairs with the test filter: docs_src/, docs/,
+        // examples/, tutorial*/ hold pedagogical copies that look like real
+        // implementations to the resolver. Same picker+count contract.
         let l3 = conn.execute(
             &format!(
                 "UPDATE refs SET
@@ -804,11 +839,13 @@ impl IndexPipeline {
                      WHERE s.name = refs.target_name
                        AND f.lang_family = (SELECT lang_family FROM files WHERE id = refs.source_file_id)
                        AND {NOT_TEST_PATH}
+                       AND {NOT_DOC_PATH}
                      LIMIT 1),
                  target_symbol_id = (SELECT s.id FROM symbols s JOIN files f ON s.file_id = f.id
                      WHERE s.name = refs.target_name
                        AND f.lang_family = (SELECT lang_family FROM files WHERE id = refs.source_file_id)
                        AND {NOT_TEST_PATH}
+                       AND {NOT_DOC_PATH}
                      LIMIT 1),
                  confidence = 0.8
              WHERE confidence = 0.0 AND kind NOT IN ('import', 'import_binding')
@@ -816,12 +853,14 @@ impl IndexPipeline {
                AND (SELECT COUNT(DISTINCT s.file_id) FROM symbols s JOIN files f ON s.file_id = f.id
                    WHERE s.name = refs.target_name
                      AND f.lang_family = (SELECT lang_family FROM files WHERE id = refs.source_file_id)
-                     AND {NOT_TEST_PATH}) = 1
+                     AND {NOT_TEST_PATH}
+                     AND {NOT_DOC_PATH}) = 1
                AND (target_qualifier IS NULL
                     OR EXISTS (SELECT 1 FROM symbols s JOIN files f ON s.file_id = f.id
                         WHERE s.name = refs.target_name
                           AND f.lang_family = (SELECT lang_family FROM files WHERE id = refs.source_file_id)
                           AND {NOT_TEST_PATH}
+                          AND {NOT_DOC_PATH}
                           AND (s.scope IS NOT NULL OR s.kind = 'method')))"
             ),
             [],
@@ -854,6 +893,12 @@ impl IndexPipeline {
         // possible-caller hint pointing at a test fixture in the same
         // directory is more misleading than helpful. Same source-side
         // unrestricted contract.
+        //
+        // Doc-source filter mirrors L4 for the same reason: a `docs_src/`
+        // or `examples/` sibling that defines a parallel `Query` impl
+        // shouldn't be surfaced as a possible caller of the production
+        // function — that's exactly the noise the agent gate was meant to
+        // suppress.
         let l2b = conn.execute(
             &format!(
                 "UPDATE refs SET
@@ -864,6 +909,7 @@ impl IndexPipeline {
                        AND s.file_id != refs.source_file_id
                        AND f.lang_family = (SELECT lang_family FROM files WHERE id = refs.source_file_id)
                        AND {NOT_TEST_PATH}
+                       AND {NOT_DOC_PATH}
                      LIMIT 1),
                  target_symbol_id = (SELECT s.id FROM symbols s
                      JOIN files f ON s.file_id = f.id
@@ -872,6 +918,7 @@ impl IndexPipeline {
                        AND s.file_id != refs.source_file_id
                        AND f.lang_family = (SELECT lang_family FROM files WHERE id = refs.source_file_id)
                        AND {NOT_TEST_PATH}
+                       AND {NOT_DOC_PATH}
                      LIMIT 1),
                  confidence = 0.6
              WHERE confidence = 0.0 AND kind NOT IN ('import', 'import_binding')
@@ -880,7 +927,8 @@ impl IndexPipeline {
                      AND f.dir = (SELECT dir FROM files WHERE id = refs.source_file_id)
                      AND s.file_id != refs.source_file_id
                      AND f.lang_family = (SELECT lang_family FROM files WHERE id = refs.source_file_id)
-                     AND {NOT_TEST_PATH})"
+                     AND {NOT_TEST_PATH}
+                     AND {NOT_DOC_PATH})"
             ),
             [],
         )?;
@@ -891,21 +939,36 @@ impl IndexPipeline {
         // target()` — pure name match across all symbols. Same-language-family
         // guard plugs the leak; the hint is still surfaced below the gate
         // when a same-family candidate exists.
+        //
+        // Test- and doc-path candidate filters mirror L4/L4b. FastAPI
+        // dogfood (v0.5.0): `Query` resolved to docs_src/.../tutorial001.py
+        // at L5 because the tutorial defined its own `Query` and SQLite's
+        // row order picked it before fastapi/param_functions.py. Below the
+        // 0.7 agent gate this still surfaces as a possible target, but it
+        // shouldn't be the one we picked.
         let l4 = conn.execute(
-            "UPDATE refs SET
+            &format!(
+                "UPDATE refs SET
                  target_file_id = (SELECT s.file_id FROM symbols s JOIN files f ON s.file_id = f.id
                      WHERE s.name = refs.target_name
                        AND f.lang_family = (SELECT lang_family FROM files WHERE id = refs.source_file_id)
+                       AND {NOT_TEST_PATH}
+                       AND {NOT_DOC_PATH}
                      LIMIT 1),
                  target_symbol_id = (SELECT s.id FROM symbols s JOIN files f ON s.file_id = f.id
                      WHERE s.name = refs.target_name
                        AND f.lang_family = (SELECT lang_family FROM files WHERE id = refs.source_file_id)
+                       AND {NOT_TEST_PATH}
+                       AND {NOT_DOC_PATH}
                      LIMIT 1),
                  confidence = 0.5
              WHERE confidence = 0.0 AND kind NOT IN ('import', 'import_binding')
                AND EXISTS (SELECT 1 FROM symbols s JOIN files f ON s.file_id = f.id
                    WHERE s.name = refs.target_name
-                     AND f.lang_family = (SELECT lang_family FROM files WHERE id = refs.source_file_id))",
+                     AND f.lang_family = (SELECT lang_family FROM files WHERE id = refs.source_file_id)
+                     AND {NOT_TEST_PATH}
+                     AND {NOT_DOC_PATH})"
+            ),
             [],
         )?;
 
