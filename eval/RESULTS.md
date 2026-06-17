@@ -11,6 +11,23 @@ Published whatever the numbers say. Reproduce with `eval/run.sh`.
 > (typescript+tsx+javascript), c (c+cpp), java, bash. Single-corpus eval
 > impact should be ~zero — every corpus is single-language — but the
 > demoted tiers on polyglot repos (Go/JS, Rust/JS, …) get noticeably
+## Results — 2026-06-17, abyss v0.4.0 (cross-language filter + L0 architecture coordinates)
+
+| Corpus | Lang | Truth pairs | Gated precision | Gated recall | All precision | All recall |
+|--------|------|------------:|----------------:|-------------:|--------------:|-----------:|
+| gin v1.10.0 | Go | 2,968 | **99.3%** | **82.6%** | 89.2% | 88.0% |
+| hono v4.6.14 | TypeScript | 5,612 | **98.8%** | **63.8%** | (n/a) | (n/a) |
+| click 8.1.8 | Python | 589 | **97.9%** | **93.0%** | 96.9% | 95.6% |
+| ripgrep 14.1.1 | Rust | 4,283 | **98.5%** | **75.3%** | 86.9% | 86.8% |
+| abyss @8099aeb | Rust (dogfood) | 450 | **100.0%** | **90.9%** | 98.4% | 98.4% |
+| cmark 0.31.1 | C | 1,383 | **99.1%** | **74.8%** | 99.1% | 74.8% |
+
+Five corpora unchanged vs the v0.3.5-dev baseline. Click slipped −0.8% / −1.6%
+(single-language Python, cross-lang filter did not fire); shift comes from
+L0+codegen-aware ref reclassification in the larger v0.4.0 work, within
+engineering noise on a 589-pair truth set.
+
+
 > cleaner. Binding-driven tiers (L0/L0b/L0c/L0d) and same-file tiers
 > (L1/L4a) are unchanged.
 

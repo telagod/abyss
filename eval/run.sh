@@ -27,6 +27,10 @@ REPOS=(
 
 for entry in "${REPOS[@]}"; do
   IFS='|' read -r name url ref indexer <<<"$entry"
+  if ! command -v "$indexer" >/dev/null 2>&1; then
+    echo "--- skip $name: indexer '$indexer' not on PATH" >&2
+    continue
+  fi
   dir="$CORPUS/$name"
 
   if [ ! -d "$dir" ]; then
