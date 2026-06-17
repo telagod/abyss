@@ -386,3 +386,130 @@ fn deleted_files_are_removed_from_index() {
     // Refs from the deleted file must be gone too.
     assert_eq!(call_refs_to(&fx.repo, "A").len(), 0);
 }
+
+/// L1 kind-contract regression: impact_analysis default MUST agree with the
+/// callers default (call + field_access + type_ref + inherit).
+///
+/// v0.5.1 dogfood (hono `Context`): `abyss impact Context` reported direct=2
+/// while `abyss callers Context` reported 20 prod callers — the two CLI
+/// surfaces referred to different things because impact silently used the
+/// invocation-only legacy set. This test pins the post-fix contract using a
+/// TypeScript fixture that mixes invocation, type-position, and inheritance
+/// edges; the default impact view must surface ALL three kinds, while
+/// `--calls-only` must drop the non-invocation kinds.
+#[test]
+fn impact_default_matches_callers_superset() {
+    // Fixture mirrors hono `Context`-shape: a class with both invocation
+    // users (`new Context()`) AND type-position users (annotations,
+    // generics, implements). Pre-fix v0.5.1 impact only counted the
+    // invocation users.
+    let fx = index_fixture(&[
+        ("src/types.ts", "export class Context { handle() {} }\n"),
+        // Three type-position users (type_ref edges).
+        (
+            "src/annot_a.ts",
+            "import { Context } from './types';\n\
+             export function f(c: Context) { return c }\n",
+        ),
+        (
+            "src/annot_b.ts",
+            "import { Context } from './types';\n\
+             export function g(c: Context) { return c }\n",
+        ),
+        (
+            "src/annot_c.ts",
+            "import { Context } from './types';\n\
+             let cur: Context | null = null;\n\
+             export const ref_c = cur;\n",
+        ),
+        // Two invocation users (call edges — `new Context()`).
+        (
+            "src/call_a.ts",
+            "import { Context } from './types';\n\
+             export function bootA() { return new Context() }\n",
+        ),
+        (
+            "src/call_b.ts",
+            "import { Context } from './types';\n\
+             export function bootB() { return new Context() }\n",
+        ),
+    ]);
+
+    let gq = GraphQuery::new(&fx.repo);
+
+    // Default impact (no flag) — uses Both. Use min_confidence=0.0 so
+    // cross-package refs aren't filtered by the 0.7 gate on a tiny fixture.
+    let default_impact = gq.impact_analysis("Context", 3, 0.0).unwrap();
+    let kinds: Vec<&str> = default_impact
+        .direct_callers
+        .iter()
+        .map(|c| c.kind.as_str())
+        .collect();
+    // Three type_ref users + 2 call users = 5 direct callers under Both.
+    // Pre-fix legacy filter would have reported only 2 (calls only).
+    assert!(
+        default_impact.direct_callers.len() >= 5,
+        "default impact must include calls + type_ref users \
+         (≥5 direct, got {} — kinds: {kinds:?})",
+        default_impact.direct_callers.len(),
+    );
+    assert!(
+        kinds.contains(&"call"),
+        "default impact must surface call edges, got {kinds:?}",
+    );
+    assert!(
+        kinds.contains(&"type_ref"),
+        "default impact must surface type_ref edges, got {kinds:?}",
+    );
+
+    // `--calls-only` (legacy semantics) drops type_ref. Only the two
+    // `new Context()` users should remain.
+    let calls_only = gq
+        .impact_analysis_filtered(
+            "Context",
+            3,
+            0.0,
+            code_abyss::graph::CallerKindFilter::CallsOnly,
+        )
+        .unwrap();
+    assert!(
+        calls_only.direct_callers.len() <= 2,
+        "calls-only impact must drop type_ref users — got {} ({:?})",
+        calls_only.direct_callers.len(),
+        calls_only
+            .direct_callers
+            .iter()
+            .map(|c| (c.symbol.as_str(), c.kind.as_str()))
+            .collect::<Vec<_>>(),
+    );
+    assert!(
+        calls_only
+            .direct_callers
+            .iter()
+            .all(|c| c.kind == "call" || c.kind == "field_access"),
+        "calls-only must only return call/field_access edges, got kinds {:?}",
+        calls_only
+            .direct_callers
+            .iter()
+            .map(|c| c.kind.as_str())
+            .collect::<Vec<_>>(),
+    );
+    assert!(
+        calls_only.direct_callers.len() < default_impact.direct_callers.len(),
+        "calls-only must strictly drop callers vs. default — calls_only={} default={}",
+        calls_only.direct_callers.len(),
+        default_impact.direct_callers.len(),
+    );
+
+    // Cross-check with find_callers (same Both default) — counts must
+    // agree on direct callers (impact direct ⊆ callers prod).
+    let callers = gq.find_callers("Context", 50, 0.0).unwrap();
+    let caller_prod: Vec<_> = callers.iter().filter(|c| !c.is_test).collect();
+    assert!(
+        caller_prod.len() >= default_impact.direct_callers.len(),
+        "callers must report at least as many prod users as impact direct: \
+         callers={} impact_direct={}",
+        caller_prod.len(),
+        default_impact.direct_callers.len(),
+    );
+}

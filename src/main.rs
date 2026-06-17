@@ -105,7 +105,13 @@ enum Commands {
         #[arg(long, conflicts_with_all = ["calls_only", "types_only"])]
         inherits_only: bool,
     },
-    /// Analyze blast radius of changing a symbol
+    /// Analyze blast radius of changing a symbol.
+    ///
+    /// Default includes ALL dependent kinds (calls + field access + type
+    /// uses + inheritance) so the count matches `abyss callers` — a
+    /// type-position user or subclass IS affected when you change the
+    /// symbol's API. Use `--calls-only` to recover the legacy "who invokes
+    /// this function" behaviour.
     Impact {
         symbol: String,
         #[arg(short, long, default_value = "3")]
@@ -113,6 +119,12 @@ enum Commands {
         /// Exclude references resolved below this confidence (0 includes everything)
         #[arg(long, default_value = "0.7")]
         min_confidence: f64,
+        /// Restrict to invocation edges (`call` + `field_access`). Legacy
+        /// function-only blast radius — drops type-position users and
+        /// inheritors. The default behaviour (no flag) matches what
+        /// `abyss callers` reports.
+        #[arg(long)]
+        calls_only: bool,
     },
     /// Trace evolution of a file or symbol
     History {
@@ -267,7 +279,8 @@ fn main() -> Result<()> {
             symbol,
             depth,
             min_confidence,
-        } => cmd_impact(config, &symbol, depth, min_confidence, json),
+            calls_only,
+        } => cmd_impact(config, &symbol, depth, min_confidence, calls_only, json),
         Commands::History { file, symbol } => cmd_history(config, &file, symbol.as_deref(), json),
         Commands::Context { file } => cmd_context(config, &file, json),
         Commands::Map { limit } => cmd_map(config, limit, json),
@@ -579,11 +592,21 @@ fn cmd_impact(
     symbol: &str,
     depth: u32,
     min_confidence: f64,
+    calls_only: bool,
     json: bool,
 ) -> Result<()> {
+    use code_abyss::graph::CallerKindFilter;
     let repo = Repository::open(&config.db_path, config.model.dimensions)?;
     let gq = code_abyss::graph::GraphQuery::new(&repo);
-    let result = gq.impact_analysis(symbol, depth, min_confidence)?;
+    // Default to the agent-facing superset (matches `abyss callers`).
+    // `--calls-only` reverts to the v0.5.1 legacy "who invokes this function"
+    // behaviour for users who want the function-only blast radius.
+    let kind_filter = if calls_only {
+        CallerKindFilter::CallsOnly
+    } else {
+        CallerKindFilter::Both
+    };
+    let result = gq.impact_analysis_filtered(symbol, depth, min_confidence, kind_filter)?;
 
     if json {
         println!("{}", serde_json::to_string(&result)?);

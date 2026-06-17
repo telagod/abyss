@@ -194,11 +194,41 @@ impl<'a> GraphQuery<'a> {
         })
     }
 
+    /// Blast-radius analysis: BFS over callers, gated by `min_confidence`.
+    ///
+    /// Kind contract (v0.5.2+): the default kind set is the agent-facing
+    /// superset (`call`, `field_access`, `type_ref`, `inherit`) — same as
+    /// [`Self::find_callers`]. v0.5.1 dogfood (hono `Context`): `impact`
+    /// reported `direct=2` while `callers` reported 20 prod callers; the
+    /// numbers referred to different things because impact silently used the
+    /// invocation-only legacy set. A type-position user of a symbol IS in the
+    /// blast radius if you change that symbol's API; an inheritance edge IS a
+    /// load-bearing dependency. The two surfaces must agree by default.
+    ///
+    /// For the function-only blast radius (legacy semantics), see
+    /// [`Self::impact_analysis_filtered`] with [`CallerKindFilter::CallsOnly`].
     pub fn impact_analysis(
         &self,
         symbol_name: &str,
         max_depth: u32,
         min_confidence: f64,
+    ) -> Result<ImpactResult> {
+        self.impact_analysis_filtered(
+            symbol_name,
+            max_depth,
+            min_confidence,
+            CallerKindFilter::Both,
+        )
+    }
+
+    /// Blast-radius analysis with caller-specified kind filter. See
+    /// [`Self::impact_analysis`] for the kind-contract rationale.
+    pub fn impact_analysis_filtered(
+        &self,
+        symbol_name: &str,
+        max_depth: u32,
+        min_confidence: f64,
+        kind_filter: CallerKindFilter,
     ) -> Result<ImpactResult> {
         // Visited key is (source_file_id, source_symbol_name) — NOT bare name.
         //
@@ -206,13 +236,13 @@ impl<'a> GraphQuery<'a> {
         // each have their subtrees walked independently. Keying on just the
         // name collapses them and any future BFS step that branches on
         // (file_id, name) — e.g. passing source-file-scoped filters into
-        // find_callers_of — would silently drop a subtree.
+        // find_callers_of_kinds — would silently drop a subtree.
         //
-        // The current find_callers_of is name-keyed at the SQL layer, so the
-        // observable surface of this bug is currently masked by the aggregate
-        // query. The visited-set type is a forward-looking guard: it preserves
-        // correctness if/when the BFS is tightened to file-scoped traversal.
-        // See `visited_set_contract` tests below for the pin.
+        // The current find_callers_of_kinds is name-keyed at the SQL layer, so
+        // the observable surface of this bug is currently masked by the
+        // aggregate query. The visited-set type is a forward-looking guard: it
+        // preserves correctness if/when the BFS is tightened to file-scoped
+        // traversal. See `visited_set_contract` tests below for the pin.
         let mut visited: HashSet<(i64, String)> = HashSet::new();
         let mut queue: VecDeque<(String, u32)> = VecDeque::new();
         let mut direct = Vec::new();
@@ -220,8 +250,11 @@ impl<'a> GraphQuery<'a> {
         let mut tests = Vec::new();
         let mut excluded_low_confidence = 0usize;
 
+        let kinds = kind_filter.as_slice();
         // Seed: direct callers
-        let direct_refs = self.repo.find_callers_of(symbol_name, None, 200)?;
+        let direct_refs = self
+            .repo
+            .find_callers_of_kinds(symbol_name, None, kinds, 200)?;
         for r in &direct_refs {
             if r.confidence < min_confidence {
                 excluded_low_confidence += 1;
@@ -259,7 +292,7 @@ impl<'a> GraphQuery<'a> {
                 continue;
             }
 
-            let callers = self.repo.find_callers_of(&sym, None, 100)?;
+            let callers = self.repo.find_callers_of_kinds(&sym, None, kinds, 100)?;
             for r in callers {
                 if r.confidence < min_confidence {
                     excluded_low_confidence += 1;
