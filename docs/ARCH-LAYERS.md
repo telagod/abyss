@@ -54,3 +54,72 @@ abyss where src/graph/languages/go.rs     # check the resulting layer
 
 Reindex any time you edit `arch.toml` — the overrides are applied at index
 time, not at read time.
+
+## Module labels (v0.5.0)
+
+`abyss where` also prints a `module=...` field. Modules come out of
+graph clustering (Louvain on the import graph), not the layer
+dictionary, so they reflect *who imports whom*, not *what kind of file
+this is*. v0.5.0 changed how the label is rendered:
+
+- **Boring monorepo prefixes are stripped before label picking.**
+  `packages`, `crates`, `libs`, `src`, `lib`, `app`, `apps`,
+  `services`, `modules`, `internal` no longer dominate the modal
+  segment. Vite's modules went from `p-N` to `vite-N`, helix's went
+  from `helix--N` toward crate-name labels.
+- **Cross-cutting communities render as `cluster-N`.** When no single
+  path segment claims ≥ 50% of the module's members, the labeller
+  emits `cluster-N` instead of the internal `mixed:{seg}+` bookkeeping
+  that used to leak into output.
+- **Genuinely unlabellable modules render as `unlabelled-N`.** Empty
+  centroid path, no winning segment — say so honestly rather than
+  appending a digit to a fragment.
+
+The principle: a label that *looks* informative but isn't costs more
+trust than an honest fallback. See
+[docs/PRINCIPLES.md](PRINCIPLES.md) §5.
+
+## FAQ
+
+**Why is my module labeled `cluster-3`?**
+The cluster is a cross-cutting community — files from several
+different top-level directories ended up co-imported strongly enough
+that Louvain merged them. No single directory segment owns ≥ 50% of
+the members, so the labeller falls back to `cluster-N` rather than
+inventing a label out of a minority segment. To rename it, drop a
+`[layers]` rule that gives the dominant subsystem a higher weight, or
+restructure the imports so the community has a clear centroid.
+
+**Why is everything labeled `unknown`?**
+The built-in layer dictionary is tuned for Western/web/service
+vocabulary (`auth`, `handler`, `controller`, `repository`,
+`middleware`, `route`, `service`, `queue`, `event`, `cache`,
+`scheduler`, `worker`, `validator`, `log`, `metric`, `db`, …). If your
+project uses non-Western terms (Chinese / Japanese / Korean directory
+names) or non-web vocabulary (`view`, `term`, `tui`, `core`, `lsp`,
+`dap`, `vcs`, `stdx`, `loader` — the helix-editor case), the
+dictionary contributes nothing and you get 80%+ `unknown` with
+`conf=0`. Fix: drop a `.code-abyss/arch.toml` like the example above,
+listing the segment vocabulary specific to your project and the
+layer each maps to. Layer signal is dead metadata until you teach the
+dictionary about your repo's words.
+
+**Why does my hub file end up in a satellite module like `tests`?**
+Module clustering is driven by edge density. If hundreds of tests
+import one production file, the production file can get pulled into
+the test community by sheer connectivity. This is a known limitation
+(see FastAPI dogfood B3,
+[docs/dogfood/fastapi-2026-06-17.md](dogfood/fastapi-2026-06-17.md)).
+Workaround: a path-prefix override in `arch.toml` cannot move a file
+across modules — modules are a graph property, not a path property —
+but you can rely on the topological signals (`role=bridge`,
+`centrality`, `in/out`) on the same `where` line, which are not
+affected by clustering and remain the load-bearing answer to "is this
+a hub?".
+
+**Why did `module=` change between v0.4.0 and v0.5.0?**
+v0.4.0 emitted `p-18` / `helix--8` / `mixed:create-vite+` — these were
+internal labeller state leaking out. v0.5.0 renders the same
+underlying clusters as `vite-18` / `helix-view` / `cluster-N`. Module
+ids are stable across reindexes of the same content; only the
+rendered label string changed.
