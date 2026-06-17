@@ -468,11 +468,29 @@ pub fn render_card(ctx: &serde_json::Value, file_path: &str, staleness_ms: u128)
     }
 
     // ---- contracts: exported symbols + their reach ----
+    //
+    // We group by (name, kind) before rendering. The raw `sym_callers` list
+    // can contain many entries for the same `(name, kind)` pair: e.g. a
+    // file with 18 `impl Default for X` blocks emits 18 separate method
+    // symbols all named `default`, and Vite's `server.ts` exports
+    // `waitForRequestsIdle` twice (once on `ViteDevServer`, once as a
+    // standalone function). Rendering them one per row floods the card
+    // with 18 identical-looking lines. Grouping sums the caller/test
+    // counts and suffixes `(N impls)` when N>1, so the agent still sees
+    // the multiplicity without losing the rest of the card to repeats.
     if !sym_callers.is_empty() {
         body.push_str("\ncontracts (exported symbols & callers)\n");
+        struct ContractAgg {
+            name: String,
+            kind: String,
+            n_prod: usize,
+            n_test: usize,
+            impls: usize,
+        }
+        let mut groups: Vec<ContractAgg> = Vec::new();
         for s in sym_callers {
-            let name = s["symbol"].as_str().unwrap_or("?");
-            let kind = s["kind"].as_str().unwrap_or("");
+            let name = s["symbol"].as_str().unwrap_or("?").to_string();
+            let kind = s["kind"].as_str().unwrap_or("").to_string();
             let (n_prod, n_test) = s["external_callers"]
                 .as_array()
                 .map(|arr| {
@@ -485,8 +503,30 @@ pub fn render_card(ctx: &serde_json::Value, file_path: &str, staleness_ms: u128)
                     })
                 })
                 .unwrap_or((0, 0));
+            match groups.iter_mut().find(|g| g.name == name && g.kind == kind) {
+                Some(g) => {
+                    g.n_prod += n_prod;
+                    g.n_test += n_test;
+                    g.impls += 1;
+                }
+                None => groups.push(ContractAgg {
+                    name,
+                    kind,
+                    n_prod,
+                    n_test,
+                    impls: 1,
+                }),
+            }
+        }
+        for g in &groups {
+            let impl_suffix = if g.impls > 1 {
+                format!(" ({} impls)", g.impls)
+            } else {
+                String::new()
+            };
             body.push_str(&format!(
-                "  {name} ({kind}) → [{n_prod} callers, {n_test} tests]\n"
+                "  {} ({}) → [{} callers, {} tests]{impl_suffix}\n",
+                g.name, g.kind, g.n_prod, g.n_test
             ));
         }
     }
@@ -723,6 +763,74 @@ mod tests {
         assert!(
             !card.contains("type)"),
             "did not expect type split:\n{card}"
+        );
+    }
+
+    #[test]
+    fn contracts_dedup_groups_repeated_symbol_kind_pairs() {
+        // Helix-style file: three `impl Default for X/Y/Z` blocks each emit
+        // a method symbol named `default`. The contracts section MUST
+        // collapse them into one row with `(N impls)` suffix and the
+        // summed caller/test counts — not three repeated rows.
+        let mut sym_callers = Vec::new();
+        for _ in 0..3 {
+            sym_callers.push(json!({
+                "symbol": "default",
+                "kind": "method",
+                "line": 1,
+                "external_callers": [
+                    {"file":"src/a.rs","line":1,"caller":"x","confidence":1.0,"is_test":false,"kind":"call"},
+                    {"file":"src/b_test.rs","line":1,"caller":"t","confidence":1.0,"is_test":true,"kind":"call"},
+                ],
+                "possible_callers": [],
+            }));
+        }
+        let ctx = json!({
+            "file": "src/editor.rs",
+            "symbols_defined": 3,
+            "symbols_with_external_callers": sym_callers,
+            "dependencies": [],
+            "hotspot": null,
+            "coupled_files": [],
+        });
+        let card = render_card(&ctx, "src/editor.rs", 0);
+
+        // One row, summed counts, impl suffix surfaces multiplicity.
+        let row = "  default (method) → [3 callers, 3 tests] (3 impls)\n";
+        assert!(card.contains(row), "missing grouped contracts row:\n{card}");
+        // And NOT three duplicate rows.
+        let occurrences = card.matches("default (method) → [").count();
+        assert_eq!(
+            occurrences, 1,
+            "expected 1 contract row, got {occurrences}:\n{card}"
+        );
+    }
+
+    #[test]
+    fn contracts_no_impl_suffix_when_unique() {
+        // Single (symbol, kind) row keeps the legacy compact format so a
+        // pile of distinct exports doesn't suddenly grow `(1 impls)` noise.
+        let ctx = json!({
+            "file": "src/a.rs",
+            "symbols_defined": 1,
+            "symbols_with_external_callers": [{
+                "symbol": "run",
+                "kind": "function",
+                "line": 1,
+                "external_callers": [
+                    {"file":"src/b.rs","line":1,"caller":"x","confidence":1.0,"is_test":false,"kind":"call"},
+                ],
+                "possible_callers": [],
+            }],
+            "dependencies": [],
+            "hotspot": null,
+            "coupled_files": [],
+        });
+        let card = render_card(&ctx, "src/a.rs", 0);
+        assert!(card.contains("run (function) → [1 callers, 0 tests]\n"));
+        assert!(
+            !card.contains("impls"),
+            "did not expect impls suffix:\n{card}"
         );
     }
 
