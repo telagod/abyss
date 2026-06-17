@@ -709,21 +709,30 @@ impl Repository {
     /// derived here from the file paths of each module's members — the
     /// inference engine only knows file_ids, not paths.
     pub fn replace_arch_modules(&self, modules: &[crate::arch::ArchModuleRow]) -> Result<()> {
-        // Pull paths for every module member in one query, so module labels can
-        // be the longest common prefix of their member files. The inference
-        // engine left `label` / `centroid_path` empty; we fill them here using
-        // the freshly-written arch_facts.module_id → file_id mapping.
-        let mut member_paths: std::collections::HashMap<i64, Vec<String>> =
+        // Pull paths AND centrality for every module member in one query.
+        // Centrality is the importance weight used to decide the modal
+        // segment label: a community containing `fastapi/applications.py`
+        // (high centrality) plus 10 `docs_src/tutorial*.py` (each near
+        // zero) labels as "fastapi", not "docs_src" — even though
+        // docs_src files dominate by raw count. Raw-count modal labelling
+        // was a FastAPI v0.5.0 dogfood regression.
+        let mut member_paths: std::collections::HashMap<i64, Vec<(String, f64)>> =
             std::collections::HashMap::new();
         {
             let mut stmt = self.conn.prepare(
-                "SELECT af.module_id, f.path
+                "SELECT af.module_id, f.path, af.centrality
                  FROM arch_facts af JOIN files f ON f.id = af.file_id
                  WHERE af.module_id >= 0",
             )?;
-            let rows = stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))?;
+            let rows = stmt.query_map([], |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, f64>(2)?,
+                ))
+            })?;
             for r in rows.flatten() {
-                member_paths.entry(r.0).or_default().push(r.1);
+                member_paths.entry(r.0).or_default().push((r.1, r.2));
             }
         }
 
@@ -734,9 +743,12 @@ impl Repository {
         let mut prelim: Vec<(i64, String, String, i64, String)> = Vec::with_capacity(modules.len());
         let mut counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
         for m in modules {
-            let paths = member_paths.get(&m.id).cloned().unwrap_or_default();
-            let centroid_path = longest_common_prefix(&paths);
-            let label = derive_label(&centroid_path, &paths, m.id);
+            let members = member_paths.get(&m.id).cloned().unwrap_or_default();
+            // Longest common prefix is a structural property — every member
+            // contributes equally regardless of centrality.
+            let only_paths: Vec<String> = members.iter().map(|(p, _)| p.clone()).collect();
+            let centroid_path = longest_common_prefix(&only_paths);
+            let label = derive_label(&centroid_path, &members, m.id);
             *counts.entry(label.clone()).or_insert(0) += 1;
             prelim.push((
                 m.id,
@@ -967,12 +979,23 @@ fn is_boring_dir(seg: &str) -> bool {
 ///    boundary (`p`, `pa`, …) → look one level deeper. Skip the topmost
 ///    segment when it's also a boring prefix so a `src/graph/...` module
 ///    labels as "graph", not "src".
-/// 3. Modal candidate must be a strict majority (>50%). Below that the
-///    cluster is cross-cutting — render `cluster-{id}` so the agent sees an
-///    honest "we couldn't name this" instead of a misleading single segment.
+/// 3. Modal candidate must be a strict majority (>50% of total weight).
+///    Below that the cluster is cross-cutting — render `cluster-{id}` so
+///    the agent sees an honest "we couldn't name this" instead of a
+///    misleading single segment.
 /// 4. Absolutely nothing to go on → `unlabelled-{id}` (friendlier than
 ///    `module-{id}`, which used to leak the internal community ID).
-fn derive_label(centroid: &str, paths: &[String], id: i64) -> String {
+///
+/// Modal-segment counting is centrality-weighted: each member's vote is its
+/// arch_facts.centrality, not 1.0. FastAPI v0.5.0 dogfood: a community
+/// containing fastapi/applications.py (centrality ~0.4) was dominated by
+/// ~150 docs_src/tutorial*.py files (centrality ~0.001 each) and labelled
+/// "docs_src" despite applications.py being the obvious centerpiece. With
+/// weights, applications.py's 0.4 beats the tutorial files' summed ~0.15
+/// and the label becomes "fastapi". When centralities aren't populated
+/// (every member at 0.0), we fall back to raw count so we never drop into
+/// "cluster-{id}" purely from missing weights.
+fn derive_label(centroid: &str, paths: &[(String, f64)], id: i64) -> String {
     // First choice: the deepest directory segment of the longest common prefix.
     // Example: members all under `src/auth/` → label "auth".
     let trimmed = centroid.trim_end_matches('/');
@@ -992,9 +1015,11 @@ fn derive_label(centroid: &str, paths: &[String], id: i64) -> String {
     // meaning — and prefer the deepest segment we can find that isn't also
     // a boring prefix.
     use std::collections::HashMap;
-    let mut counts: HashMap<String, usize> = HashMap::new();
-    let mut considered = 0usize;
-    for p in paths {
+    let mut weighted: HashMap<String, f64> = HashMap::new();
+    let mut weighted_total: f64 = 0.0;
+    let mut raw_counts: HashMap<String, usize> = HashMap::new();
+    let mut raw_total: usize = 0;
+    for (p, centrality) in paths {
         let segs: Vec<&str> = p.split('/').collect();
         if segs.len() < 2 {
             continue;
@@ -1003,19 +1028,37 @@ fn derive_label(centroid: &str, paths: &[String], id: i64) -> String {
         if let Some(s) = pick
             && !s.is_empty()
         {
-            *counts.entry(s).or_insert(0) += 1;
-            considered += 1;
+            // Centrality is non-negative; clamp to be safe against any
+            // upstream weirdness. Adding 0 to the weighted bucket is a
+            // no-op so files with zero centrality just don't vote in the
+            // weighted tally — the raw-count fallback below catches them.
+            let w = centrality.max(0.0);
+            *weighted.entry(s.clone()).or_insert(0.0) += w;
+            weighted_total += w;
+            *raw_counts.entry(s).or_insert(0) += 1;
+            raw_total += 1;
         }
     }
-    if let Some((seg, n)) = counts.iter().max_by_key(|(_, n)| **n) {
-        // Modal segment must be a strict majority — otherwise labeling the
-        // community after it is misleading (e.g. a mega-cluster of
-        // {storage×2, search×2, temporal×4, indexer×2} would render as
-        // "temporal" despite being a cross-cutting mash-up). Below 50% we
-        // emit a "cluster-{id}" tag so the agent sees an honest unnamed
-        // cluster rather than the old `mixed:{seg}+` which leaked internal
-        // merge state.
-        if *n * 2 > considered {
+
+    // Prefer centrality-weighted modal when any non-zero weight exists;
+    // otherwise fall back to raw count so old indexes (or modules where
+    // every member happens to be a leaf with centrality 0) still label.
+    if weighted_total > 0.0
+        && let Some((seg, w)) = weighted
+            .iter()
+            .max_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal))
+    {
+        // Strict-majority gate: top segment must own >50% of weight.
+        // Below that the community is cross-cutting (or its weights are
+        // spread thin enough that no single segment "owns" it) — emit
+        // `cluster-{id}` so the agent sees an honest unnamed cluster.
+        if *w * 2.0 > weighted_total {
+            return seg.clone();
+        }
+        return format!("cluster-{id}");
+    }
+    if let Some((seg, n)) = raw_counts.iter().max_by_key(|(_, n)| **n) {
+        if *n * 2 > raw_total {
             return seg.clone();
         }
         return format!("cluster-{id}");
@@ -1041,6 +1084,13 @@ fn pick_module_segment(segs: &[&str]) -> Option<String> {
 #[cfg(test)]
 mod arch_tests {
     use super::*;
+
+    /// Convenience: wrap a path list with neutral centrality weights so
+    /// existing tests stay readable. A constant weight of 1.0 reduces the
+    /// centrality-weighted modal to the same answer as raw count.
+    fn weighted(paths: &[&str]) -> Vec<(String, f64)> {
+        paths.iter().map(|p| (p.to_string(), 1.0)).collect()
+    }
 
     #[test]
     fn longest_common_prefix_basic() {
@@ -1073,11 +1123,11 @@ mod arch_tests {
     #[test]
     fn derive_label_modal_second_segment() {
         // Scattered members under src/graph/* — modal 2nd segment "graph" wins.
-        let paths = vec![
-            "src/graph/extractor.rs".to_string(),
-            "src/graph/languages/go.rs".to_string(),
-            "src/graph/languages/rust_lang.rs".to_string(),
-        ];
+        let paths = weighted(&[
+            "src/graph/extractor.rs",
+            "src/graph/languages/go.rs",
+            "src/graph/languages/rust_lang.rs",
+        ]);
         assert_eq!(derive_label("", &paths, 5), "graph");
     }
 
@@ -1085,10 +1135,7 @@ mod arch_tests {
     fn derive_label_skips_src_in_common_prefix() {
         // Common prefix is just "src/" — that's the boring top-level.
         // Should fall through to modal 2nd segment, which is "storage".
-        let paths = vec![
-            "src/storage/repo.rs".to_string(),
-            "src/storage/schema.rs".to_string(),
-        ];
+        let paths = weighted(&["src/storage/repo.rs", "src/storage/schema.rs"]);
         assert_eq!(derive_label("src/", &paths, 0), "storage");
     }
 
@@ -1097,11 +1144,11 @@ mod arch_tests {
         // Vite-style: members all under `packages/vite/...`. Pre-fix this
         // labelled the cluster "packages" (or "p-N" via collision); now we
         // recurse past the boring `packages/` prefix and use "vite".
-        let paths = vec![
-            "packages/vite/src/node/server/index.ts".to_string(),
-            "packages/vite/src/node/server/middlewares.ts".to_string(),
-            "packages/vite/src/node/utils.ts".to_string(),
-        ];
+        let paths = weighted(&[
+            "packages/vite/src/node/server/index.ts",
+            "packages/vite/src/node/server/middlewares.ts",
+            "packages/vite/src/node/utils.ts",
+        ]);
         assert_eq!(derive_label("packages/vite/src/", &paths, 0), "vite");
         // And when the centroid only reaches `packages/` (members straddle
         // two sub-packages but most are still in vite), the modal-segment
@@ -1112,11 +1159,11 @@ mod arch_tests {
     #[test]
     fn derive_label_crates_centroid_recurses_into_crate_name() {
         // Helix-style: members under `crates/helix-view/...`.
-        let paths = vec![
-            "crates/helix-view/src/editor.rs".to_string(),
-            "crates/helix-view/src/view.rs".to_string(),
-            "crates/helix-view/src/document.rs".to_string(),
-        ];
+        let paths = weighted(&[
+            "crates/helix-view/src/editor.rs",
+            "crates/helix-view/src/view.rs",
+            "crates/helix-view/src/document.rs",
+        ]);
         assert_eq!(derive_label("crates/helix-view/", &paths, 0), "helix-view");
         assert_eq!(derive_label("crates/", &paths, 0), "helix-view");
     }
@@ -1127,11 +1174,11 @@ mod arch_tests {
         // partial segment, not even a full directory. Pre-fix this rendered
         // as "p" and collided with siblings to become "p-N"; now we ignore
         // the partial centroid and recurse into the modal segment.
-        let paths = vec![
-            "packages/vite/src/node/cli.ts".to_string(),
-            "packages/vite/src/node/config.ts".to_string(),
-            "playground/vue/main.ts".to_string(),
-        ];
+        let paths = weighted(&[
+            "packages/vite/src/node/cli.ts",
+            "packages/vite/src/node/config.ts",
+            "playground/vue/main.ts",
+        ]);
         assert_eq!(derive_label("p", &paths, 0), "vite");
     }
 
@@ -1140,14 +1187,14 @@ mod arch_tests {
         // No single segment owns >50% of the members — old behaviour was
         // `mixed:{seg}+` which leaked internal merge state. New honest name:
         // `cluster-{id}`.
-        let paths = vec![
-            "src/storage/repo.rs".to_string(),
-            "src/search/symbol.rs".to_string(),
-            "src/temporal/git_parser.rs".to_string(),
-            "src/temporal/hotspot.rs".to_string(),
-            "src/indexer/pipeline.rs".to_string(),
-            "src/indexer/walker.rs".to_string(),
-        ];
+        let paths = weighted(&[
+            "src/storage/repo.rs",
+            "src/search/symbol.rs",
+            "src/temporal/git_parser.rs",
+            "src/temporal/hotspot.rs",
+            "src/indexer/pipeline.rs",
+            "src/indexer/walker.rs",
+        ]);
         // Six members across four distinct second segments — no majority.
         assert_eq!(derive_label("src/", &paths, 42), "cluster-42");
     }
@@ -1157,5 +1204,51 @@ mod arch_tests {
         // Empty centroid + zero paths — friendlier than the old
         // `module-{id}` which sounded like a real name.
         assert_eq!(derive_label("", &[], 9), "unlabelled-9");
+    }
+
+    #[test]
+    fn derive_label_centrality_weighted_modal_beats_raw_count() {
+        // FastAPI v0.5.0 dogfood shape: a community containing
+        // fastapi/applications.py (high centrality) plus a bulk of
+        // docs_src/tutorial*.py files (each near zero) was labelled
+        // "docs_src" pre-fix because raw count put it at 10/12 = 83%.
+        // Centrality-weighted: applications.py + routing.py contribute
+        // 0.4+0.3=0.7, all 10 tutorial files contribute 0.001×10=0.01,
+        // so fastapi wins with 0.7/0.71 = 98.5%.
+        let mut paths: Vec<(String, f64)> = (1..=10)
+            .map(|i| (format!("docs_src/tutorial{i:03}.py"), 0.001))
+            .collect();
+        paths.push(("src/fastapi/applications.py".into(), 0.4));
+        paths.push(("src/fastapi/routing.py".into(), 0.3));
+        assert_eq!(derive_label("", &paths, 0), "fastapi");
+    }
+
+    #[test]
+    fn derive_label_zero_centrality_falls_back_to_raw_count() {
+        // When every member has centrality 0 (a leaf-only community, or
+        // an old index that didn't populate the column), the weighted
+        // bucket sums to 0 and we'd otherwise drop into cluster-{id}.
+        // The raw-count fallback keeps the old behaviour intact so the
+        // change is strictly additive when centrality data is missing.
+        let paths: Vec<(String, f64)> = vec![
+            ("src/storage/repo.rs".into(), 0.0),
+            ("src/storage/schema.rs".into(), 0.0),
+            ("src/storage/cache.rs".into(), 0.0),
+        ];
+        assert_eq!(derive_label("src/", &paths, 0), "storage");
+    }
+
+    #[test]
+    fn derive_label_centrality_weighted_no_majority_renders_as_cluster() {
+        // Two segments split centrality near-evenly — even with weighting
+        // the >50% gate refuses to pick a winner and the honest cluster
+        // tag wins.
+        let paths: Vec<(String, f64)> = vec![
+            ("src/storage/repo.rs".into(), 0.4),
+            ("src/storage/schema.rs".into(), 0.3),
+            ("src/search/symbol.rs".into(), 0.4),
+            ("src/search/fulltext.rs".into(), 0.3),
+        ];
+        assert_eq!(derive_label("src/", &paths, 7), "cluster-7");
     }
 }
