@@ -1632,7 +1632,7 @@ fn normalize_rel_path(p: &str) -> String {
 /// importing file's dir (one leading dot = current package, each extra dot =
 /// one level up); absolute dotted paths (`click.types`) match exactly or by
 /// unique path suffix (handles `src/` layouts). Candidates: `<base>.py`,
-/// `<base>/__init__.py`.
+/// `<base>.pyi`, `<base>/__init__.py`, `<base>/__init__.pyi`.
 fn resolve_py_module(
     dir: &str,
     module: &str,
@@ -1659,7 +1659,17 @@ fn resolve_py_module(
     if base.is_empty() {
         return None;
     }
-    for cand in [format!("{base}.py"), format!("{base}/__init__.py")] {
+    // `.pyi` covers stub-only modules (mypy stubs, PEP 561 packages whose
+    // public API lives in .pyi alongside or instead of .py). The walker
+    // and parser already treat .pyi as Python; without it here, calls
+    // through `from foo import bar` against a stub-only `foo.pyi` lose
+    // their L0b import-binding link.
+    for cand in [
+        format!("{base}.py"),
+        format!("{base}.pyi"),
+        format!("{base}/__init__.py"),
+        format!("{base}/__init__.pyi"),
+    ] {
         if let Some(&id) = paths.get(&cand) {
             return Some(id);
         }
