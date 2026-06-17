@@ -148,7 +148,7 @@ impl FileWatcher {
                         // embeddings, so this is the seam where they catch up).
                         if let Some(emb) = embedder {
                             for path in &pending {
-                                if let Err(e) = pipeline.reindex_file(repo, emb, path) {
+                                if let Err(e) = pipeline.reindex_file(repo, Some(emb), path) {
                                     warn!("embed refresh failed {}: {e}", path.display());
                                 }
                             }

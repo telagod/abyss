@@ -37,16 +37,12 @@ fn to_rel(workspace: &Path, path: &Path) -> String {
 
 pub struct IndexPipeline {
     config: Config,
-    parser: MultiParser,
-    chunker: Chunker,
     max_files: Option<u64>,
 }
 
 impl IndexPipeline {
     pub fn new(config: Config) -> Self {
         Self {
-            chunker: Chunker::new(100, 3),
-            parser: MultiParser::new(),
             config,
             max_files: None,
         }
@@ -946,113 +942,68 @@ impl IndexPipeline {
         Ok(stats)
     }
 
-    fn index_file_structural(&self, repo: &Repository, path: &Path, rel_path: &str) -> Result<u64> {
-        let source = std::fs::read_to_string(path)?;
-        let hash = blake3::hash(source.as_bytes()).to_hex().to_string();
-        let language = parser::detect_language(rel_path);
-        let mtime = std::fs::metadata(path)?
-            .modified()?
-            .duration_since(std::time::UNIX_EPOCH)?
-            .as_secs() as i64;
-        let size = source.len() as i64;
-
-        if let Some(old_id) = repo.get_file_id(rel_path)? {
-            repo.delete_chunks_for_file(old_id)?;
-            repo.delete_symbols_for_file(old_id)?;
-            repo.delete_file(old_id)?;
-        }
-
-        let generated = parser::is_generated(&source);
-        let file_id =
-            repo.upsert_file(rel_path, &hash, language.as_deref(), mtime, size, generated)?;
-        let chunks = self.parse_and_chunk(&source, language.as_deref());
-
-        let mut count = 0u64;
-        for chunk in &chunks {
-            let token_count = chunk.content.split_whitespace().count() as u32;
-            let chunk_id = repo.insert_chunk(
-                file_id,
-                &chunk.content,
-                chunk.kind.as_str(),
-                chunk.start_line,
-                chunk.end_line,
-                chunk.scope.as_deref(),
-                token_count,
-            )?;
-
-            for sym in &chunk.symbols {
-                repo.insert_symbol(
-                    chunk_id,
-                    file_id,
-                    &sym.name,
-                    sym.kind.as_str(),
-                    sym.line,
-                    chunk.scope.as_deref(),
-                )?;
-            }
-            count += 1;
-        }
-
-        Ok(count)
-    }
-
-    fn parse_and_chunk(&self, source: &str, language: Option<&str>) -> Vec<CodeChunk> {
-        if let Some(lang) = language
-            && self.parser.supports(lang)
-            && let Ok(tree) = self.parser.parse(source, lang)
-        {
-            let chunks = self.chunker.chunk(source, &tree, lang);
-            if !chunks.is_empty() {
-                return chunks;
-            }
-        }
-        vec![CodeChunk {
-            content: source.to_string(),
-            kind: ChunkKind::Module,
-            start_line: 0,
-            end_line: source.lines().count().saturating_sub(1) as u32,
-            scope: None,
-            symbols: Vec::new(),
-        }]
-    }
-
-    pub fn index_file(
+    /// Re-index a single changed file.
+    ///
+    /// Delegates to [`Self::run_structural`] (hash-incremental — only the
+    /// file whose blake3 hash changed gets reparsed) and then, when an
+    /// embedder is provided, refreshes that file's embeddings. This keeps
+    /// the resolver invariant intact: the previous shape — a hand-rolled
+    /// "delete this file's rows + reinsert chunks/symbols" path — silently
+    /// CASCADE-deleted the file's outgoing refs (via `refs.source_file_id`
+    /// ON DELETE CASCADE) AND never re-ran the batch resolver, so the
+    /// file's call edges vanished from the graph until the next full pass.
+    ///
+    /// Pass `None` for `embedder` in slim builds or when the caller will
+    /// refresh embeddings separately. Cost: one workspace tree walk per
+    /// call. On a 100k-LOC repo that is <1s; if profiling ever shows it as
+    /// a hot spot, replace this body with a scoped resolver pass (option A
+    /// in the v0.4.0 debt note).
+    pub fn reindex_file(
         &self,
         repo: &Repository,
-        embedder: &Embedder,
+        embedder: Option<&Embedder>,
         path: &Path,
-        rel_path: &str,
     ) -> Result<u64> {
-        let count = self.index_file_structural(repo, path, rel_path)?;
+        let rel_path = to_rel(&self.config.workspace, path);
 
-        // Immediate embedding for single file (incremental update)
-        if let Some(file_id) = repo.get_file_id(rel_path)? {
-            let chunks = repo.chunks_for_file(file_id)?;
-            let embeddable: Vec<_> = chunks
-                .iter()
-                .filter(|c| {
-                    let lang = parser::detect_language(rel_path);
-                    is_embeddable_language(lang.as_deref())
-                        && c.kind != "import"
-                        && c.token_count >= 8
-                })
-                .collect();
+        // Structural rerun: hash-skip leaves untouched files alone; the
+        // changed file gets fresh chunks/symbols/refs + a full resolver pass.
+        self.run_structural(repo)?;
 
-            if !embeddable.is_empty() {
-                let texts: Vec<&str> = embeddable.iter().map(|c| c.content.as_str()).collect();
-                let vectors = embedder.embed_batch(&texts)?;
-                for (c, vec) in embeddable.iter().zip(vectors.iter()) {
-                    repo.insert_vector(c.id, vec)?;
-                }
-            }
+        let file_id = match repo.get_file_id(&rel_path)? {
+            Some(id) => id,
+            // Walker didn't find it (e.g. deleted between save and reindex).
+            None => return Ok(0),
+        };
+
+        let chunks = repo.chunks_for_file(file_id)?;
+
+        let Some(embedder) = embedder else {
+            return Ok(chunks.len() as u64);
+        };
+
+        let lang = parser::detect_language(&rel_path);
+        let embeddable: Vec<_> = chunks
+            .iter()
+            .filter(|c| {
+                is_embeddable_language(lang.as_deref()) && c.kind != "import" && c.token_count >= 8
+            })
+            .collect();
+
+        if embeddable.is_empty() {
+            return Ok(chunks.len() as u64);
         }
 
-        Ok(count)
-    }
+        let texts: Vec<&str> = embeddable.iter().map(|c| c.content.as_str()).collect();
+        let vectors = embedder.embed_batch(&texts)?;
+        for (c, vec) in embeddable.iter().zip(vectors.iter()) {
+            // chunks_for_file returns freshly-rebuilt rows after the
+            // structural pass deleted+reinserted them, so vec_chunks holds
+            // no leftover vectors against these chunk_ids.
+            repo.insert_vector(c.id, vec)?;
+        }
 
-    pub fn reindex_file(&self, repo: &Repository, embedder: &Embedder, path: &Path) -> Result<u64> {
-        let rel_path = to_rel(&self.config.workspace, path);
-        self.index_file(repo, embedder, path, &rel_path)
+        Ok(chunks.len() as u64)
     }
 
     pub fn remove_file(&self, repo: &Repository, path: &Path) -> Result<()> {
