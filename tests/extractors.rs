@@ -253,6 +253,74 @@ fn javascript_uses_same_extractor() {
     assert!(find(&refs, "helper", RefKind::Call).is_some());
 }
 
+#[test]
+fn tsx_jsx_component_and_attribute_expression_extracted() {
+    // v0.5.1 hono dogfood (L3): .tsx files had higher unresolved-ref rate
+    // because the visitor never fired on JSX-specific nodes. Component
+    // names in opening elements and identifiers in JSX expression
+    // attributes were dropped on the floor.
+    //
+    // Pin: `<Foo bar={someValue} />` MUST extract refs for both `Foo`
+    // and `someValue` so L0b can resolve them via import binding.
+    let refs = extract(
+        "tsx",
+        "import { Foo, someValue } from './m';\n\
+         export function App() {\n  \
+           return <Foo bar={someValue} />;\n\
+         }\n",
+    );
+    let foo = find(&refs, "Foo", RefKind::Call).expect("JSX component name");
+    assert_eq!(foo.source_symbol.as_deref(), Some("App"));
+    let some = find(&refs, "someValue", RefKind::Call).expect("JSX attribute identifier");
+    assert_eq!(some.source_symbol.as_deref(), Some("App"));
+    // Sanity: the named-import binding edges should be in the raw refs too,
+    // so the resolver pipeline has the L0b evidence it needs.
+    assert!(
+        refs.iter()
+            .any(|r| r.kind == RefKind::ImportBinding && r.target_name == "Foo"),
+        "expected ImportBinding(Foo) → './m', got: {:?}",
+        refs.iter()
+            .map(|r| (&r.kind, &r.target_name))
+            .collect::<Vec<_>>(),
+    );
+}
+
+#[test]
+fn tsx_lowercase_intrinsics_do_not_pollute_call_graph() {
+    // HTML intrinsics like <div>, <span>, <main> are not user-defined
+    // components — they must NOT become unresolvable Call refs polluting
+    // the graph. JSX convention: Pascal-case component, lowercase
+    // intrinsic.
+    let refs = extract(
+        "tsx",
+        "export function App() {\n  return <div className=\"x\"><span /></div>;\n}\n",
+    );
+    assert!(
+        find(&refs, "div", RefKind::Call).is_none(),
+        "intrinsic <div> must not surface as a Call ref"
+    );
+    assert!(
+        find(&refs, "span", RefKind::Call).is_none(),
+        "intrinsic <span> must not surface as a Call ref"
+    );
+}
+
+#[test]
+fn tsx_nested_member_component_extracts_rightmost_name() {
+    // `<Comp.SubItem />` — extract `SubItem` with qualifier `Comp`. Matches
+    // how member-expression calls are extracted at the function position.
+    let refs = extract(
+        "tsx",
+        "import { Comp } from './m';\n\
+         export function App() {\n  return <Comp.SubItem />;\n}\n",
+    );
+    let sub = refs
+        .iter()
+        .find(|r| r.target_name == "SubItem" && r.kind == RefKind::Call)
+        .expect("nested member component");
+    assert_eq!(sub.target_qualifier.as_deref(), Some("Comp"));
+}
+
 // --- Java ---
 
 #[test]

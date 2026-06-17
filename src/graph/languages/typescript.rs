@@ -194,6 +194,48 @@ fn collect_refs(
                 });
             }
         }
+        // JSX component usage: `<Foo />`, `<Foo.Bar />`, `<Foo bar={...} />`.
+        //
+        // v0.5.1 hono dogfood (L3): .tsx files had a higher unresolved-ref
+        // rate than .ts because the tsx grammar IS wired up but the
+        // visitor never fired on JSX-specific nodes. A component name in
+        // an opening element IS a usage of the imported symbol; an
+        // identifier inside a JSX expression attribute IS a usage of the
+        // wrapped binding (hook, helper, constant). Both must surface so
+        // the resolver gets a chance to bind them.
+        //
+        // We emit:
+        //   * jsx_opening_element / jsx_self_closing_element → component
+        //     name as a Call ref (it IS constructed at runtime, and the
+        //     resolver treats Call edges the same way it treats `new T()`).
+        //   * jsx_expression with a bare identifier child → Call ref so
+        //     L0b (import binding) can bind it to the defining file. The
+        //     normal recursion already handles call_expression /
+        //     member_expression inside `{ ... }`, so we only manually fire
+        //     on the standalone identifier case.
+        "jsx_opening_element" | "jsx_self_closing_element" => {
+            if let Some(name_node) = node.child_by_field_name("name") {
+                jsx_emit_element_name(&name_node, source, line, &enclosing, refs);
+            }
+        }
+        "jsx_expression" => {
+            let mut cursor = node.walk();
+            for child in node.named_children(&mut cursor) {
+                if child.kind() == "identifier" {
+                    let name = text(&child, source);
+                    if !is_builtin_js(&name) {
+                        refs.push(RawReference {
+                            line: child.start_position().row as u32,
+                            source_symbol: enclosing.clone(),
+                            target_name: name,
+                            target_qualifier: None,
+                            receiver_type: None,
+                            kind: RefKind::Call,
+                        });
+                    }
+                }
+            }
+        }
         "import_statement" => {
             if let Some(src) = node.child_by_field_name("source") {
                 let module = text(&src, source)
@@ -260,6 +302,67 @@ fn collect_refs(
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
         collect_refs(&child, source, scope_map, var_types, current_class, refs);
+    }
+}
+
+/// JSX element-name extraction. The grammar reports the name as either a
+/// bare `identifier`, a member-style `nested_identifier` / `member_expression`
+/// (`<foo.Bar />`), or a `jsx_namespace_name` (`<svg:circle />`). Bare
+/// lowercase identifiers are HTML intrinsics (`<div>`, `<span>`) — those
+/// shouldn't pollute the call graph, so we only emit Pascal-case bare
+/// identifiers. Qualified names emit the rightmost component.
+fn jsx_emit_element_name(
+    name_node: &Node,
+    source: &str,
+    line: u32,
+    enclosing: &Option<String>,
+    refs: &mut Vec<RawReference>,
+) {
+    match name_node.kind() {
+        "identifier" => {
+            let name = text(name_node, source);
+            // HTML intrinsics are lowercase; React components are Pascal-case.
+            // First-letter-uppercase is the JSX convention and also the
+            // cheapest filter — `if name.starts_with(uppercase)`.
+            if name
+                .chars()
+                .next()
+                .map(|c| c.is_ascii_uppercase())
+                .unwrap_or(false)
+                && !is_builtin_js(&name)
+            {
+                refs.push(RawReference {
+                    line,
+                    source_symbol: enclosing.clone(),
+                    target_name: name,
+                    target_qualifier: None,
+                    receiver_type: None,
+                    kind: RefKind::Call,
+                });
+            }
+        }
+        "nested_identifier" | "member_expression" => {
+            // `<foo.Bar />` — emit `Bar` with qualifier `foo`. Matches the
+            // way member_expression call sites are extracted above so the
+            // resolver treats the two cases uniformly.
+            let prop = name_node
+                .child_by_field_name("property")
+                .or_else(|| name_node.child_by_field_name("name"));
+            let obj = name_node.child_by_field_name("object");
+            if let Some(prop) = prop {
+                let name = text(&prop, source);
+                let qualifier = obj.map(|o| text(&o, source));
+                refs.push(RawReference {
+                    line,
+                    source_symbol: enclosing.clone(),
+                    target_name: name,
+                    target_qualifier: qualifier,
+                    receiver_type: None,
+                    kind: RefKind::Call,
+                });
+            }
+        }
+        _ => {}
     }
 }
 
