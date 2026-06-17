@@ -944,54 +944,98 @@ fn longest_common_prefix(paths: &[String]) -> String {
     }
 }
 
-/// Human-readable module label. Prefers the deepest meaningful directory name
-/// from the centroid path; falls back to `module-{id}` when there's nothing
-/// to derive.
+/// Directory prefixes that say "this is the layout convention", not "this is
+/// what the module is about". Monorepos pile members under `packages/` or
+/// `crates/` and a cluster that spans several of those subdirs ends up with
+/// LCP `packages/` — labelling it "packages" tells the agent nothing. When
+/// the centroid is one of these, we recurse one level deeper for a modal
+/// segment instead.
+const BORING_DIR_PREFIXES: &[&str] = &[
+    "packages", "crates", "libs", "src", "lib", "app", "apps", "services", "modules", "internal",
+];
+
+fn is_boring_dir(seg: &str) -> bool {
+    BORING_DIR_PREFIXES.contains(&seg)
+}
+
+/// Human-readable module label. Strategy:
+///
+/// 1. Centroid is a clean directory (`src/auth/`) → use the deepest segment
+///    (`auth`).
+/// 2. Centroid is empty OR just a boring monorepo prefix (`packages/`,
+///    `crates/`, etc.) OR a partial segment that never reached a directory
+///    boundary (`p`, `pa`, …) → look one level deeper. Skip the topmost
+///    segment when it's also a boring prefix so a `src/graph/...` module
+///    labels as "graph", not "src".
+/// 3. Modal candidate must be a strict majority (>50%). Below that the
+///    cluster is cross-cutting — render `cluster-{id}` so the agent sees an
+///    honest "we couldn't name this" instead of a misleading single segment.
+/// 4. Absolutely nothing to go on → `unlabelled-{id}` (friendlier than
+///    `module-{id}`, which used to leak the internal community ID).
 fn derive_label(centroid: &str, paths: &[String], id: i64) -> String {
     // First choice: the deepest directory segment of the longest common prefix.
     // Example: members all under `src/auth/` → label "auth".
     let trimmed = centroid.trim_end_matches('/');
-    if !trimmed.is_empty() {
+    let centroid_ends_in_slash = centroid.ends_with('/');
+    if !trimmed.is_empty() && centroid_ends_in_slash {
         let last = trimmed.rsplit('/').next().unwrap_or(trimmed);
-        if !last.is_empty() && last != "src" {
+        if !last.is_empty() && !is_boring_dir(last) {
             return last.to_string();
         }
     }
 
-    // Fallback: members are scattered (no common prefix beyond "src/" or none).
-    // Pick the modal second-from-top directory segment across members so a
-    // module of {src/graph/extractor.rs, src/graph/languages/go.rs, …} labels
-    // as "graph" instead of "module-5". Skip the topmost segment because it's
-    // almost always "src"/"pkg"/"internal" and not discriminative.
+    // Fallback: members are scattered (no common prefix, or only a boring
+    // monorepo prefix). Pick the modal directory segment across members so
+    // a module of {src/graph/extractor.rs, src/graph/languages/go.rs, …}
+    // labels as "graph" instead of "module-5". We always skip the topmost
+    // segment when it's a known boring prefix — that's the layout, not the
+    // meaning — and prefer the deepest segment we can find that isn't also
+    // a boring prefix.
     use std::collections::HashMap;
-    let mut counts: HashMap<&str, usize> = HashMap::new();
+    let mut counts: HashMap<String, usize> = HashMap::new();
     let mut considered = 0usize;
     for p in paths {
         let segs: Vec<&str> = p.split('/').collect();
-        let pick = if segs.len() >= 3 {
-            segs[1]
-        } else if segs.len() == 2 {
-            segs[0]
-        } else {
+        if segs.len() < 2 {
             continue;
-        };
-        if !pick.is_empty() {
-            *counts.entry(pick).or_insert(0) += 1;
+        }
+        let pick = pick_module_segment(&segs);
+        if let Some(s) = pick
+            && !s.is_empty()
+        {
+            *counts.entry(s).or_insert(0) += 1;
             considered += 1;
         }
     }
     if let Some((seg, n)) = counts.iter().max_by_key(|(_, n)| **n) {
-        // Modal segment must be a clear majority — otherwise labeling the
+        // Modal segment must be a strict majority — otherwise labeling the
         // community after it is misleading (e.g. a mega-cluster of
         // {storage×2, search×2, temporal×4, indexer×2} would render as
         // "temporal" despite being a cross-cutting mash-up). Below 50% we
-        // surface that fact honestly.
+        // emit a "cluster-{id}" tag so the agent sees an honest unnamed
+        // cluster rather than the old `mixed:{seg}+` which leaked internal
+        // merge state.
         if *n * 2 > considered {
-            return (*seg).to_string();
+            return seg.clone();
         }
-        return format!("mixed:{seg}+");
+        return format!("cluster-{id}");
     }
-    format!("module-{id}")
+    format!("unlabelled-{id}")
+}
+
+/// Picks the modal-segment candidate for a member path: walks past boring
+/// prefixes (`packages/`, `src/`, `crates/`) and returns the next segment
+/// that's a real directory name. Returns `None` when we run out.
+fn pick_module_segment(segs: &[&str]) -> Option<String> {
+    // segs[len-1] is the file name; ignore it.
+    let dirs = &segs[..segs.len().saturating_sub(1)];
+    for &s in dirs {
+        if s.is_empty() || is_boring_dir(s) {
+            continue;
+        }
+        return Some(s.to_string());
+    }
+    None
 }
 
 #[cfg(test)]
@@ -1022,8 +1066,8 @@ mod arch_tests {
     fn derive_label_from_centroid() {
         // Common prefix beyond "src/" — deepest dir wins.
         assert_eq!(derive_label("src/auth/", &[], 0), "auth");
-        // No common prefix AND no paths — fall through to "module-N".
-        assert_eq!(derive_label("", &[], 7), "module-7");
+        // No common prefix AND no paths — fall through to "unlabelled-N".
+        assert_eq!(derive_label("", &[], 7), "unlabelled-7");
     }
 
     #[test]
@@ -1046,5 +1090,72 @@ mod arch_tests {
             "src/storage/schema.rs".to_string(),
         ];
         assert_eq!(derive_label("src/", &paths, 0), "storage");
+    }
+
+    #[test]
+    fn derive_label_packages_centroid_recurses_into_package_name() {
+        // Vite-style: members all under `packages/vite/...`. Pre-fix this
+        // labelled the cluster "packages" (or "p-N" via collision); now we
+        // recurse past the boring `packages/` prefix and use "vite".
+        let paths = vec![
+            "packages/vite/src/node/server/index.ts".to_string(),
+            "packages/vite/src/node/server/middlewares.ts".to_string(),
+            "packages/vite/src/node/utils.ts".to_string(),
+        ];
+        assert_eq!(derive_label("packages/vite/src/", &paths, 0), "vite");
+        // And when the centroid only reaches `packages/` (members straddle
+        // two sub-packages but most are still in vite), the modal-segment
+        // fallback resolves to "vite" too.
+        assert_eq!(derive_label("packages/", &paths, 0), "vite");
+    }
+
+    #[test]
+    fn derive_label_crates_centroid_recurses_into_crate_name() {
+        // Helix-style: members under `crates/helix-view/...`.
+        let paths = vec![
+            "crates/helix-view/src/editor.rs".to_string(),
+            "crates/helix-view/src/view.rs".to_string(),
+            "crates/helix-view/src/document.rs".to_string(),
+        ];
+        assert_eq!(derive_label("crates/helix-view/", &paths, 0), "helix-view");
+        assert_eq!(derive_label("crates/", &paths, 0), "helix-view");
+    }
+
+    #[test]
+    fn derive_label_partial_segment_centroid_falls_through_to_modal() {
+        // A cluster spanning `packages/` AND `playground/` has LCP "p" — a
+        // partial segment, not even a full directory. Pre-fix this rendered
+        // as "p" and collided with siblings to become "p-N"; now we ignore
+        // the partial centroid and recurse into the modal segment.
+        let paths = vec![
+            "packages/vite/src/node/cli.ts".to_string(),
+            "packages/vite/src/node/config.ts".to_string(),
+            "playground/vue/main.ts".to_string(),
+        ];
+        assert_eq!(derive_label("p", &paths, 0), "vite");
+    }
+
+    #[test]
+    fn derive_label_cross_cutting_cluster_renders_as_cluster() {
+        // No single segment owns >50% of the members — old behaviour was
+        // `mixed:{seg}+` which leaked internal merge state. New honest name:
+        // `cluster-{id}`.
+        let paths = vec![
+            "src/storage/repo.rs".to_string(),
+            "src/search/symbol.rs".to_string(),
+            "src/temporal/git_parser.rs".to_string(),
+            "src/temporal/hotspot.rs".to_string(),
+            "src/indexer/pipeline.rs".to_string(),
+            "src/indexer/walker.rs".to_string(),
+        ];
+        // Six members across four distinct second segments — no majority.
+        assert_eq!(derive_label("src/", &paths, 42), "cluster-42");
+    }
+
+    #[test]
+    fn derive_label_no_data_returns_unlabelled() {
+        // Empty centroid + zero paths — friendlier than the old
+        // `module-{id}` which sounded like a real name.
+        assert_eq!(derive_label("", &[], 9), "unlabelled-9");
     }
 }
