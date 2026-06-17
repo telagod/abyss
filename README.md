@@ -58,10 +58,18 @@ Windows: `npm install -g @code-abyss/cli`, `cargo binstall code-abyss`, or prebu
 ```sh
 cd your-project
 abyss index                 # build structural index (~seconds)
+abyss daemon start --detach # v0.5.0: background reindex on save (Unix)
 abyss map                   # hotspots + coupling overview
 abyss context src/auth.go   # full context before editing a file
+abyss callers Editor        # who uses this (calls + TS/Rust type refs)
 abyss impact ValidateToken  # blast radius of changing a symbol
 ```
+
+`abyss daemon start --detach` is the recommended way to keep the index
+warm while you (or an agent) edit — double-fork + `setsid`, survives the
+shell that launched it, telemetry via `abyss daemon status` /
+`abyss daemon logs`. The foreground `abyss watch` still exists as an
+alias for `daemon start --foreground` if you want stdout in your terminal.
 
 Every command takes `--json` for machine consumption.
 
@@ -70,7 +78,7 @@ Every command takes `--json` for machine consumption.
 ```
 abyss index                   Structural index: symbols, refs, fulltext, git temporal. Seconds.
 abyss context <file>          Everything an agent needs before editing: callers, deps, risk, coupling
-abyss callers <symbol>        Who calls this (confidence %, --min-confidence 0 reveals guesses)
+abyss callers <symbol>        Who calls this (calls + type refs by default; --calls-only / --types-only restrict; --min-confidence 0 reveals guesses)
 abyss impact <symbol>         Blast radius: direct/transitive callers, uncovered paths, risk 0-10
 abyss hook pre-edit           Agent hook: tool-call JSON on stdin → refresh index → warn on stderr
 abyss hook post-edit          Agent hook: incremental refresh after an edit
@@ -78,9 +86,10 @@ abyss history <file>          Evolution: commits, churn, coupled files [--symbol
 abyss search "query"          Symbol + fulltext fusion search
 abyss map                     Codebase map: hotspots, coupling, risk areas
 abyss watch                   Foreground daemon-lite: reindex on file save (debounced)
-abyss daemon start            Background daemon (Unix): pidfile + socket [--foreground|--detach]
+abyss daemon start --detach   Background daemon (Unix): double-fork, returns once pidfile is claimed
+abyss daemon start [--foreground]  Foreground / shell-backgrounded equivalent
 abyss daemon stop|status      Stop daemon / report pid + uptime + last reindex
-abyss daemon logs             Tail .code-abyss/daemon.log [--tail N]
+abyss daemon logs [--tail N]  Tail .code-abyss/daemon.log via socket or direct file read (default N=50)
 abyss stats                   Index statistics
 abyss mcp                     MCP server (stdio) — 7 tools for any MCP client
 ```
@@ -181,6 +190,26 @@ echo '{"cmd":"reindex"}'  | nc -U .code-abyss/daemon.sock
 
 The full MCP-over-socket surface (so the hook, the MCP server, and an editor extension can share one in-process index) is V2 territory. Hooks still read SQLite directly — no daemon round-trip for the pre-edit fast path.
 
+## Dogfood evaluations
+
+We run abyss on real third-party codebases and publish the result —
+score, bugs found, and honest gaps — under `docs/dogfood/`. See
+[docs/DOGFOOD.md](docs/DOGFOOD.md) for the index.
+
+| Project | Lang | Score | Report |
+|---------|------|------:|--------|
+| helix-editor | Rust workspace | 7.5 / 10 | [docs/dogfood/helix-editor-2026-06-17.md](docs/dogfood/helix-editor-2026-06-17.md) |
+| vite | TS/JS monorepo | 7 / 10 | [docs/dogfood/vite-2026-06-17.md](docs/dogfood/vite-2026-06-17.md) |
+| FastAPI | Python | 6.5 / 10 | [docs/dogfood/fastapi-2026-06-17.md](docs/dogfood/fastapi-2026-06-17.md) |
+| hono | TypeScript | 7 / 10 | (score logged in CHANGELOG v0.5.0; informed v0.4.0 hook redesign) |
+
+Each report drove concrete fixes (TS `callers` learning type refs from
+vite, monorepo labeller from helix, `docs_src/` / top-level `tests/`
+filter from FastAPI). When a prediction got falsified — MRO L0e didn't
+fire on FastAPI — we wrote it down instead of quietly burying it. See
+[docs/PRINCIPLES.md](docs/PRINCIPLES.md) for the design contracts these
+evaluations enforced.
+
 ## Features
 
 | Build | Contents | Size |
@@ -190,7 +219,7 @@ The full MCP-over-socket surface (so the hook, the MCP server, and an editor ext
 
 ## Status
 
-**v0.3.6** — 90 tests, prebuilt binaries for 5 platforms, single-binary agent hooks. Ten eval-driven resolver rounds against SCIP ground truth across five languages / six corpora (all ≥98.5% gated precision — see the table above and [eval/RESULTS.md](eval/RESULTS.md)): C/C++ caller tracing with receiver-type inference, named-import binding tiers with barrel/`pub use` chasing, receiver-type lite inference for Go/TS/Python/Rust/C/C++, and type-grade evidence (L0c/L0d) beyond exact scope matching. Bounded index: workspace safety guards, bounded temporal mining, and codegen-aware indexing (generated files skip ref extraction) keep the index proportional to hand-written code — a 1953-file Go backend dropped 102MB → 75MB. APIs and index format may still change before 1.0.
+**v0.5.0** — 301 tests, prebuilt binaries for 5 platforms, single-binary agent hooks. Six SCIP-eval corpora across five languages, all ≥98.5% gated precision and zero regression across v0.4.0 → v0.5.0 (see the table above and [eval/RESULTS.md](eval/RESULTS.md)). v0.5.0 focus was operability and TS coverage, not the resolver: background daemon with `--detach` double-fork plus `reindex` / `logs` socket verbs, `abyss callers` now includes `kind='type_ref'` by default (TS interfaces, Rust types — the largest gap surfaced by the vite dogfood), monorepo-aware module labels (`vite-18`, `cluster-N`), L4 stops resolving common names to test fixtures, and four published dogfood reports (helix-editor, vite, FastAPI, hono). APIs and index format may still change before 1.0.
 
 ## License
 
