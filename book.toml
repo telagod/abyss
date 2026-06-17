@@ -1,0 +1,33 @@
+# mdBook configuration for the abyss documentation site.
+# Published at https://telagod.github.io/abyss/ by .github/workflows/pages.yml.
+
+[book]
+title = "abyss — the code graph your agent checks before it edits"
+authors = ["telagod"]
+language = "en"
+src = "docs/book"
+
+[build]
+build-dir = "book-out"
+
+[output.html]
+default-theme = "rust"
+preferred-dark-theme = "ayu"
+git-repository-url = "https://github.com/telagod/abyss"
+git-repository-icon = "fa-github"
+edit-url-template = "https://github.com/telagod/abyss/edit/main/{path}"
+site-url = "/abyss/"
+
+[output.html.fold]
+enable = true
+level = 1
+
+[output.html.search]
+enable = true
+limit-results = 30
+use-boolean-and = true
+boost-title = 2
+boost-hierarchy = 2
+boost-paragraph = 1
+expand = true
+heading-split-level = 3
