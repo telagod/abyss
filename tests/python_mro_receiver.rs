@@ -181,6 +181,70 @@ fn sibling_class_name_collision_picks_nearest_file() {
 }
 
 #[test]
+fn same_file_inherit_resolves_via_l0e() {
+    // Audit note (v0.5.17): when Base and Sub live in the SAME file,
+    // the L0e walker MUST still traverse the inherit edge and resolve
+    // Sub-instance method calls to Base's definition.
+    //
+    // The walker builds `class_files["Base"] = [start_fid]` and
+    // `bases_of[(start_fid, "Sub")] = ["Base"]`. There is no filter
+    // restricting candidates to "other files only" — same-file
+    // candidates are first-class. This test pins that contract so a
+    // future refactor that adds a `WHERE f.id != ?` clause for some
+    // unrelated reason would surface here.
+    //
+    // The call site lives in caller.py rather than the same file as
+    // the classes because Python's `def __init__` / unrelated
+    // same-file callers would resolve via L1 (same-file proximity)
+    // before L0e ever gets a chance. We want to exercise the typed-
+    // receiver L0e path specifically.
+    let fx = index_fixture(&[
+        (
+            "co_located.py",
+            "class Base:\n    def shared(self):\n        return 'base'\n\nclass Sub(Base):\n    pass\n",
+        ),
+        (
+            "caller.py",
+            "from co_located import Sub\n\ndef run():\n    s: Sub = Sub()\n    return s.shared()\n",
+        ),
+    ]);
+    let refs: Vec<_> = call_refs_to(&fx.repo, "shared")
+        .into_iter()
+        .filter(|r| r.source_path == "caller.py")
+        .collect();
+    assert_eq!(refs.len(), 1, "{refs:?}");
+    assert_eq!(refs[0].confidence, 0.95);
+    assert_eq!(refs[0].target_path.as_deref(), Some("co_located.py"));
+}
+
+#[test]
+fn same_file_inherit_chain_two_hops() {
+    // Three classes co-located in one file (Base ← Mid ← Leaf), only
+    // Base owns `deep_method()`. A typed-receiver call from a separate
+    // caller file must walk two same-file inherit hops to land on
+    // Base. Mirror of `three_level_chain_walks_to_root` but with the
+    // chain collapsed into one source file — guards against the
+    // single-file walk silently capping at depth 1.
+    let fx = index_fixture(&[
+        (
+            "tower.py",
+            "class Base:\n    def deep_method(self):\n        return 1\n\nclass Mid(Base):\n    pass\n\nclass Leaf(Mid):\n    pass\n",
+        ),
+        (
+            "caller.py",
+            "from tower import Leaf\n\ndef run():\n    x: Leaf = Leaf()\n    return x.deep_method()\n",
+        ),
+    ]);
+    let refs: Vec<_> = call_refs_to(&fx.repo, "deep_method")
+        .into_iter()
+        .filter(|r| r.source_path == "caller.py")
+        .collect();
+    assert_eq!(refs.len(), 1, "{refs:?}");
+    assert_eq!(refs[0].confidence, 0.95);
+    assert_eq!(refs[0].target_path.as_deref(), Some("tower.py"));
+}
+
+#[test]
 fn multi_base_picks_left_first() {
     // C(A, B) where both A and B exist. Each base contributes a distinct
     // method — m on A, m_b on B. C().m() lands on a.py, C().m_b() lands on
