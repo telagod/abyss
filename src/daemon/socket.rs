@@ -1,6 +1,6 @@
 //! Unix-socket request/response loop. Newline-delimited JSON.
 //!
-//! Protocol (V1.5):
+//! Protocol (V2):
 //! ```text
 //! → {"cmd": "ping"}
 //! ← {"ok": true, "uptime_secs": N, "last_reindex_ms": M, "epoch": E}
@@ -13,6 +13,13 @@
 //!
 //! → {"cmd": "logs", "tail": N}
 //! ← {"ok": true, "lines": ["...", "..."]}
+//!
+//! → {"cmd": "mcp"}
+//! ← (no JSON envelope — the connection switches into MCP stdio mode and
+//!     the daemon serves the standard 7-tool surface over the same fd via
+//!     newline-delimited JSON-RPC. Backed by a per-connection read-only
+//!     SQLite handle so concurrent MCP clients don't contend with the
+//!     watcher's writer.)
 //! ```
 //! Anything else: `{"ok": false, "error": "..."}`.
 //!
@@ -23,7 +30,10 @@
 //! concurrent reindex requests will see one succeed and one get
 //! `{"ok": false, "error": "index lock contention"}`.
 //!
-//! Deliberately still minimal — the full MCP-over-socket surface is V2.
+//! The `mcp` verb (V2) takes ownership of the connection for its lifetime
+//! and runs an rmcp service over the same socket. Each MCP-mode connection
+//! gets its own [`Repository::open_read_only`] handle so we exercise WAL's
+//! N-readers-+-1-writer property cleanly.
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -103,6 +113,16 @@ pub fn serve(socket_path: &Path, state: Arc<DaemonState>, stop: Arc<AtomicBool>)
     while !stop.load(Ordering::SeqCst) {
         match listener.accept() {
             Ok((stream, _)) => {
+                // The listener is non-blocking (so accept() can poll the
+                // shutdown flag) and Linux inherits that flag onto accepted
+                // sockets. Flip the new stream back to blocking before
+                // handing it to the worker thread: every code path below
+                // (request/response, MCP-mode tokio conversion) expects to
+                // configure the mode explicitly.
+                if let Err(e) = stream.set_nonblocking(false) {
+                    tracing::warn!("daemon socket: clear nonblocking failed: {e}");
+                    continue;
+                }
                 let st = state.clone();
                 std::thread::spawn(move || {
                     if let Err(e) = handle_conn(stream, st) {
@@ -128,20 +148,45 @@ fn handle_conn(stream: UnixStream, state: Arc<DaemonState>) -> Result<()> {
     stream.set_read_timeout(Some(Duration::from_secs(5)))?;
     stream.set_write_timeout(Some(Duration::from_secs(5)))?;
 
-    let reader = BufReader::new(stream.try_clone()?);
+    // Deliberately *not* a BufReader. The `mcp` verb hands the raw fd off
+    // to rmcp's async reader, so any bytes the BufReader already pulled
+    // off the kernel buffer would be lost. read_line_unbuffered reads one
+    // byte at a time — slow on paper but the request rate here is one
+    // line per operator action, so the cost is invisible.
+    let mut read_clone = stream.try_clone()?;
     let mut writer = stream;
 
-    for line in reader.lines() {
-        let line = match line {
-            Ok(l) => l,
-            Err(_) => break,
+    loop {
+        let line = match read_line_unbuffered(&mut read_clone)? {
+            Some(l) => l,
+            None => break, // peer closed cleanly
         };
-        let line = line.trim();
+        let line = line.trim().to_string();
         if line.is_empty() {
             continue;
         }
 
-        let response = match serde_json::from_str::<Request>(line) {
+        // Peek the verb before dispatch so the `mcp` verb can grab the
+        // whole connection instead of returning a single response. Every
+        // other verb stays in the request/response shape.
+        let parsed: serde_json::Result<Request> = serde_json::from_str(&line);
+        match &parsed {
+            Ok(req) if req.cmd == "mcp" => {
+                // Drop the read clone before we take the stream back.
+                // Both halves share the same fd; releasing the clone keeps
+                // the rmcp transport's view of the socket unambiguous.
+                drop(read_clone);
+                // Clear the 5s I/O timeouts inherited from the
+                // request/response path — MCP sessions are long-lived
+                // and rmcp drives its own backpressure.
+                writer.set_read_timeout(None).ok();
+                writer.set_write_timeout(None).ok();
+                return serve_mcp_connection(writer, state);
+            }
+            _ => {}
+        }
+
+        let response = match parsed {
             Ok(req) => dispatch(&req, &state),
             Err(e) => serde_json::to_string(&ErrorResponse {
                 ok: false,
@@ -152,6 +197,97 @@ fn handle_conn(stream: UnixStream, state: Arc<DaemonState>) -> Result<()> {
         writeln!(writer, "{response}")?;
         writer.flush()?;
     }
+    Ok(())
+}
+
+/// Read a single `\n`-terminated line from a raw stream without buffering
+/// any bytes past the newline. Returns `Ok(None)` on a clean EOF before the
+/// first byte. Used by [`handle_conn`] so the `mcp` switch verb can hand
+/// the rest of the socket off to rmcp untouched.
+fn read_line_unbuffered(stream: &mut UnixStream) -> Result<Option<String>> {
+    use std::io::Read;
+    let mut buf = Vec::with_capacity(64);
+    let mut one = [0u8; 1];
+    loop {
+        let n = stream.read(&mut one)?;
+        if n == 0 {
+            return if buf.is_empty() {
+                Ok(None)
+            } else {
+                // Treat orphan trailing bytes as a terminated line. Caller
+                // will fail-parse if it's not valid JSON.
+                Ok(Some(String::from_utf8_lossy(&buf).into_owned()))
+            };
+        }
+        if one[0] == b'\n' {
+            return Ok(Some(String::from_utf8_lossy(&buf).into_owned()));
+        }
+        buf.push(one[0]);
+        // Defensive cap — a malformed client shouldn't be able to spool an
+        // unbounded buffer here. 64KiB is far past any sane verb payload.
+        if buf.len() > 65_536 {
+            anyhow::bail!("daemon socket: line too long (>64KiB)");
+        }
+    }
+}
+
+/// Hand the socket off to an rmcp service. Each connection gets a private
+/// read-only SQLite handle (multi-reader path on WAL) plus a fresh tokio
+/// current-thread runtime — we deliberately don't share a runtime across
+/// connections so a slow MCP client can't block stats/ping/reindex traffic
+/// running on other socket-handler threads.
+fn serve_mcp_connection(stream: UnixStream, state: Arc<DaemonState>) -> Result<()> {
+    // Tokio requires non-blocking std sockets before `from_std`.
+    stream
+        .set_nonblocking(true)
+        .context("set_nonblocking on MCP socket")?;
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_io()
+        .enable_time()
+        .build()
+        .context("build per-connection tokio runtime")?;
+
+    rt.block_on(async move {
+        let async_stream =
+            tokio::net::UnixStream::from_std(stream).context("wrap std UnixStream into tokio")?;
+
+        // Per-connection read-only repo. Construction errors are surfaced
+        // to the client as a JSON-RPC-shaped log line on the daemon side —
+        // returning the error here just drops the connection, which is
+        // also what rmcp does on its own transport errors.
+        let repo = crate::storage::Repository::open_read_only(&state.db_path, state.dimensions)
+            .context("open read-only repo for MCP connection")?;
+
+        // Embedder is daemon-local (writer side); the MCP read-only handle
+        // intentionally doesn't try to share it. Slim builds never had one
+        // anyway, semantic builds get fulltext-only over the socket path
+        // (search still returns useful results; the `precision_mode` field
+        // tells the agent which mode actually ran).
+        let embedder: Option<crate::embedding::Embedder> = None;
+
+        let pipeline = crate::indexer::IndexPipeline::new(state.config.clone());
+
+        let server = crate::mcp::McpServer {
+            repo: std::sync::Arc::new(std::sync::Mutex::new(repo)),
+            embedder: std::sync::Arc::new(embedder),
+            pipeline: std::sync::Arc::new(pipeline),
+            config: state.config.clone(),
+        };
+
+        let (read_half, write_half) = tokio::io::split(async_stream);
+
+        use rmcp::ServiceExt;
+        let service = server
+            .serve((read_half, write_half))
+            .await
+            .context("rmcp serve over Unix socket")?;
+        // Wait until the client disconnects. Errors here are connection-
+        // level (peer reset, EOF) and not interesting to surface.
+        let _ = service.waiting().await;
+        Ok::<(), anyhow::Error>(())
+    })?;
+
     Ok(())
 }
 
