@@ -200,6 +200,7 @@ score, bugs found, and honest gaps — under `docs/dogfood/`. See
 
 | Project | Lang | Score | Report |
 |---------|------|------:|--------|
+| Django 5.1.4 | Python | 8 / 10 | [docs/dogfood/django-2026-06-17.md](docs/dogfood/django-2026-06-17.md) |
 | helix-editor | Rust workspace | 7.5 / 10 | [docs/dogfood/helix-editor-2026-06-17.md](docs/dogfood/helix-editor-2026-06-17.md) |
 | vite | TS/JS monorepo | 7 / 10 | [docs/dogfood/vite-2026-06-17.md](docs/dogfood/vite-2026-06-17.md) |
 | FastAPI | Python | 6.5 / 10 | [docs/dogfood/fastapi-2026-06-17.md](docs/dogfood/fastapi-2026-06-17.md) |
@@ -207,8 +208,12 @@ score, bugs found, and honest gaps — under `docs/dogfood/`. See
 
 Each report drove concrete fixes (TS `callers` learning type refs from
 vite, monorepo labeller from helix, `docs_src/` / top-level `tests/`
-filter from FastAPI). When a prediction got falsified — MRO L0e didn't
-fire on FastAPI — we wrote it down instead of quietly burying it. See
+filter from FastAPI, `kind='inherit'` surfacing + L0e sibling
+disambiguation from Django, `callers --limit` + built-in name-shadow
+filter from hono). When a prediction got falsified — MRO L0e didn't
+fire on FastAPI — we wrote it down instead of quietly burying it; when
+the same prediction re-validated on Django (9 450 L0e hits, 94× the
+floor), we wrote that down too. See
 [docs/PRINCIPLES.md](docs/PRINCIPLES.md) for the design contracts these
 evaluations enforced.
 
@@ -221,7 +226,7 @@ evaluations enforced.
 
 ## Status
 
-**v0.5.0** — 301 tests, prebuilt binaries for 5 platforms, single-binary agent hooks. Six SCIP-eval corpora across five languages, all ≥98.5% gated precision and zero regression across v0.4.0 → v0.5.0 (see the table above and [eval/RESULTS.md](eval/RESULTS.md)). v0.5.0 focus was operability and TS coverage, not the resolver: background daemon with `--detach` double-fork plus `reindex` / `logs` socket verbs, `abyss callers` now includes `kind='type_ref'` by default (TS interfaces, Rust types — the largest gap surfaced by the vite dogfood), monorepo-aware module labels (`vite-18`, `cluster-N`), L4 stops resolving common names to test fixtures, and four published dogfood reports (helix-editor, vite, FastAPI, hono). APIs and index format may still change before 1.0.
+**v0.5.1** — 307 tests, prebuilt binaries for 5 platforms, single-binary agent hooks. Six SCIP-eval corpora across five languages, all ≥98.5% gated precision and zero regression across v0.4.0 → v0.5.1 (see the table above and [eval/RESULTS.md](eval/RESULTS.md)). v0.5.1 closes the dogfood-surfaced debts from Django + hono: `abyss callers` now surfaces `kind='inherit'` edges by default (Django B1 — `callers Model` on a 192K-ref Django index went from 7 spurious hits to ~1 800 real subclasses), L0e disambiguates sibling-name classes by source-directory (Django B2 — `DatabaseSchemaEditor.execute()` from `oracle/` no longer lands in `postgresql/`), `callers` gained `--limit` + a non-silent `(showing N of M)` footer (hono B1), L4 / L5 bias toward unresolved on JS/TS built-in name shadows (hono B3 — `Set`, `Map`, `Promise`, …), and the layer dictionary recognises framework-entry filenames (`hono.ts`, `vite.ts`, `manage.py`, `urls.py`, …). Pages site live at [telagod.github.io/abyss](https://telagod.github.io/abyss/). Five dogfood reports now (Django 8/10 — the in-repo MRO validation case, helix-editor 7.5, vite 7, FastAPI 6.5, hono 8). APIs and index format may still change before 1.0.
 
 ## License
 
