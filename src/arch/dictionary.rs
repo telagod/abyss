@@ -90,6 +90,83 @@ fn rules() -> &'static [CompiledRule] {
                 r"(?i)(^|/)(generated|gen)(/|$)|_pb2(\.|$)|\.pb\.|grpc_gen|protoc",
                 "generated",
             ),
+            // ── Expanded vocabulary (v0.3.7) ───────────────────────────────
+            // Express-style middleware → api
+            (
+                r"(?i)(^|/)middleware(s)?(/|$|[._-])",
+                "api",
+            ),
+            // route/routing — keep separate from the api umbrella so a file
+            // named `routes.ts` at the top level still fires.
+            (
+                r"(?i)(^|/)(route|routing)(s)?(/|$|[._-])",
+                "api",
+            ),
+            // service layer → domain (business logic)
+            (
+                r"(?i)(^|/)service(s)?(/|$|[._-])",
+                "domain",
+            ),
+            // gateway / proxy → api transport
+            (
+                r"(?i)(^|/)(gateway|proxy)(s)?(/|$|[._-])",
+                "api",
+            ),
+            // adapter / adaptor → infra (ports & adapters)
+            (
+                r"(?i)(^|/)(adapter|adaptor)(s)?(/|$|[._-])",
+                "infra",
+            ),
+            // Message queue / broker — infra transport
+            (
+                r"(?i)(^|/)(queue|mq|kafka|rabbitmq|pubsub)(s)?(/|$|[._-])",
+                "infra",
+            ),
+            // Domain events / event bus
+            (
+                r"(?i)(^|/)(event|eventbus|event_bus)(s)?(/|$|[._-])",
+                "domain",
+            ),
+            // Cache layer → infra
+            (
+                r"(?i)(^|/)(cache|redis|memcache|memcached)(/|$|[._-])",
+                "infra",
+            ),
+            // Background workers, schedulers, cron, jobs → infra
+            (
+                r"(?i)(^|/)(scheduler|cron|job|worker)(s)?(/|$|[._-])",
+                "infra",
+            ),
+            // Validators / validation helpers → util
+            (
+                r"(?i)(^|/)(validator|validation)(s)?(/|$|[._-])",
+                "util",
+            ),
+            // Error / errors helpers → util
+            (
+                r"(?i)(^|/)error(s)?(/|$|[._-])",
+                "util",
+            ),
+            // Logging utilities → util
+            (
+                r"(?i)(^|/)(log|logger|logging)(/|$|[._-])",
+                "util",
+            ),
+            // Metrics / telemetry / observability → util
+            (
+                r"(?i)(^|/)(metric(s)?|telemetry|observ[a-z]*)(/|$|[._-])",
+                "util",
+            ),
+            // DB / database / db connections → infra
+            (
+                r"(?i)(^|/)(db|database)(s)?(/|$|[._-])",
+                "infra",
+            ),
+            // Seed data / fixtures → test
+            (
+                r"(?i)(^|/)(seed|fixture)(s)?(/|$|[._-])",
+                "test",
+            ),
         ];
         raw.iter()
             .map(|(pat, layer)| CompiledRule {
@@ -277,5 +354,238 @@ mod tests {
                 "dictionary hints share a fixed weight"
             );
         }
+    }
+
+    // ── Expanded vocabulary tests ──────────────────────────────────────
+
+    #[test]
+    fn middleware_classifies_as_api() {
+        let hints = classify_path("src/middleware/auth.go");
+        assert!(has_layer(&hints, "api"), "expected api, got {hints:?}");
+    }
+
+    #[test]
+    fn routing_classifies_as_api() {
+        let hints = classify_path("src/routing/index.ts");
+        assert!(has_layer(&hints, "api"), "expected api, got {hints:?}");
+    }
+
+    #[test]
+    fn service_classifies_as_domain() {
+        let hints = classify_path("internal/service/billing.go");
+        assert!(
+            has_layer(&hints, "domain"),
+            "expected domain, got {hints:?}"
+        );
+    }
+
+    #[test]
+    fn services_plural_classifies_as_domain() {
+        let hints = classify_path("src/services/user.ts");
+        assert!(
+            has_layer(&hints, "domain"),
+            "expected domain, got {hints:?}"
+        );
+    }
+
+    #[test]
+    fn gateway_classifies_as_api() {
+        let hints = classify_path("src/gateway/payments.go");
+        assert!(has_layer(&hints, "api"), "expected api, got {hints:?}");
+    }
+
+    #[test]
+    fn proxy_classifies_as_api() {
+        let hints = classify_path("internal/proxy/upstream.go");
+        assert!(has_layer(&hints, "api"), "expected api, got {hints:?}");
+    }
+
+    #[test]
+    fn adapter_classifies_as_infra() {
+        let hints = classify_path("src/adapter/stripe.go");
+        assert!(has_layer(&hints, "infra"), "expected infra, got {hints:?}");
+    }
+
+    #[test]
+    fn adaptor_british_classifies_as_infra() {
+        let hints = classify_path("src/adaptor/foo.go");
+        assert!(has_layer(&hints, "infra"), "expected infra, got {hints:?}");
+    }
+
+    #[test]
+    fn queue_classifies_as_infra() {
+        let hints = classify_path("src/queue/worker.go");
+        assert!(has_layer(&hints, "infra"), "expected infra, got {hints:?}");
+    }
+
+    #[test]
+    fn kafka_classifies_as_infra() {
+        let hints = classify_path("src/kafka/consumer.go");
+        assert!(has_layer(&hints, "infra"), "expected infra, got {hints:?}");
+    }
+
+    #[test]
+    fn rabbitmq_classifies_as_infra() {
+        let hints = classify_path("src/rabbitmq/publisher.go");
+        assert!(has_layer(&hints, "infra"), "expected infra, got {hints:?}");
+    }
+
+    #[test]
+    fn pubsub_classifies_as_infra() {
+        let hints = classify_path("src/pubsub/topic.go");
+        assert!(has_layer(&hints, "infra"), "expected infra, got {hints:?}");
+    }
+
+    #[test]
+    fn event_classifies_as_domain() {
+        let hints = classify_path("src/event/user_created.go");
+        assert!(
+            has_layer(&hints, "domain"),
+            "expected domain, got {hints:?}"
+        );
+    }
+
+    #[test]
+    fn events_folder_classifies_as_domain() {
+        let hints = classify_path("src/events/billing.ts");
+        assert!(
+            has_layer(&hints, "domain"),
+            "expected domain, got {hints:?}"
+        );
+    }
+
+    #[test]
+    fn event_bus_underscore_classifies_as_domain() {
+        let hints = classify_path("src/event_bus/dispatch.go");
+        assert!(
+            has_layer(&hints, "domain"),
+            "expected domain, got {hints:?}"
+        );
+    }
+
+    #[test]
+    fn cache_classifies_as_infra() {
+        let hints = classify_path("src/cache/lru.go");
+        assert!(has_layer(&hints, "infra"), "expected infra, got {hints:?}");
+    }
+
+    #[test]
+    fn redis_classifies_as_infra() {
+        let hints = classify_path("src/redis/client.go");
+        assert!(has_layer(&hints, "infra"), "expected infra, got {hints:?}");
+    }
+
+    #[test]
+    fn memcache_classifies_as_infra() {
+        let hints = classify_path("src/memcache/client.go");
+        assert!(has_layer(&hints, "infra"), "expected infra, got {hints:?}");
+    }
+
+    #[test]
+    fn scheduler_classifies_as_infra() {
+        let hints = classify_path("src/scheduler/quartz.go");
+        assert!(has_layer(&hints, "infra"), "expected infra, got {hints:?}");
+    }
+
+    #[test]
+    fn cron_classifies_as_infra() {
+        let hints = classify_path("src/cron/nightly.go");
+        assert!(has_layer(&hints, "infra"), "expected infra, got {hints:?}");
+    }
+
+    #[test]
+    fn job_classifies_as_infra() {
+        let hints = classify_path("src/job/runner.go");
+        assert!(has_layer(&hints, "infra"), "expected infra, got {hints:?}");
+    }
+
+    #[test]
+    fn worker_classifies_as_infra() {
+        let hints = classify_path("src/worker/pool.go");
+        assert!(has_layer(&hints, "infra"), "expected infra, got {hints:?}");
+    }
+
+    #[test]
+    fn validator_classifies_as_util() {
+        let hints = classify_path("src/validator/email.go");
+        assert!(has_layer(&hints, "util"), "expected util, got {hints:?}");
+    }
+
+    #[test]
+    fn validation_classifies_as_util() {
+        let hints = classify_path("src/validation/rules.ts");
+        assert!(has_layer(&hints, "util"), "expected util, got {hints:?}");
+    }
+
+    #[test]
+    fn error_classifies_as_util() {
+        let hints = classify_path("src/error/handler.go");
+        assert!(has_layer(&hints, "util"), "expected util, got {hints:?}");
+    }
+
+    #[test]
+    fn errors_plural_classifies_as_util() {
+        let hints = classify_path("src/errors/types.go");
+        assert!(has_layer(&hints, "util"), "expected util, got {hints:?}");
+    }
+
+    #[test]
+    fn log_classifies_as_util() {
+        let hints = classify_path("src/log/json.go");
+        assert!(has_layer(&hints, "util"), "expected util, got {hints:?}");
+    }
+
+    #[test]
+    fn logger_classifies_as_util() {
+        let hints = classify_path("src/logger/zap.go");
+        assert!(has_layer(&hints, "util"), "expected util, got {hints:?}");
+    }
+
+    #[test]
+    fn logging_classifies_as_util() {
+        let hints = classify_path("src/logging/setup.go");
+        assert!(has_layer(&hints, "util"), "expected util, got {hints:?}");
+    }
+
+    #[test]
+    fn metrics_classifies_as_util() {
+        let hints = classify_path("src/metrics/prom.go");
+        assert!(has_layer(&hints, "util"), "expected util, got {hints:?}");
+    }
+
+    #[test]
+    fn telemetry_classifies_as_util() {
+        let hints = classify_path("src/telemetry/otel.go");
+        assert!(has_layer(&hints, "util"), "expected util, got {hints:?}");
+    }
+
+    #[test]
+    fn observability_classifies_as_util() {
+        let hints = classify_path("src/observability/tracer.go");
+        assert!(has_layer(&hints, "util"), "expected util, got {hints:?}");
+    }
+
+    #[test]
+    fn db_classifies_as_infra() {
+        let hints = classify_path("src/db/conn.go");
+        assert!(has_layer(&hints, "infra"), "expected infra, got {hints:?}");
+    }
+
+    #[test]
+    fn database_classifies_as_infra() {
+        let hints = classify_path("src/database/pool.go");
+        assert!(has_layer(&hints, "infra"), "expected infra, got {hints:?}");
+    }
+
+    #[test]
+    fn seed_classifies_as_test() {
+        let hints = classify_path("src/seed/init.go");
+        assert!(has_layer(&hints, "test"), "expected test, got {hints:?}");
+    }
+
+    #[test]
+    fn fixture_classifies_as_test() {
+        let hints = classify_path("tests/fixture/sample.go");
+        assert!(has_layer(&hints, "test"), "expected test, got {hints:?}");
     }
 }
