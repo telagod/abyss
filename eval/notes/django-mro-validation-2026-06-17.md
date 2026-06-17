@@ -144,6 +144,18 @@ Pragmatic upshot for future eval choices:
    longer "wrong corpus" — it's "the walker doesn't handle
    declarative metaclass hierarchies", which is a real V2 item.
 
+   **Update (same-day): SQLAlchemy 2.0.36 fired L0e 4 496 times —
+   9× the floor.** Full writeup at
+   [sqlalchemy-mro-validation-2026-06-17.md](sqlalchemy-mro-validation-2026-06-17.md)
+   and dogfood at
+   [docs/dogfood/sqlalchemy-2026-06-17.md](../../docs/dogfood/sqlalchemy-2026-06-17.md).
+   SQLAlchemy's L0e-per-Python-file ratio (6.55) is the highest in
+   the corpus set — the mixin-tower hierarchy shape stresses the
+   walker harder than Django's wide-tree shape. New high-impact V2
+   item surfaced: generic-parameterized base classes
+   (`ColumnElement[_T]`) silently dropped from inherit edges. See
+   the sibling note's "Decisions" §2.
+
 ## Decisions
 
 1. **L0e stays shipped at 0.95 confidence.** Django validates the

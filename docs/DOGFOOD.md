@@ -12,6 +12,7 @@ score, and a bug list that drives the next release's UX fixes.
 
 | Project | Date | Language | Files | Cold index | Score | Report |
 |---------|------|----------|------:|-----------:|------:|--------|
+| SQLAlchemy 2.0.36 | 2026-06-17 | Python (mixin/SQL-expr) | 687 | 8.41 s | **8 / 10** | [sqlalchemy-2026-06-17.md](dogfood/sqlalchemy-2026-06-17.md) |
 | Django 5.1.4 | 2026-06-17 | Python (ORM/CBV/Admin) | 3 292 | 6.91 s | **8 / 10** | [django-2026-06-17.md](dogfood/django-2026-06-17.md) |
 | helix-editor @ `43bf7c2` | 2026-06-17 | Rust workspace (~243 .rs) | 545 | 1.57 s | **7.5 / 10** | [helix-editor-2026-06-17.md](dogfood/helix-editor-2026-06-17.md) |
 | vite v5.4.0 | 2026-06-17 | TS / JS monorepo | 1 793 | 0.91 s | **7 / 10** | [vite-2026-06-17.md](dogfood/vite-2026-06-17.md) |
@@ -24,6 +25,28 @@ right now, two visible gaps"; `6.5` means "still useful, one falsified
 hypothesis".
 
 ## Per-project summary
+
+### SQLAlchemy 2.0.36 (Python, declarative-base + SQL expression tree)
+
+The scaled re-validation of L0e on a *different* hierarchy shape than
+Django. Django's prediction note (eval/notes/django-mro-validation-
+2026-06-17.md §3) called SQLAlchemy as the next candidate with floor
+≥500 hits. **L0e fired 4 496 times — 9× the floor — confirming the
+walker handles mixin-dense, generic-light declarative-base hierarchies
+just like it handles wide ORM/CBV trees.** SQLAlchemy has the highest
+L0e-per-Python-file ratio in the corpus set (6.55 vs Django 3.39 vs
+FastAPI 0.0) because compiler/dialect mixin towers stack deeper than
+ORM model hierarchies. Cold 8.4 s / warm 723 ms / hook 19 ms on 687
+files (291 refs/file — densest Python corpus). v0.5.1's B1 fix is
+observable: `callers DeclarativeBase` returns 121 inherit refs cleanly
+where Django's `callers Model` returned 7. **Headline new bug B3**:
+generic-parameterized base classes (`class FunctionElement(...,
+ColumnElement[_T], ...)`) are silently dropped from inherit edges —
+the Python extractor's `_ => continue` arm at
+`src/graph/languages/python.rs:130` skips `subscript` nodes by design.
+Lifts 25 `TypeEngine[...]` and ~15 `ColumnElement[...]` inheritances
+out of the index. Read:
+[dogfood/sqlalchemy-2026-06-17.md](dogfood/sqlalchemy-2026-06-17.md).
 
 ### Django 5.1.4 (Python, ORM + CBV + Admin)
 
