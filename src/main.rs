@@ -124,6 +124,13 @@ enum Commands {
     },
     /// Run as MCP server (stdio transport)
     Mcp,
+    /// Foreground daemon-lite: watch the workspace and incrementally
+    /// reindex on file save. V1 — Unix-socket multi-reader is on the roadmap.
+    Watch {
+        /// Debounce window in milliseconds (default 150ms — tier-A target)
+        #[arg(long, default_value_t = code_abyss::watcher::DEFAULT_DEBOUNCE_MS)]
+        debounce_ms: u64,
+    },
 }
 
 #[derive(Subcommand)]
@@ -192,6 +199,7 @@ fn main() -> Result<()> {
         Commands::Hook { action } => cmd_hook(config, action, json),
         Commands::Attach { host, local } => cmd_attach(&host, local),
         Commands::Mcp => cmd_mcp(config),
+        Commands::Watch { debounce_ms } => cmd_watch(config, debounce_ms),
     }
 }
 
@@ -817,6 +825,44 @@ fn cmd_attach(host: &str, local: bool) -> Result<()> {
         "claude" => code_abyss::attach::claude::install(local),
         other => anyhow::bail!("unknown host: {other}; supported: claude"),
     }
+}
+
+fn cmd_watch(config: Config, debounce_ms: u64) -> Result<()> {
+    // Refuse before any work: the watch loop is long-running, no point opening
+    // a fresh repo against a missing index.
+    if !config.db_path.exists() {
+        anyhow::bail!(
+            "no index found at {} — run `abyss index` first",
+            config.db_path.display()
+        );
+    }
+
+    let repo = Repository::open(&config.db_path, config.model.dimensions)?;
+    let pipeline = IndexPipeline::new(config.clone());
+
+    // Semantic builds: try to load the embedder so vectors stay fresh on save.
+    // Slim builds: None — structural reindex only (matches `abyss index`).
+    #[cfg(feature = "semantic")]
+    let embedder: Option<Embedder> = match Embedder::load(&config.model) {
+        Ok(e) => Some(e),
+        Err(e) => {
+            eprintln!("[abyss watch] embedder unavailable ({e}) — structural only");
+            None
+        }
+    };
+    #[cfg(not(feature = "semantic"))]
+    let embedder: Option<code_abyss::embedding::Embedder> = None;
+
+    let debounce = std::time::Duration::from_millis(debounce_ms);
+    let watcher = code_abyss::watcher::FileWatcher::new(config.clone()).with_debounce(debounce);
+
+    eprintln!(
+        "abyss watching {} (debounce {}ms) — Ctrl-C to stop",
+        config.workspace.display(),
+        debounce_ms
+    );
+    watcher.watch(&repo, embedder.as_ref(), &pipeline)?;
+    Ok(())
 }
 
 fn cmd_mcp(config: Config) -> Result<()> {
