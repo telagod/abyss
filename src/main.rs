@@ -229,6 +229,29 @@ enum Commands {
         #[command(subcommand)]
         action: ConfigCmd,
     },
+    /// Clean `.code-abyss/` surfaces. Default scope removes the index DB
+    /// only (keeps `arch.toml` user overrides). Scope flags compose:
+    ///
+    ///   * `--all` — wipe the entire `.code-abyss/` directory (DB + arch.toml +
+    ///     daemon files). Use when you want a true greenfield reset.
+    ///   * `--daemon` — only remove daemon.pid / daemon.sock / daemon.log.
+    ///   * `--dry-run` — print "would remove: ..." for each target, mutate
+    ///     nothing. Compose with any scope flag.
+    ///
+    /// Refuses to run while a daemon is alive against this workspace —
+    /// stop it first with `abyss daemon stop` so the running process
+    /// doesn't recreate the socket / pidfile mid-reset.
+    Reset {
+        /// Remove the entire `.code-abyss/` directory (incl. arch.toml).
+        #[arg(long, conflicts_with = "daemon")]
+        all: bool,
+        /// Only remove daemon.pid / daemon.sock / daemon.log; preserve the DB.
+        #[arg(long)]
+        daemon: bool,
+        /// Print what would be removed without touching the filesystem.
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -364,6 +387,11 @@ fn main() -> Result<()> {
         Commands::Daemon { action } => cmd_daemon(config, action),
         Commands::Completion { shell } => cmd_completion(shell),
         Commands::Config { action } => cmd_config(config, action, json),
+        Commands::Reset {
+            all,
+            daemon,
+            dry_run,
+        } => cmd_reset(config, all, daemon, dry_run, json),
     }
 }
 
@@ -1350,6 +1378,156 @@ fn hook_post_edit(config: Config) -> Result<()> {
     let pipeline = IndexPipeline::new(config);
     let _ = pipeline.run_structural(&repo);
     Ok(())
+}
+
+/// Scope of an `abyss reset` invocation. The CLI flags map onto these
+/// branches once — keep the per-mode path resolution in `reset_targets`
+/// so dry-run and the actual unlink stay byte-identical.
+#[derive(Clone, Copy)]
+enum ResetScope {
+    /// Default: remove the index DB only, preserve `arch.toml` and any
+    /// hand-authored config. The operator's intent is "rebuild the index".
+    Default,
+    /// `--all`: nuke the entire `.code-abyss/` directory. True greenfield.
+    All,
+    /// `--daemon`: remove daemon.pid / daemon.sock / daemon.log only.
+    Daemon,
+}
+
+fn cmd_reset(config: Config, all: bool, daemon: bool, dry_run: bool, json: bool) -> Result<()> {
+    let scope = match (all, daemon) {
+        (true, _) => ResetScope::All,
+        (false, true) => ResetScope::Daemon,
+        (false, false) => ResetScope::Default,
+    };
+
+    // Refuse while a daemon is alive — otherwise the running process would
+    // recreate `daemon.sock` / `daemon.pid` mid-reset and operators end up
+    // chasing ghosts. A stale pidfile (process gone) is *not* live and
+    // counts as a normal cleanup target.
+    if let Some(pid) = live_daemon_pid(&config) {
+        anyhow::bail!(
+            "abyss reset: daemon still running (pid {pid}). Stop it first: abyss daemon stop"
+        );
+    }
+
+    let targets = reset_targets(&config, scope);
+    // Filter to paths that actually exist so the output reads like a real
+    // diff — "would remove" / "removed" on a missing file is noise.
+    let existing: Vec<&std::path::PathBuf> = targets.iter().filter(|p| p.exists()).collect();
+
+    if existing.is_empty() {
+        if json {
+            println!(
+                "{}",
+                serde_json::json!({"removed": [], "dry_run": dry_run, "scope": scope_label(scope)})
+            );
+        } else {
+            eprintln!("abyss reset: nothing to remove ({})", scope_label(scope));
+        }
+        return Ok(());
+    }
+
+    let mut removed: Vec<String> = Vec::new();
+    for path in &existing {
+        let display = path.display().to_string();
+        if dry_run {
+            if !json {
+                println!("would remove: {display}");
+            }
+        } else {
+            // Directory vs file: `.code-abyss/` is a dir; everything else
+            // we own is a regular file. Skipping the dir-detect probe would
+            // make `--all` fail with "Is a directory" on the unlink call.
+            let result = if path.is_dir() {
+                std::fs::remove_dir_all(path)
+            } else {
+                std::fs::remove_file(path)
+            };
+            match result {
+                Ok(_) => {
+                    if !json {
+                        println!("removed: {display}");
+                    }
+                }
+                Err(e) => {
+                    anyhow::bail!("abyss reset: failed to remove {display}: {e}");
+                }
+            }
+        }
+        removed.push(display);
+    }
+
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "removed": removed,
+                "dry_run": dry_run,
+                "scope": scope_label(scope),
+            })
+        );
+    }
+    Ok(())
+}
+
+/// Resolve every filesystem path implicated by `scope`. Pure function so
+/// the dry-run output and the actual removal traverse the identical list —
+/// there can't be a target the unlink path forgets that dry-run promised.
+fn reset_targets(config: &Config, scope: ResetScope) -> Vec<std::path::PathBuf> {
+    let abyss_dir = config.workspace.join(".code-abyss");
+    match scope {
+        ResetScope::All => vec![abyss_dir],
+        ResetScope::Default => {
+            // The DB path is configurable (CLI `--db`), but the in-tree
+            // default lives next to arch.toml. We rely on the resolved
+            // `config.db_path` so a custom --db still gets nuked.
+            vec![config.db_path.clone()]
+        }
+        ResetScope::Daemon => {
+            vec![
+                abyss_dir.join("daemon.pid"),
+                abyss_dir.join("daemon.sock"),
+                abyss_dir.join("daemon.log"),
+            ]
+        }
+    }
+}
+
+fn scope_label(scope: ResetScope) -> &'static str {
+    match scope {
+        ResetScope::Default => "index-db",
+        ResetScope::All => "all",
+        ResetScope::Daemon => "daemon",
+    }
+}
+
+/// Returns the live daemon pid if one is running against this workspace.
+/// A pidfile without a backing process is *not* live — we want operators
+/// to be able to `abyss reset` after an `kill -9` left a stale pid behind.
+fn live_daemon_pid(config: &Config) -> Option<u32> {
+    #[cfg(unix)]
+    {
+        use code_abyss::daemon::DaemonPaths;
+        let paths = DaemonPaths::from_config(config);
+        if !paths.pid.exists() {
+            return None;
+        }
+        let pid: u32 = std::fs::read_to_string(&paths.pid)
+            .ok()?
+            .trim()
+            .parse()
+            .ok()?;
+        // SAFETY: `kill(pid, 0)` is the standard liveness probe — no signal
+        // delivered, just a permission/existence check via the kernel.
+        let alive = unsafe { libc::kill(pid as libc::pid_t, 0) } == 0;
+        alive.then_some(pid)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = config;
+        None
+    }
 }
 
 fn cmd_attach(host: &str, local: bool) -> Result<()> {
