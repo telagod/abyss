@@ -67,10 +67,17 @@ impl<'a> SearchEngine<'a> {
             }
         }
 
+        // RRF sums "where each engine ranked this chunk" — but fulltext's
+        // careful test/import demotion gets erased because semantic+symbol
+        // engines vote test files just as enthusiastically (mocks named
+        // `middleware1` in test files inflate symbol search for "middleware").
+        // Re-apply file-level penalty AFTER fusion so the centrality+test
+        // signals survive the RRF wash. Tuned on the hono dogfood session.
         let mut ranked: Vec<(i64, f64, Vec<String>)> = scores
             .into_iter()
             .map(|(id, (score, sources))| (id, score, sources))
             .collect();
+        self.apply_file_penalty(&mut ranked)?;
         ranked.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
         ranked.truncate(limit);
 
@@ -92,5 +99,51 @@ impl<'a> SearchEngine<'a> {
         }
 
         Ok(results)
+    }
+
+    /// Apply file-level test/import/centrality penalty to fused RRF scores.
+    /// Same multipliers as fulltext.rs uses internally — applied post-fusion
+    /// so symbol-search and semantic-search votes for test files don't drag
+    /// noise to the top.
+    fn apply_file_penalty(&self, ranked: &mut [(i64, f64, Vec<String>)]) -> Result<()> {
+        if ranked.is_empty() {
+            return Ok(());
+        }
+        let conn = self.repo.conn();
+        let mut stmt = conn.prepare(
+            "SELECT c.id, f.path, c.kind, COALESCE(af.centrality, 0)
+             FROM chunks c
+             JOIN files f ON f.id = c.file_id
+             LEFT JOIN arch_facts af ON af.file_id = c.file_id
+             WHERE c.id = ?1",
+        )?;
+        for entry in ranked.iter_mut() {
+            let (chunk_id, score, _) = entry;
+            let (path, kind, cent): (String, String, f64) = match stmt
+                .query_row(rusqlite::params![*chunk_id], |row| {
+                    Ok((row.get(1)?, row.get(2)?, row.get(3)?))
+                }) {
+                Ok(t) => t,
+                Err(_) => continue,
+            };
+            // Aggressive demotion: by the time we're here the test path
+            // already won via RRF on symbol + semantic search. Soft 0.4
+            // wasn't enough on hono — needs ~10x crushing for impl files
+            // to rise above test mocks of the same name.
+            let test_pen = if path.contains("_test.")
+                || path.contains(".test.")
+                || path.contains("/test/")
+                || path.contains("/__tests__/")
+                || path.contains("/tests/")
+            {
+                0.1
+            } else {
+                1.0
+            };
+            let import_pen = if kind == "import" { 0.1 } else { 1.0 };
+            let cent_boost = 1.0 + 5.0 * cent;
+            *score *= test_pen * import_pen * cent_boost;
+        }
+        Ok(())
     }
 }
