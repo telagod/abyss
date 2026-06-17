@@ -167,6 +167,46 @@ fn rules() -> &'static [CompiledRule] {
                 r"(?i)(^|/)(seed|fixture)(s)?(/|$|[._-])",
                 "test",
             ),
+            // ── Framework / editor / build vocabulary (v0.5.1, B5) ─────────
+            // Dogfood-aggregated 2026-06-17: hono's src/hono.ts (framework
+            // main) and src/context.ts (Context object), helix's
+            // src/editor.rs, vite's plugin/resolve modules all showed
+            // `layer=unknown` because the dictionary was web/CRUD biased
+            // (auth/handler/middleware/route). Three groups added.
+            //
+            // Group 1 — Web framework primitives. context/request/response/
+            // session live at the HTTP boundary (api), app/server are
+            // domain-shaped entrypoints — but for "where does this layer in
+            // a web framework" the safe consensus is api (transport).
+            (
+                r"(?i)(^|/)(context|request|response|session)(s)?(/|$|[._-])",
+                "api",
+            ),
+            // app/server → domain (these are framework cores: hono.ts,
+            // server.ts hold the framework's domain semantics)
+            (
+                r"(?i)(^|/)(app|server)(s)?(/|$|[._-])",
+                "domain",
+            ),
+            // Group 2 — Editor / TUI vocabulary (helix-editor: editor.rs,
+            // buffer.rs, view.rs, term.rs all `unknown` pre-B5).
+            (
+                r"(?i)(^|/)(editor|buffer|view|term|tui|pane|window|mode|keymap|syntax)(s)?(/|$|[._-])",
+                "ui",
+            ),
+            // Group 3 — Build tooling (vite: resolver.ts, plugin.ts,
+            // transform.ts all `unknown` pre-B5).
+            (
+                r"(?i)(^|/)(bundler|resolver|plugin|transformer|compiler|transpiler|loader)(s)?(/|$|[._-])",
+                "build",
+            ),
+            // Resolve/transform/transpile as bare verbs (no -er suffix) —
+            // covers `resolve.ts`, `transform.ts`, `transpile.ts` shape
+            // common in build tooling.
+            (
+                r"(?i)(^|/)(resolve|transform|transpile)(/|$|[._-])",
+                "build",
+            ),
         ];
         raw.iter()
             .map(|(pat, layer)| CompiledRule {
@@ -587,5 +627,112 @@ mod tests {
     fn fixture_classifies_as_test() {
         let hints = classify_path("tests/fixture/sample.go");
         assert!(has_layer(&hints, "test"), "expected test, got {hints:?}");
+    }
+
+    // ── Framework / editor / build vocabulary (v0.5.1, B5) ──────────────
+
+    #[test]
+    fn web_framework_context_classifies_as_api() {
+        // hono's src/context.ts is the Context object — HTTP transport.
+        let hints = classify_path("src/context.ts");
+        assert!(
+            has_layer(&hints, "api"),
+            "expected api for context.ts, got {hints:?}"
+        );
+    }
+
+    #[test]
+    fn web_framework_request_classifies_as_api() {
+        let hints = classify_path("src/request.ts");
+        assert!(has_layer(&hints, "api"), "expected api, got {hints:?}");
+    }
+
+    #[test]
+    fn web_framework_response_classifies_as_api() {
+        let hints = classify_path("src/response.ts");
+        assert!(has_layer(&hints, "api"), "expected api, got {hints:?}");
+    }
+
+    #[test]
+    fn web_framework_hono_app_classifies_as_domain() {
+        // hono's src/hono.ts is the framework root — `hono` matches none of
+        // the existing rules so this would have stayed `unknown`. We can't
+        // pattern-match on the project name itself; instead `app.ts` /
+        // `server.ts` carry the framework-core semantics. Pre-B5 these
+        // dropped to unknown.
+        let hints = classify_path("src/app.ts");
+        assert!(
+            has_layer(&hints, "domain"),
+            "expected domain for app.ts, got {hints:?}"
+        );
+    }
+
+    #[test]
+    fn web_framework_server_classifies_as_domain() {
+        let hints = classify_path("src/server.ts");
+        assert!(
+            has_layer(&hints, "domain"),
+            "expected domain, got {hints:?}"
+        );
+    }
+
+    #[test]
+    fn editor_classifies_as_ui() {
+        // helix-editor's src/editor.rs labelled `unknown` pre-B5.
+        let hints = classify_path("src/editor.rs");
+        assert!(has_layer(&hints, "ui"), "expected ui, got {hints:?}");
+    }
+
+    #[test]
+    fn buffer_view_tui_keymap_classify_as_ui() {
+        for path in &[
+            "src/buffer.rs",
+            "src/view.rs",
+            "src/tui/render.rs",
+            "src/keymap.rs",
+            "src/syntax.rs",
+        ] {
+            let hints = classify_path(path);
+            assert!(
+                has_layer(&hints, "ui"),
+                "expected ui for {path}, got {hints:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn vite_resolver_classifies_as_build() {
+        // vite's src/node/plugins/resolve.ts and resolver.ts all labelled
+        // `unknown` pre-B5.
+        let hints = classify_path("src/node/plugins/resolver.ts");
+        assert!(has_layer(&hints, "build"), "expected build, got {hints:?}");
+    }
+
+    #[test]
+    fn vite_plugin_classifies_as_build() {
+        let hints = classify_path("src/node/plugins/plugin.ts");
+        assert!(has_layer(&hints, "build"), "expected build, got {hints:?}");
+    }
+
+    #[test]
+    fn vite_transform_classifies_as_build() {
+        let hints = classify_path("src/node/transform.ts");
+        assert!(has_layer(&hints, "build"), "expected build, got {hints:?}");
+    }
+
+    #[test]
+    fn bundler_compiler_loader_classify_as_build() {
+        for path in &[
+            "src/bundler/index.ts",
+            "src/compiler/lower.ts",
+            "src/loader/css.ts",
+            "src/transpiler/sucrase.ts",
+        ] {
+            let hints = classify_path(path);
+            assert!(
+                has_layer(&hints, "build"),
+                "expected build for {path}, got {hints:?}"
+            );
+        }
     }
 }

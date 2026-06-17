@@ -71,7 +71,7 @@ fn default_callers_include_inherit_edges() {
         "default callers must include all three subclass files, got {paths:?}",
     );
     assert!(
-        kinds.iter().any(|k| *k == "inherit"),
+        kinds.contains(&"inherit"),
         "at least one default caller must carry kind=inherit, got {kinds:?}",
     );
 }
