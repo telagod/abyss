@@ -86,6 +86,43 @@ curl -fsSL https://github.com/sourcegraph/scip-clang/releases/download/v0.3.2/sc
 chmod +x ~/.local/bin/scip-clang
 ```
 
+## Reproducibility
+
+The eval baselines published in `RESULTS.md` are reproducible **only** against
+the SCIP indexer versions pinned in `setup-indexers.sh`. SCIP indexers move
+silently: between v0.3.6 and v0.4.0 the click corpus drifted 98.7/94.6 →
+97.9/93.0 gated precision/recall with zero abyss code change — `scip-python`
+v0.6.6 had started emitting 16 extra truth pairs.
+
+### Pinned versions
+
+| Indexer | Pinned to | Pin mechanism |
+|---------|-----------|---------------|
+| `scip` (CLI) | `v0.8.1` | GitHub release tag (`SCIP_VERSION`) |
+| `scip-go` | `v0.2.7` | `go install …@v0.2.7` (`SCIP_GO_VERSION`) |
+| `scip-typescript` | `0.4.0` | `npm install -g @sourcegraph/scip-typescript@0.4.0` (`SCIP_TS_VERSION`) |
+| `scip-python` | `0.6.6` | `npm install -g @sourcegraph/scip-python@0.6.6` (`SCIP_PYTHON_VERSION`) |
+| `scip-clang` | `v0.3.2` | GitHub release binary (`SCIP_CLANG_VERSION`) |
+| `rust-analyzer` | tracked with rustup toolchain | `rustup component add rust-analyzer` |
+
+`rust-analyzer` is intentionally not version-pinned in the script — the
+project's `rust-toolchain` (or the user's default `rustup` toolchain) decides
+which build of the analyzer ships. Capture the actual `rust-analyzer --version`
+from the run log if you need to compare across machines.
+
+### Policy
+
+Bumping any pinned SCIP indexer in `setup-indexers.sh` requires re-running
+`eval/run.sh` and updating the affected rows in `RESULTS.md` **in the same
+commit**. The `--- indexer versions` line that `run.sh` prints to stderr at
+the start of every run is the audit trail; copy it into the relevant
+"captured-against" note in `RESULTS.md` whenever you publish new numbers.
+
+If a bump moves a baseline in a way that looks like a regression, check the
+SCIP indexer's release notes first — the new truth pairs may have changed
+without abyss's resolver changing. The 2026-06-17 click correction is the
+canonical example.
+
 ## What runs
 
 `eval/run.sh` clones each corpus at a pinned ref, builds the ground-truth

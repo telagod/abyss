@@ -24,6 +24,8 @@ Published whatever the numbers say. Reproduce with `eval/run.sh`.
 
 Five corpora unchanged vs the v0.3.5-dev baseline. Click corrected to 97.9 / 93.0 after a SCIP ground-truth refresh (truth pairs 573 → 589); see eval/notes/click-microregression-2026-06-17.md.
 
+> Captured against: scip v0.8.1, scip-go v0.2.7, scip-typescript 0.4.0, scip-python 0.6.6, scip-clang v0.3.2, rust-analyzer 1.95.0. Pins live in `eval/setup-indexers.sh`; bumping any of them requires updating these baselines in the same commit (see eval/README.md "Reproducibility").
+
 
 
 
