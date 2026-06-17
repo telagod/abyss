@@ -1,5 +1,40 @@
 # Changelog
 
+## Unreleased — V2 daemon
+
+### Added
+
+- **MCP-over-socket** — the daemon now serves the standard 7-tool MCP
+  surface on its Unix socket via a new `{"cmd":"mcp"}` verb. After
+  the switch line the connection becomes a JSON-RPC channel served
+  by an embedded `rmcp` instance. Each MCP-mode connection gets its
+  own [`Repository::open_read_only`](src/storage/repo.rs) handle so
+  multiple MCP clients sharing one daemon don't contend with the
+  watcher's writer (WAL: N readers + 1 writer). See
+  [docs/book/ambient/socket-protocol.md](docs/book/ambient/socket-protocol.md).
+- **`abyss mcp --via-daemon`** — agent-facing client. Connects to
+  `<workspace>/.code-abyss/daemon.sock`, sends the `mcp` verb, and
+  pipes the agent's stdio bidirectionally through the socket. Errors
+  out (does not silently fall back) when no daemon is running:
+  ```
+  abyss mcp --via-daemon: no daemon found at <socket>;
+  either start one with `abyss daemon start` or drop --via-daemon
+  for standalone mode
+  ```
+
+### Design notes
+
+- The pre-edit hook deliberately stays on the direct-SQLite path. A
+  socket hop would regress its sub-12ms budget for no agent-visible
+  benefit — only `abyss mcp --via-daemon` uses the new MCP-over-socket
+  path.
+- `abyss mcp` (no flag) is unchanged. Existing MCP configs migrate by
+  appending `--via-daemon`, not by replacing the standalone binary.
+- WAL `journal_mode` is set once by the writer in
+  `storage::schema::init_db`; read-only handles use the new
+  `init_db_read_only` helper to skip the `journal_mode` PRAGMA (which
+  would fail on a read-only connection).
+
 ## v0.5.1 — 2026-06-17
 
 v0.5.1 closes the dogfood-surfaced debts from Django + hono. The

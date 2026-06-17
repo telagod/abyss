@@ -94,6 +94,7 @@ abyss daemon stop|status      Stop daemon / report pid + uptime + last reindex
 abyss daemon logs [--tail N]  Tail .code-abyss/daemon.log via socket or direct file read (default N=50)
 abyss stats                   Index statistics
 abyss mcp                     MCP server (stdio) — 7 tools for any MCP client
+abyss mcp --via-daemon        V2: stdio MCP that tunnels through `abyss daemon` over its socket
 ```
 
 ## Language support
@@ -154,7 +155,7 @@ abyss indexed gin in **~150ms**; scip-go took ~40s. Full method, per-tier tables
 
 ## Agent integration
 
-**MCP**: `abyss mcp` exposes `search_context`, `get_symbols`, `find_callers`, `impact_analysis`, `code_map`, `evolution`, `index_project` over stdio.
+**MCP**: `abyss mcp` exposes `search_context`, `get_symbols`, `find_callers`, `impact_analysis`, `code_map`, `evolution`, `index_project` over stdio. With a running daemon, `abyss mcp --via-daemon` tunnels the same surface through `.code-abyss/daemon.sock` so multiple MCP clients share one in-process index and one set of read-only SQLite handles.
 
 **Pre-edit hooks**: `abyss hook pre-edit` reads the tool-call JSON any agent platform pipes to its hooks (Claude Code, Codex CLI, Gemini CLI, Pi, Hermes, OpenClaw payload shapes auto-detected), refreshes the index incrementally, and warns about production callers, ambiguous references, and hotspots — before the edit happens. [code-abyss](https://github.com/telagod/code-abyss) installs the per-platform hook configs in one command.
 
@@ -178,19 +179,25 @@ abyss watch                        # default 150ms debounce
 abyss watch --debounce-ms 300      # tune for slower disks / heavier formatters
 ```
 
-The V1.5 socket protocol is newline-delimited JSON and exposes four verbs:
+The V2 socket protocol is newline-delimited JSON and exposes five verbs:
 
 - `{"cmd":"ping"}` — uptime + last-reindex telemetry + epoch counter.
 - `{"cmd":"stats"}` — file / symbol / ref / chunk counts.
 - `{"cmd":"reindex"}` — synchronous hash-incremental reindex on a worker thread; returns `{reindexed, removed, duration_ms, epoch}`. Two concurrent reindex calls get one structured `index lock contention` error rather than fighting at the SQLite layer.
 - `{"cmd":"logs","tail":N}` — last N lines of `daemon.log`.
+- `{"cmd":"mcp"}` (V2) — switches the connection into MCP stdio mode and runs an `rmcp` service over the same socket with a per-connection read-only SQLite handle. Used under the hood by `abyss mcp --via-daemon`.
 
 ```sh
 echo '{"cmd":"ping"}'     | nc -U .code-abyss/daemon.sock
 echo '{"cmd":"reindex"}'  | nc -U .code-abyss/daemon.sock
+
+# Switch a raw socket into MCP mode + initialize handshake:
+( printf '{"cmd":"mcp"}\n'
+  printf '%s\n' '{"jsonrpc":"2.0","method":"initialize","id":1,"params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"smoke","version":"0"}}}'
+) | nc -U .code-abyss/daemon.sock
 ```
 
-The full MCP-over-socket surface (so the hook, the MCP server, and an editor extension can share one in-process index) is V2 territory. Hooks still read SQLite directly — no daemon round-trip for the pre-edit fast path.
+Hooks deliberately stay on the direct-SQLite path — a socket hop would regress the pre-edit hook's sub-12ms budget. Only `abyss mcp --via-daemon` uses the new MCP-over-socket path.
 
 ## Dogfood evaluations
 
