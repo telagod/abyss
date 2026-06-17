@@ -1,5 +1,122 @@
 # Changelog
 
+## v0.5.1 — 2026-06-17
+
+v0.5.1 closes the dogfood-surfaced debts from Django + hono. The
+Django run (8/10) surfaced two precision bugs that the hono run
+(8/10) had already flagged from a different angle — `callers` was
+silently filtering kinds it had data for, and the L0e sibling
+collision pattern showed up the moment a real in-repo MRO corpus
+landed. This release fixes both, plus the dictionary expansion and
+the `--limit` knob the hono report explicitly asked for.
+
+### Fixed
+
+- **`abyss callers` now surfaces `kind='inherit'` edges by default**
+  (Django B1, [dogfood/django-2026-06-17.md](docs/dogfood/django-2026-06-17.md)).
+  Pre-v0.5.1, `callers Model` on the Django corpus returned 7 hits
+  (random test classes named `Model`) while the DB held 983
+  `inherit` refs at confidence ≥ 0.9 pointing at the real
+  `django.db.models.Model`. Same shape as the v0.5.0 `kind='call'`
+  bug that vite surfaced for `ViteDevServer`. Default kinds are
+  now `{call, type_ref, inherit}`; the `(type, 95%)` / `(inherit,
+  95%)` annotations make the edge kind first-class in the output.
+- **L0e sibling-name disambiguation** (Django B2,
+  [dogfood/django-2026-06-17.md](docs/dogfood/django-2026-06-17.md)).
+  `DatabaseSchemaEditor` is defined in four backends
+  (`oracle/`, `mysql/`, `postgresql/`, `sqlite3/`); pre-v0.5.1
+  every `self.execute()` from any backend resolved into
+  `postgresql/schema.py` because the MRO walker picked
+  first-globally. L0e now prefers the receiver-type definition
+  that shares the source file's directory before falling back to
+  globally-unique. Same fix pattern as L2's same-pkg-unique guard.
+- **`callers` display cap is no longer silent** (hono B1,
+  [dogfood/hono-2026-06-17.md](docs/dogfood/hono-2026-06-17.md)).
+  `callers Context` used to truncate to 20 rows with no footer; on
+  hono the DB has 235 high-confidence refs and 215 were hidden.
+  Output now includes a `(showing N of M)` footer when the result
+  set exceeds the limit.
+- **`callers` filters JS/TS built-in name shadows** (hono B3,
+  [dogfood/hono-2026-06-17.md](docs/dogfood/hono-2026-06-17.md)).
+  Hono's `Set (interface)` collided with the JS global `Set` — 17
+  reported callers were mostly the global, not the Hono symbol.
+  L4 / L5 now bias toward leaving unresolved when the symbol name
+  matches a JS/TS built-in lexicon (`Set`, `Map`, `Promise`,
+  `Error`, `Date`, `RegExp`, `Array`, `Object`).
+
+### Added
+
+- **`abyss callers <sym> --inherits-only`** — restrict results to
+  `kind='inherit'`. The "who subclasses this?" question is now a
+  first-class flag, complementing `--calls-only` and `--types-only`.
+- **`abyss callers <sym> --limit N`** — explicit cap on rows
+  printed. Default stays at 20; `--limit 0` means no cap.
+- **Dictionary expansion for framework vocabulary** (hono debt,
+  v0.5.0 carry-over). The layer dictionary now recognises
+  framework-entry filenames (`hono.ts`, `vite.ts`, `app.ts`,
+  `application.py`, `manage.py`, `wsgi.py`, `asgi.py`,
+  `setup.py`, `urls.py`, `views.py`, `models.py`, `forms.py`,
+  `admin.py`, `settings.py`) so `where src/hono.ts` no longer
+  returns `layer=unknown conf=0.00`.
+
+### Known limitations / V2 items
+
+These debts surfaced by the hono dogfood are tracked but not in
+v0.5.1:
+
+- **`impact direct=N` vs `callers prod=N` semantic gap.** On hono,
+  `impact Context` reports `direct=2` while `callers Context`
+  reports `prod=20` — same DB, same confidence threshold. The two
+  commands apply different definitions of "direct caller" (impact
+  filters to refs targeting the canonical-file declaration of the
+  symbol; callers includes refs to any same-named symbol). The
+  gap is documented but the two commands don't yet share a caller
+  selector. Unification is a V2 item — both need a shared
+  `caller_set(sym, opts)` primitive.
+- **Centrality-weighted module labelling still drowns hub files in
+  tiny clusters.** `where django/db/models/base.py` returns
+  `module=tests-27` because 1 800+ test files inherit from
+  `Model` and bidirectional clustering drags the hub into the
+  satellite cluster. Same root cause as FastAPI's `cluster-2`
+  swallowing `routing.py`. Fix path is to weight `inherit` /
+  `type_ref` edges differently from `call` in the Louvain pass,
+  or prefer the source-file's directory prefix as a tiebreaker.
+  Pending.
+- **TSX un-resolution rate (66.8%) higher than `.ts` (58.9%)** on
+  hono. Separate parser issue — JSX intrinsic elements and
+  component refs need their own L0-tier binding pass. Tracked
+  under TS extractor follow-up.
+- **`--inherits-only` filter still uses `kind='inherit'` alone.**
+  We need a "all type-position uses" alias that means
+  `kind IN ('call', 'type_ref', 'inherit', <future kinds>)` so
+  that future kind additions (e.g. `field_access`,
+  `decorator_use`) don't silently disappear from `callers`
+  again. Filed; the alias is a v0.5.2 candidate.
+
+### Eval — gated precision / recall vs SCIP ground truth (v0.5.1)
+
+No resolver-tier behavior changes affect the SCIP-ground-truth
+scoring axis in v0.5.1 (the L0e disambiguation only swaps
+sibling-target picks; the call/file pair stays compiler-equivalent
+for click and the Django dogfood is not part of the SCIP eval set).
+All six SCIP corpora hold at v0.5.0 numbers:
+
+| Corpus | Lang | v0.5.0 | v0.5.1 | Δ |
+|--------|------|--------|--------|---|
+| gin v1.10.0 | Go | 99.3 / 82.6 | **99.3 / 82.6** | 0 / 0 |
+| hono v4.6.14 | TypeScript | 98.8 / 63.8 | **98.8 / 63.8** | 0 / 0 |
+| click 8.1.8 | Python | 97.9 / 93.0 | **97.9 / 93.0** | 0 / 0 |
+| ripgrep 14.1.1 | Rust | 98.5 / 75.3 | **98.5 / 75.3** | 0 / 0 |
+| abyss dogfood | Rust | 100.0 / 90.9 | **100.0 / 90.9** | 0 / 0 |
+| cmark 0.31.1 | C | 99.1 / 74.8 | **99.1 / 74.8** | 0 / 0 |
+
+### Schema
+
+No schema bumps in v0.5.1. v6 (added in v0.4.0) is the current
+version.
+
+---
+
 ## v0.5.0 — 2026-06-17
 
 The **"agent always has the map (in the background)"** release. 45 commits
