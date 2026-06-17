@@ -69,10 +69,12 @@ enum Commands {
     },
     /// Find all callers of a symbol.
     ///
-    /// By default returns both invocation users (`call`/`field_access`) and
-    /// type-position users (`type_ref` — annotations, generics, extends).
-    /// Use `--calls-only` to recover the legacy invocation-only behaviour or
-    /// `--types-only` to focus on type users (e.g. for interface refactors).
+    /// By default returns invocation users (`call`/`field_access`),
+    /// type-position users (`type_ref` — annotations, generics, extends),
+    /// AND inheritance users (`inherit` — every subclass of a base class).
+    /// Use `--calls-only` to recover the legacy invocation-only behaviour,
+    /// `--types-only` for interface-refactor focus, or `--inherits-only`
+    /// for "every subclass of this base".
     Callers {
         symbol: String,
         #[arg(short, long, default_value = "20")]
@@ -84,13 +86,20 @@ enum Commands {
         #[arg(long)]
         include_tests: bool,
         /// Restrict to invocation edges (`call` + `field_access`). Mutually
-        /// exclusive with `--types-only`.
-        #[arg(long, conflicts_with = "types_only")]
+        /// exclusive with `--types-only` / `--inherits-only`.
+        #[arg(long, conflicts_with_all = ["types_only", "inherits_only"])]
         calls_only: bool,
         /// Restrict to type-position edges (`type_ref` — annotations,
-        /// generics, extends). Mutually exclusive with `--calls-only`.
-        #[arg(long, conflicts_with = "calls_only")]
+        /// generics, extends). Mutually exclusive with `--calls-only` /
+        /// `--inherits-only`.
+        #[arg(long, conflicts_with_all = ["calls_only", "inherits_only"])]
         types_only: bool,
+        /// Restrict to inheritance edges (`inherit` — every subclass of a
+        /// base class). Mutually exclusive with `--calls-only` /
+        /// `--types-only`. Surfaces every Django Model subclass when run
+        /// against `Model`.
+        #[arg(long, conflicts_with_all = ["calls_only", "types_only"])]
+        inherits_only: bool,
     },
     /// Analyze blast radius of changing a symbol
     Impact {
@@ -238,6 +247,7 @@ fn main() -> Result<()> {
             include_tests,
             calls_only,
             types_only,
+            inherits_only,
         } => cmd_callers(
             config,
             &symbol,
@@ -246,6 +256,7 @@ fn main() -> Result<()> {
             include_tests,
             calls_only,
             types_only,
+            inherits_only,
             json,
         ),
         Commands::Impact {
@@ -439,17 +450,19 @@ fn cmd_callers(
     include_tests: bool,
     calls_only: bool,
     types_only: bool,
+    inherits_only: bool,
     json: bool,
 ) -> Result<()> {
     use code_abyss::graph::CallerKindFilter;
     let repo = Repository::open(&config.db_path, config.model.dimensions)?;
     let gq = code_abyss::graph::GraphQuery::new(&repo);
-    let kind_filter = match (calls_only, types_only) {
-        (true, false) => CallerKindFilter::CallsOnly,
-        (false, true) => CallerKindFilter::TypesOnly,
+    let kind_filter = match (calls_only, types_only, inherits_only) {
+        (true, false, false) => CallerKindFilter::CallsOnly,
+        (false, true, false) => CallerKindFilter::TypesOnly,
+        (false, false, true) => CallerKindFilter::InheritsOnly,
         _ => CallerKindFilter::Both,
     };
-    let restricted = calls_only || types_only;
+    let restricted = calls_only || types_only || inherits_only;
     let result =
         gq.find_callers_filtered_kinds(symbol, limit, min_confidence, include_tests, kind_filter)?;
 
@@ -474,11 +487,11 @@ fn cmd_callers(
             format!("callers of '{symbol}' ({} prod):\n", result.callers.len())
         };
         println!("{header}");
-        // When the user did not restrict via a flag, the list may mix call
-        // and type_ref edges. Suffix each row with the edge kind so the agent
-        // can tell "X() invokes this" from "X uses this in a type position"
-        // without re-querying. When restricted, the kind is implicit — keep
-        // the legacy compact format.
+        // When the user did not restrict via a flag, the list may mix call,
+        // type_ref, and inherit edges. Suffix each row with the edge kind so
+        // the agent can tell "X() invokes this" from "X uses this in a type
+        // position" from "X inherits from this" without re-querying. When
+        // restricted, the kind is implicit — keep the legacy compact format.
         for (i, c) in result.callers.iter().enumerate() {
             let t = if c.is_test { " [test]" } else { "" };
             let kind_suffix = if restricted {

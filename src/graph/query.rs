@@ -35,9 +35,10 @@ pub struct CallersResult {
     pub excluded_tests: usize,
 }
 
-/// Which `refs.kind` edges count as "callers". Default is `Both` because for
-/// an agent asking "who depends on X" a type-position user is just as
-/// load-bearing as an invocation site.
+/// Which `refs.kind` edges count as "callers". Default is `Both` (the agent
+/// superset: invocation + type-position + inheritance) because for an agent
+/// asking "who depends on X" a type-position user OR an inheritance edge is
+/// just as load-bearing as an invocation site.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CallerKindFilter {
     /// Invocation edges: `call` + `field_access`. Legacy behaviour.
@@ -45,7 +46,14 @@ pub enum CallerKindFilter {
     /// Type-position edges only: `type_ref`. Useful for "who annotates with
     /// this type / extends this interface".
     TypesOnly,
-    /// Both invocation and type-position edges. The agent-facing default.
+    /// Inheritance edges only: `inherit`. Useful for "every subclass of this
+    /// base class". Django Model dogfood (2026-06-17): `callers Model` was
+    /// 7 instead of ~983 because `inherit` was missing from the default set;
+    /// the v0.5.0 G1 work surfaced `type_ref` but the same pattern blindness
+    /// dropped `inherit`. Different label, same bug.
+    InheritsOnly,
+    /// The agent-facing superset: invocation + type-position + inheritance.
+    /// Historically named `Both` (when only call+type_ref were in the set).
     Both,
 }
 
@@ -54,7 +62,8 @@ impl CallerKindFilter {
         match self {
             CallerKindFilter::CallsOnly => &["call", "field_access"],
             CallerKindFilter::TypesOnly => &["type_ref"],
-            CallerKindFilter::Both => &["call", "field_access", "type_ref"],
+            CallerKindFilter::InheritsOnly => &["inherit"],
+            CallerKindFilter::Both => &["call", "field_access", "type_ref", "inherit"],
         }
     }
 }
@@ -81,10 +90,12 @@ impl<'a> GraphQuery<'a> {
     /// should prefer [`Self::find_callers_filtered`], which exposes the test
     /// exclusion knob so unfamiliar codebases get prod call sites by default.
     ///
-    /// Kind contract: returns BOTH invocation edges (`call`, `field_access`)
-    /// AND type-position edges (`type_ref`). On TS/Rust, exported types are
-    /// used in annotations far more than they're directly constructed; a
-    /// caller list that hides type users mislabels them as "no users".
+    /// Kind contract: returns invocation edges (`call`, `field_access`),
+    /// type-position edges (`type_ref`), AND inheritance edges (`inherit`).
+    /// On TS/Rust, exported types are used in annotations far more than
+    /// they're directly constructed; on Django/Python, base classes have
+    /// hundreds of subclass inheritors and zero direct invocations. A
+    /// caller list that hides either mislabels real users as "no users".
     pub fn find_callers(
         &self,
         symbol_name: &str,

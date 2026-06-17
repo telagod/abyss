@@ -121,13 +121,14 @@ pub struct FindCallersInput {
     /// remain reachable via `excluded_tests` count and an explicit retry.
     #[serde(default)]
     pub include_tests: bool,
-    /// Which edge kinds count as callers. Valid entries: `call`, `field_access`,
-    /// `type_ref`. Default is all three — for "who depends on X" the agent
-    /// almost always wants type-position users (annotations, generics,
-    /// `extends`) alongside the invocation users. To recover the legacy
+    /// Which edge kinds count as callers. Valid entries: `call`,
+    /// `field_access`, `type_ref`, `inherit`. Default is all four — for
+    /// "who depends on X" the agent almost always wants type-position users
+    /// (annotations, generics, `extends`) AND inheritance users (every
+    /// subclass) alongside the invocation users. To recover the legacy
     /// invocation-only behaviour, pass `["call","field_access"]`; to look
-    /// only at type users (e.g. interface implementers), pass `["type_ref"]`.
-    /// Empty array is treated as default.
+    /// only at type users, pass `["type_ref"]`; for "every subclass", pass
+    /// `["inherit"]`. Empty array is treated as default.
     #[serde(default)]
     pub kinds: Vec<String>,
 }
@@ -186,10 +187,14 @@ fn default_30() -> usize {
 /// Returns `None` for empty / unknown inputs so the caller can fall back to
 /// `Both` (the safe superset) rather than silently dropping results.
 ///
-/// The mapping is intentionally narrow: three filter shapes (CallsOnly /
-/// TypesOnly / Both) is enough until evidence says otherwise, and a strict
-/// classifier keeps a malformed `kinds: ["typeref"]` (typo) from hiding a
-/// caller list — we just return `Both` instead.
+/// The mapping is intentionally narrow: four filter shapes (CallsOnly /
+/// TypesOnly / InheritsOnly / Both) is enough until evidence says otherwise,
+/// and a strict classifier keeps a malformed `kinds: ["typeref"]` (typo) from
+/// hiding a caller list — we just return `Both` instead.
+///
+/// Mixed kinds collapse to `Both` (the superset): anything other than a
+/// pure single-kind selection is wider than any of the restricted variants,
+/// so widening to Both honours intent without inventing a new filter.
 fn classify_kinds(kinds: &[String]) -> Option<crate::graph::CallerKindFilter> {
     use crate::graph::CallerKindFilter;
     if kinds.is_empty() {
@@ -198,19 +203,25 @@ fn classify_kinds(kinds: &[String]) -> Option<crate::graph::CallerKindFilter> {
     let mut has_call = false;
     let mut has_field = false;
     let mut has_type = false;
+    let mut has_inherit = false;
     for k in kinds {
         match k.as_str() {
             "call" => has_call = true,
             "field_access" => has_field = true,
             "type_ref" => has_type = true,
+            "inherit" => has_inherit = true,
             _ => return None, // unknown kind → caller picks default
         }
     }
-    Some(match (has_call || has_field, has_type) {
-        (true, true) => CallerKindFilter::Both,
-        (true, false) => CallerKindFilter::CallsOnly,
-        (false, true) => CallerKindFilter::TypesOnly,
-        (false, false) => return None,
+    let invoke = has_call || has_field;
+    Some(match (invoke, has_type, has_inherit) {
+        (true, false, false) => CallerKindFilter::CallsOnly,
+        (false, true, false) => CallerKindFilter::TypesOnly,
+        (false, false, true) => CallerKindFilter::InheritsOnly,
+        (false, false, false) => return None,
+        // Any combination of two or more kinds → caller wants more than one
+        // axis, fall back to the agent superset.
+        _ => CallerKindFilter::Both,
     })
 }
 
@@ -438,7 +449,7 @@ impl McpServer {
 
     #[tool(
         name = "find_callers",
-        description = "Find who depends on a symbol. Returns callers and type-position users (interface implementers, generic instantiations, `extends`) — for an agent asking 'who uses this' both matter. Default kind set is [call, field_access, type_ref]; pass `kinds: [\"call\",\"field_access\"]` for invocation-only or `kinds: [\"type_ref\"]` for type users only. Each row carries `kind` so the agent can tell them apart. Test-file callers are hidden by default (set `include_tests: true` to include them; `excluded_tests` reports how many were dropped)."
+        description = "Find who depends on a symbol. Returns invocation callers, type-position users (interface implementers, generic instantiations, `extends`), AND inheritance users (every subclass of a base class) — for an agent asking 'who uses this' all three matter. Default kind set is [call, field_access, type_ref, inherit]; pass `kinds: [\"call\",\"field_access\"]` for invocation-only, `kinds: [\"type_ref\"]` for type users only, or `kinds: [\"inherit\"]` for 'every subclass of this base'. Each row carries `kind` so the agent can tell them apart. Test-file callers are hidden by default (set `include_tests: true` to include them; `excluded_tests` reports how many were dropped)."
     )]
     fn find_callers(
         &self,
@@ -451,7 +462,7 @@ impl McpServer {
         // Map the wire-level `kinds` array to the closed filter enum. The
         // SQL layer (`find_callers_of_kinds`) is happy to take an arbitrary
         // `&[&str]` but the rest of the codebase keeps that surface narrow
-        // on purpose — three filter shapes is enough until evidence says
+        // on purpose — four filter shapes is enough until evidence says
         // otherwise. Unknown / mixed inputs fall back to `Both` (the safe
         // superset) so a malformed agent call never hides results silently.
         let kind_filter = classify_kinds(&input.kinds).unwrap_or(CallerKindFilter::Both);
@@ -749,5 +760,34 @@ mod kinds_tests {
         // caller picks default rather than us silently dropping a request.
         assert!(classify_kinds(&k(&["typeref"])).is_none());
         assert!(classify_kinds(&k(&["call", "wat"])).is_none());
+    }
+
+    #[test]
+    fn inherit_only_maps_to_inherits_only() {
+        // Django Model dogfood (2026-06-17): the `inherit` axis needs its
+        // own filter so an agent can ask "every subclass of Model" without
+        // also pulling in unrelated call sites.
+        assert_eq!(
+            classify_kinds(&k(&["inherit"])),
+            Some(CallerKindFilter::InheritsOnly)
+        );
+    }
+
+    #[test]
+    fn mixed_with_inherit_collapses_to_both() {
+        // Any combination of two or more kinds collapses to the agent
+        // superset rather than inventing a new partial filter.
+        assert_eq!(
+            classify_kinds(&k(&["call", "inherit"])),
+            Some(CallerKindFilter::Both)
+        );
+        assert_eq!(
+            classify_kinds(&k(&["type_ref", "inherit"])),
+            Some(CallerKindFilter::Both)
+        );
+        assert_eq!(
+            classify_kinds(&k(&["call", "field_access", "type_ref", "inherit"])),
+            Some(CallerKindFilter::Both)
+        );
     }
 }
