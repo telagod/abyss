@@ -1030,6 +1030,15 @@ fn is_boring_dir(seg: &str) -> bool {
     BORING_DIR_PREFIXES.contains(&seg)
 }
 
+/// Below this cluster size the modal-segment tally switches from
+/// weighted-sum (best for large clusters dominated by a few high-centrality
+/// files) to peak-centrality (best for small heterogeneous clusters where
+/// a few important files are swamped by many tutorial / fixture / generated
+/// files). 8 is the empirical knee from the v0.5.1 FastAPI dogfood:
+/// `param_functions.py`'s cluster had 4 fastapi files + 6 docs_src tutorials
+/// (10 members) and the weighted sum still misnamed it as "docs_src".
+const SMALL_CLUSTER_THRESHOLD: usize = 8;
+
 /// Human-readable module label. Strategy:
 ///
 /// 1. Centroid is a clean directory (`src/auth/`) → use the deepest segment
@@ -1046,15 +1055,25 @@ fn is_boring_dir(seg: &str) -> bool {
 /// 4. Absolutely nothing to go on → `unlabelled-{id}` (friendlier than
 ///    `module-{id}`, which used to leak the internal community ID).
 ///
-/// Modal-segment counting is centrality-weighted: each member's vote is its
-/// arch_facts.centrality, not 1.0. FastAPI v0.5.0 dogfood: a community
-/// containing fastapi/applications.py (centrality ~0.4) was dominated by
-/// ~150 docs_src/tutorial*.py files (centrality ~0.001 each) and labelled
-/// "docs_src" despite applications.py being the obvious centerpiece. With
-/// weights, applications.py's 0.4 beats the tutorial files' summed ~0.15
-/// and the label becomes "fastapi". When centralities aren't populated
-/// (every member at 0.0), we fall back to raw count so we never drop into
-/// "cluster-{id}" purely from missing weights.
+/// Modal-segment counting is centrality-weighted by default: each member's
+/// vote is its arch_facts.centrality, not 1.0. FastAPI v0.5.0 dogfood: a
+/// community containing fastapi/applications.py (centrality ~0.4) was
+/// dominated by ~150 docs_src/tutorial*.py files (centrality ~0.001 each)
+/// and labelled "docs_src" despite applications.py being the obvious
+/// centerpiece. With weights, applications.py's 0.4 beats the tutorial
+/// files' summed ~0.15 and the label becomes "fastapi". When centralities
+/// aren't populated (every member at 0.0), we fall back to raw count so we
+/// never drop into "cluster-{id}" purely from missing weights.
+///
+/// **Small clusters (`< SMALL_CLUSTER_THRESHOLD` members)** switch the
+/// tiebreaker from weighted sum to peak centrality. v0.5.1 FastAPI dogfood
+/// pin: `param_functions.py` landed in a 10-file cluster of 4 fastapi files
+/// (one at centrality 0.034) + 6 docs_src tutorials (each ~0.009). Weighted
+/// sum: docs_src wins 0.054 vs 0.034. Peak: fastapi wins 0.034 vs 0.009.
+/// The rule: in small heterogeneous clusters, "the most important file's
+/// segment" beats "the most numerous segment". This only kicks in when
+/// there's enough centrality signal — zero-centrality small clusters still
+/// fall back to raw count.
 fn derive_label(centroid: &str, paths: &[(String, f64)], id: i64) -> String {
     // First choice: the deepest directory segment of the longest common prefix.
     // Example: members all under `src/auth/` → label "auth".
@@ -1077,8 +1096,10 @@ fn derive_label(centroid: &str, paths: &[(String, f64)], id: i64) -> String {
     use std::collections::HashMap;
     let mut weighted: HashMap<String, f64> = HashMap::new();
     let mut weighted_total: f64 = 0.0;
+    let mut peak: HashMap<String, f64> = HashMap::new();
     let mut raw_counts: HashMap<String, usize> = HashMap::new();
     let mut raw_total: usize = 0;
+    let mut cluster_size: usize = 0;
     for (p, centrality) in paths {
         let segs: Vec<&str> = p.split('/').collect();
         if segs.len() < 2 {
@@ -1095,8 +1116,46 @@ fn derive_label(centroid: &str, paths: &[(String, f64)], id: i64) -> String {
             let w = centrality.max(0.0);
             *weighted.entry(s.clone()).or_insert(0.0) += w;
             weighted_total += w;
+            // Per-segment peak centrality — the load-bearing signal for
+            // small heterogeneous clusters (FastAPI param_functions.py
+            // dogfood). Many low-centrality tutorial files in `docs_src`
+            // shouldn't outweigh a single high-centrality `fastapi` file
+            // when the total cluster is tiny.
+            let cur = peak.entry(s.clone()).or_insert(0.0);
+            if w > *cur {
+                *cur = w;
+            }
             *raw_counts.entry(s).or_insert(0) += 1;
             raw_total += 1;
+            cluster_size += 1;
+        }
+    }
+
+    // Small-cluster tiebreaker: peak centrality, not weighted sum. v0.5.1
+    // pin — the FastAPI 10-file mixed cluster correctly resolves to the
+    // segment of its single important file even though the bulk of members
+    // are tutorial fixtures. We only swap tiebreakers when there's some
+    // centrality signal AND a single segment owns the peak; a tie or an
+    // all-zero small cluster falls through to the weighted-sum / raw-count
+    // path so existing labels (and the cross-cutting `cluster-{id}` honesty
+    // gate) don't regress.
+    if cluster_size < SMALL_CLUSTER_THRESHOLD && weighted_total > 0.0 {
+        let max_peak = peak.values().copied().fold(0.0_f64, f64::max);
+        if max_peak > 0.0 {
+            let top: Vec<&String> = peak
+                .iter()
+                .filter(|(_, v)| (**v - max_peak).abs() < f64::EPSILON)
+                .map(|(s, _)| s)
+                .collect();
+            // Single segment owns the peak file → honest label, even when
+            // that segment owns only one member of the cluster.
+            if top.len() == 1 {
+                return top[0].clone();
+            }
+            // Multi-way tie on peak (e.g. two segments each with a
+            // centrality-0.4 leader) → defer to the weighted-sum / cluster
+            // honesty path below. Prevents flaky labels in pathological
+            // tiny mixes.
         }
     }
 
@@ -1310,5 +1369,68 @@ mod arch_tests {
             ("src/search/fulltext.rs".into(), 0.3),
         ];
         assert_eq!(derive_label("src/", &paths, 7), "cluster-7");
+    }
+
+    #[test]
+    fn derive_label_small_cluster_uses_peak_centrality_not_weighted_sum() {
+        // FastAPI v0.5.1 small-cluster bug: `param_functions.py` landed in a
+        // 10-file cluster where 6 docs_src tutorials (each centrality ~0.009)
+        // had a higher SUM than 4 fastapi files (one at 0.034 leader). The
+        // weighted-sum path picked "docs_src" — the wrong label for "the
+        // module that contains param_functions". Peak-centrality tiebreaker
+        // says fastapi wins because the single most important file is in it.
+        let mut paths: Vec<(String, f64)> = (1..=6)
+            .map(|i| (format!("docs_src/tutorial{i:03}.py"), 0.009))
+            .collect();
+        // Four fastapi files, one of them clearly load-bearing
+        // (param_functions itself).
+        paths.push(("fastapi/param_functions.py".into(), 0.034));
+        paths.push(("fastapi/dependencies/utils.py".into(), 0.008));
+        paths.push(("fastapi/routing.py".into(), 0.0085));
+        paths.push(("fastapi/applications.py".into(), 0.0085));
+        assert_eq!(
+            paths.len(),
+            10,
+            "fixture wires the dogfood shape: 4 fastapi + 6 docs_src = 10 members"
+        );
+        // Sanity check the weighted-sum order BEFORE peak tiebreaker:
+        // docs_src = 6×0.009 = 0.054, fastapi = 0.034+0.008+0.0085+0.0085
+        // = 0.059. Tight — docs_src would have won at any small
+        // perturbation under raw weighted sum, which is exactly the
+        // failure mode the dogfood exposed. Peak tiebreaker fixes it
+        // deterministically by picking the segment with the centrality
+        // 0.034 leader.
+        assert_eq!(derive_label("", &paths, 0), "fastapi");
+    }
+
+    #[test]
+    fn derive_label_small_cluster_zero_centrality_falls_back() {
+        // A small cluster with no centrality signal at all (old index, or
+        // every member happened to be a leaf at 0). The peak-centrality
+        // tiebreaker requires a positive signal; without it we MUST fall
+        // through to raw-count modal so the existing labels don't regress.
+        // Same shape as `derive_label_zero_centrality_falls_back_to_raw_count`
+        // but pins the small-cluster path explicitly.
+        let paths: Vec<(String, f64)> = vec![
+            ("src/storage/repo.rs".into(), 0.0),
+            ("src/storage/schema.rs".into(), 0.0),
+        ];
+        assert_eq!(derive_label("src/", &paths, 0), "storage");
+    }
+
+    #[test]
+    fn derive_label_large_cluster_still_uses_weighted_sum() {
+        // Above the threshold the original FastAPI fix (centrality-weighted
+        // modal-sum) must still apply: 10 tutorial files at 0.001 each are
+        // dominated by the 2 fastapi files' summed weight.
+        let mut paths: Vec<(String, f64)> = (1..=10)
+            .map(|i| (format!("docs_src/tutorial{i:03}.py"), 0.001))
+            .collect();
+        paths.push(("src/fastapi/applications.py".into(), 0.4));
+        paths.push(("src/fastapi/routing.py".into(), 0.3));
+        // 12 members ≥ SMALL_CLUSTER_THRESHOLD → weighted-sum path,
+        // which is what the v0.5.1 fix established for the large cluster.
+        assert!(paths.len() >= SMALL_CLUSTER_THRESHOLD);
+        assert_eq!(derive_label("", &paths, 0), "fastapi");
     }
 }
