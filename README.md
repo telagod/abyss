@@ -2,6 +2,8 @@
 
 > **The code graph your agent checks before it edits.**
 
+[Full docs at the GitHub Pages site](https://telagod.github.io/abyss/)
+
 abyss builds a call graph + temporal intelligence index of your codebase, so an AI coding agent can answer — in milliseconds, before touching a file — three questions grep can't:
 
 1. **Who calls this?** — cross-file caller tracing with confidence scores
