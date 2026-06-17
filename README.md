@@ -3,6 +3,8 @@
 > **The code graph your agent checks before it edits.**
 
 [Full docs at the GitHub Pages site](https://telagod.github.io/abyss/)
+&nbsp;·&nbsp; [What v0.5.x was about (release notes)](RELEASE-NOTES.md)
+&nbsp;·&nbsp; [Per-version changelog](CHANGELOG.md)
 
 abyss builds a call graph + temporal intelligence index of your codebase, so an AI coding agent can answer — in milliseconds, before touching a file — three questions grep can't:
 
@@ -235,7 +237,7 @@ evaluations enforced.
 
 ## Status
 
-**v0.5.1** — 307 tests, prebuilt binaries for 5 platforms, single-binary agent hooks. Six SCIP-eval corpora across five languages, all ≥98.5% gated precision and zero regression across v0.4.0 → v0.5.1 (see the table above and [eval/RESULTS.md](eval/RESULTS.md)). v0.5.1 closes the dogfood-surfaced debts from Django + hono: `abyss callers` now surfaces `kind='inherit'` edges by default (Django B1 — `callers Model` on a 192K-ref Django index went from 7 spurious hits to ~1 800 real subclasses), L0e disambiguates sibling-name classes by source-directory (Django B2 — `DatabaseSchemaEditor.execute()` from `oracle/` no longer lands in `postgresql/`), `callers` gained `--limit` + a non-silent `(showing N of M)` footer (hono B1), L4 / L5 bias toward unresolved on JS/TS built-in name shadows (hono B3 — `Set`, `Map`, `Promise`, …), and the layer dictionary recognises framework-entry filenames (`hono.ts`, `vite.ts`, `manage.py`, `urls.py`, …). Pages site live at [telagod.github.io/abyss](https://telagod.github.io/abyss/). Five dogfood reports now (Django 8/10 — the in-repo MRO validation case, helix-editor 7.5, vite 7, FastAPI 6.5, hono 8). APIs and index format may still change before 1.0.
+**v0.5.20** — 386 tests, prebuilt binaries for 5 platforms, single-binary agent hooks. Six SCIP-eval corpora across five languages, all ≥98.5% gated precision and zero regression across v0.4.0 → v0.5.20 (see the table above and [eval/RESULTS.md](eval/RESULTS.md)). The 17-patch v0.5.x small-patch sprint (v0.5.3 → v0.5.20) hardened the daemon (`mcp --via-daemon`, `logs --follow`, socket `subscribe`), matured Python coverage (generic-base inherit edges, first-class `type_ref` for typed params, `.pyi` end-to-end, MRO walker pinned by regression test), and rounded out operability (`completion`, `config show`, `reset`, `index --since`). One-page overview: [RELEASE-NOTES.md](RELEASE-NOTES.md). Pages site live at [telagod.github.io/abyss](https://telagod.github.io/abyss/). Six dogfood reports now (SQLAlchemy 8/10 — L0e fires 4 496 times on declarative mixin towers, Django 8/10, helix-editor 7.5, vite 7, FastAPI 6.5 — L0e=0 falsified in public, hono 8). APIs and index format may still change before 1.0.
 
 ## License
 
