@@ -124,6 +124,37 @@ When a release does no resolver work — like v0.5.0 — the eval gate
 passes by definition (no change to the scoring axis). We still publish
 the table to make zero regression a visible commitment.
 
+## 8. No language server dependency
+
+Resolution is heuristic (tree-sitter + SQL tiers), not compiler-grade.
+Trade-off: faster and simpler, but confidence scores must be honest.
+
+abyss indexed gin in **~150 ms**; scip-go took ~40 s. The cost is a
+gated recall ceiling that no one-pass heuristic can clear — interface
+dispatch, dynamic dispatch, metaprogrammed methods. Those stay
+demoted by design, surfaced as `possible_callers`.
+
+## 9. Hash-incremental indexing
+
+Only re-index files whose blake3 hash changed. The pipeline is
+designed to run in <5 s on medium codebases. The first index is the
+expensive one; everything after is hash diffs.
+
+## 10. Single binary, single SQLite file
+
+No daemons by default. No external services. No model downloads in
+the slim build. One `abyss` binary, one `.code-abyss/index.db` per
+workspace. Add `--features semantic` only when you need
+embedding-based search.
+
+## 11. Publish whatever the numbers say
+
+`eval/RESULTS.md` is the source of truth for resolver accuracy. Every
+release re-runs the SCIP eval; the numbers ship unredacted, including
+the ones that look bad. Negative results (the L0e/FastAPI zero-hit
+prediction; the click microregression baseline bump) get the same
+release-note real estate as wins.
+
 [click-micro]: ../eval/notes/click-microregression-2026-06-17.md
 [fastapi]: dogfood/fastapi-2026-06-17.md
 [helix]: dogfood/helix-editor-2026-06-17.md
