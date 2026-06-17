@@ -209,17 +209,51 @@ pub struct ModuleResult {
     pub module_files: HashMap<i64, Vec<i64>>,
 }
 
-/// Single-pass Louvain (modularity optimization) on the *undirected*
-/// projection of the file→file graph.
+/// Tunable knobs for Louvain. Default values are the ones measured-better
+/// on real codebases:
+/// - `gamma=1.5` produces finer clusters than classic (`1.0`). On the abyss
+///   dogfood graph this lifts module count 9 → 12 and shrinks the largest
+///   community 18 → 11 files, so storage / search / temporal stop
+///   collapsing into one "core infra" mega-cluster.
+/// - `multi_level=false` by default. The second pass is correct Louvain —
+///   it escapes local optima — but on architecture graphs (≤ a few hundred
+///   nodes) it tends to RE-merge communities that gamma>1 just split apart.
+///   Keep it as an opt-in knob for very large graphs (10k+ files).
+#[derive(Debug, Clone, Copy)]
+pub struct LouvainParams {
+    /// Resolution. >1 → more communities (finer), <1 → fewer.
+    pub gamma: f64,
+    /// Safety cap on per-pass iteration count (each iteration is one full
+    /// node-by-node sweep). Single-pass convergence is usually <10 sweeps.
+    pub max_iterations: u32,
+    /// Run a second Louvain pass on the supernode-collapsed graph. Off by
+    /// default — only worth turning on for very large graphs where the
+    /// single pass gets stuck in a local optimum.
+    pub multi_level: bool,
+}
+
+impl Default for LouvainParams {
+    fn default() -> Self {
+        Self {
+            gamma: 1.5,
+            max_iterations: 30,
+            multi_level: false,
+        }
+    }
+}
+
+/// Louvain (modularity optimization) on the *undirected* projection of the
+/// file→file graph, with sensible defaults for resolution and a two-level
+/// refinement pass. Returns one community per node, ids compacted to 0..K.
 ///
-/// We collapse directed reciprocal edges by summing their weights — Louvain
-/// is defined on undirected graphs and the directed variant adds noise for
-/// little gain at this scale. Returns one community per node, ids compacted
-/// to start at 0.
-///
-/// This is V1: single level, no multi-level coarsening. Modularity is decent
-/// on architectural graphs (hundreds of nodes) and the code stays small.
+/// For tuning, see [`compute_modules_with`].
 pub fn compute_modules(g: &ArchGraph) -> ModuleResult {
+    compute_modules_with(g, LouvainParams::default())
+}
+
+/// Like [`compute_modules`] but exposes [`LouvainParams`] so callers can
+/// tune resolution / iteration cap / multi-level on a per-call basis.
+pub fn compute_modules_with(g: &ArchGraph, params: LouvainParams) -> ModuleResult {
     let n = g.graph.node_count();
     let mut module_id = HashMap::new();
     let mut module_files: HashMap<i64, Vec<i64>> = HashMap::new();
@@ -236,7 +270,6 @@ pub fn compute_modules(g: &ArchGraph) -> ModuleResult {
         nodes.iter().enumerate().map(|(i, &n)| (n, i)).collect();
 
     // Build undirected adjacency: weight[i][j] = directed(i→j) + directed(j→i).
-    // Use a Vec of HashMap<usize, f64> for sparse storage.
     let mut adj: Vec<HashMap<usize, f64>> = vec![HashMap::new(); n];
     for e in g.graph.edge_indices() {
         let (u, v) = g.graph.edge_endpoints(e).unwrap();
@@ -244,18 +277,14 @@ pub fn compute_modules(g: &ArchGraph) -> ModuleResult {
         let ui = node_to_idx[&u];
         let vi = node_to_idx[&v];
         if ui == vi {
-            continue; // ignore self-loops in modularity
+            continue;
         }
         *adj[ui].entry(vi).or_insert(0.0) += w;
         *adj[vi].entry(ui).or_insert(0.0) += w;
     }
 
-    // k_i = weighted degree (sum of incident undirected edge weights).
-    // 2m = Σ k_i; m is half of that.
-    let k: Vec<f64> = adj
-        .iter()
-        .map(|m| m.values().sum::<f64>())
-        .collect::<Vec<_>>();
+    // k_i = weighted degree; 2m = Σ k_i.
+    let k: Vec<f64> = adj.iter().map(|m| m.values().sum::<f64>()).collect();
     let two_m: f64 = k.iter().sum();
 
     // Pathological: no edges at all. Each node becomes its own module.
@@ -271,62 +300,25 @@ pub fn compute_modules(g: &ArchGraph) -> ModuleResult {
         };
     }
 
-    // Community state. Σ_tot[c] = sum of k_i for i in community c.
-    let mut community: Vec<usize> = (0..n).collect();
-    let mut sigma_tot: Vec<f64> = k.clone();
+    // Level 1 — Louvain pass on the original graph.
+    let level1 = louvain_pass(&adj, &k, two_m, params.gamma, params.max_iterations);
 
-    // Iterate until no node moves (or hit the safety cap). Per node, score
-    // each candidate community by ΔQ = k_i_in_C - Σ_tot[C] * k_i / 2m, which
-    // is the standard Louvain gain form (Blondel et al. 2008 §2.1) up to
-    // positive constants — we only need the argmax, not the magnitude.
-    let max_outer = 20;
-    for _ in 0..max_outer {
-        let mut moved = false;
-        for i in 0..n {
-            // k_i contribution to each neighbor community.
-            let mut neighbor_weight: HashMap<usize, f64> = HashMap::new();
-            for (&j, &w) in &adj[i] {
-                let cj = community[j];
-                *neighbor_weight.entry(cj).or_insert(0.0) += w;
-            }
-            let current = community[i];
-            let k_i = k[i];
+    // Level 2 — collapse the level-1 communities into supernodes, run again
+    // on the smaller graph to refine borderline assignments. Skipped when
+    // level 1 didn't collapse (every node already its own community) or
+    // when the caller disabled multi-level.
+    let final_community: Vec<usize> = if params.multi_level
+        && let Some(level2_map) = louvain_level2(&adj, &level1, params.gamma, params.max_iterations)
+    {
+        level1.iter().map(|&c| level2_map[c]).collect()
+    } else {
+        level1
+    };
 
-            // Tentatively remove i from its community for ΔQ calc.
-            // (We undo this if no better community is found.)
-            sigma_tot[current] -= k_i;
-
-            // Score each candidate community = ΔQ of joining it.
-            // We score "stay in current" with ΔQ = 0 implicitly by not moving.
-            let mut best_c = current;
-            let mut best_gain = 0.0_f64;
-            for (&c, &k_i_c) in &neighbor_weight {
-                // ΔQ = k_i_c / m - Σ_tot[c] * k_i / (2m²)
-                //     = 2 * k_i_c / (2m) - Σ_tot[c] * k_i / (2m * (2m / 2))
-                // Use 2m form: ΔQ = (2 * k_i_c - Σ_tot[c] * k_i / m) / (2m)
-                let gain = k_i_c - sigma_tot[c] * k_i / two_m;
-                if gain > best_gain {
-                    best_gain = gain;
-                    best_c = c;
-                }
-            }
-
-            // Commit move (or restore current).
-            sigma_tot[best_c] += k_i;
-            if best_c != current {
-                community[i] = best_c;
-                moved = true;
-            }
-        }
-        if !moved {
-            break;
-        }
-    }
-
-    // Compact community ids to 0..K.
+    // Compact community ids to 0..K, preserved in encounter order.
     let mut remap: HashMap<usize, i64> = HashMap::new();
     for (idx, &ni) in nodes.iter().enumerate() {
-        let c = community[idx];
+        let c = final_community[idx];
         let next_id = remap.len() as i64;
         let new_id = *remap.entry(c).or_insert(next_id);
         let fid = g.file_id(ni);
@@ -338,6 +330,115 @@ pub fn compute_modules(g: &ArchGraph) -> ModuleResult {
         module_id,
         module_files,
     }
+}
+
+/// One Louvain pass — sweep nodes until no node moves, return community
+/// assignment per node (length n). `gamma` scales the null-model term in
+/// the modularity-gain formula; `max_iter` is a hard sweep cap.
+fn louvain_pass(
+    adj: &[HashMap<usize, f64>],
+    k: &[f64],
+    two_m: f64,
+    gamma: f64,
+    max_iter: u32,
+) -> Vec<usize> {
+    let n = adj.len();
+    let mut community: Vec<usize> = (0..n).collect();
+    let mut sigma_tot: Vec<f64> = k.to_vec();
+
+    for _ in 0..max_iter {
+        let mut moved = false;
+        for i in 0..n {
+            let mut neighbor_weight: HashMap<usize, f64> = HashMap::new();
+            for (&j, &w) in &adj[i] {
+                let cj = community[j];
+                *neighbor_weight.entry(cj).or_insert(0.0) += w;
+            }
+            let current = community[i];
+            let k_i = k[i];
+
+            sigma_tot[current] -= k_i;
+
+            // ΔQ ∝ k_i_in_C − γ · Σ_tot[C] · k_i / 2m.
+            // gamma > 1 penalises joining heavy communities, producing finer clusters.
+            let mut best_c = current;
+            let mut best_gain = 0.0_f64;
+            for (&c, &k_i_c) in &neighbor_weight {
+                let gain = k_i_c - gamma * sigma_tot[c] * k_i / two_m;
+                if gain > best_gain {
+                    best_gain = gain;
+                    best_c = c;
+                }
+            }
+
+            sigma_tot[best_c] += k_i;
+            if best_c != current {
+                community[i] = best_c;
+                moved = true;
+            }
+        }
+        if !moved {
+            break;
+        }
+    }
+    community
+}
+
+/// Level-2 refinement: collapse `level1`'s communities into supernodes,
+/// run one more Louvain pass on the smaller graph, and return a map
+/// `level1_community → level2_community`. Returns `None` if level 1 didn't
+/// collapse the graph (no point running again).
+fn louvain_level2(
+    adj: &[HashMap<usize, f64>],
+    level1: &[usize],
+    gamma: f64,
+    max_iter: u32,
+) -> Option<Vec<usize>> {
+    // Compact level-1 ids to 0..K so we can use them as supernode indices.
+    let mut id_map: HashMap<usize, usize> = HashMap::new();
+    for &c in level1 {
+        let next = id_map.len();
+        id_map.entry(c).or_insert(next);
+    }
+    let super_n = id_map.len();
+    if super_n == level1.len() || super_n == 0 {
+        return None; // no collapsing happened
+    }
+
+    // Aggregate edges between supernodes. Intra-community edges become
+    // self-loops on the supernode (counted with the standard Louvain
+    // convention: their weight enters the supernode's k but not the off-
+    // diagonal adj, so they don't pull modularity gain at level 2).
+    let mut super_adj: Vec<HashMap<usize, f64>> = vec![HashMap::new(); super_n];
+    let mut super_k: Vec<f64> = vec![0.0; super_n];
+    for (i, neighbors) in adj.iter().enumerate() {
+        let ci = id_map[&level1[i]];
+        for (&j, &w) in neighbors {
+            let cj = id_map[&level1[j]];
+            super_k[ci] += w; // k counts every incident edge weight, including intra
+            if ci != cj {
+                *super_adj[ci].entry(cj).or_insert(0.0) += w;
+            }
+        }
+    }
+    // Adj was double-counted (symmetric), so super_k absorbed it correctly
+    // but two_m must be recomputed from the supernode k vector to match.
+    let super_two_m: f64 = super_k.iter().sum();
+    if super_two_m == 0.0 {
+        return None;
+    }
+
+    let super_communities = louvain_pass(&super_adj, &super_k, super_two_m, gamma, max_iter);
+
+    // Build a map indexed by RAW level-1 community id → level-2 community id.
+    // The caller does `level2_map[level1[i]]`, where `level1[i]` is a raw id
+    // (not compacted). Size the vec by max raw id seen.
+    let raw_max = level1.iter().copied().max().unwrap_or(0);
+    let mut raw_map = vec![0usize; raw_max + 1];
+    for (&raw_id, &super_idx) in &id_map {
+        raw_map[raw_id] = super_communities[super_idx];
+    }
+    Some(raw_map)
 }
 
 /// Path-B fallback: directory-prefix clustering. Unused by default — kept as
