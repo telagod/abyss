@@ -32,13 +32,18 @@ pub fn build_file_context(repo: &Repository, file: &str) -> Result<Option<serde_
     // 1:1 with Repository::is_test_file). Symbols with no external callers
     // simply don't appear in the join — same observable shape as the old loop.
     //
+    // Kind set mirrors the `callers` command: invocation edges (`call` +
+    // `field_access`) AND type-position edges (`type_ref`). The blast-radius
+    // warning has to reflect type users — for an exported interface,
+    // implementers ARE the blast radius even though they're not callers.
+    //
     // Confident matches (>= 0.7) are reported as callers; ambiguous ones are
     // listed separately so agents can tell solid ground from guesses.
     const CONTEXT_MIN_CONFIDENCE: f64 = 0.7;
     let mut callers_stmt = conn.prepare(
         "SELECT s.name, s.kind, s.line,
                 r.source_line, r.source_symbol, r.confidence,
-                sf.path,
+                sf.path, r.kind,
                 CASE
                     WHEN sf.path LIKE '%\\_test.%' ESCAPE '\\' THEN 1
                     WHEN sf.path LIKE '%/test/%' THEN 1
@@ -51,7 +56,7 @@ pub fn build_file_context(repo: &Repository, file: &str) -> Result<Option<serde_
          JOIN refs r
               ON r.target_name = s.name
              AND (r.target_file_id = s.file_id OR r.target_file_id IS NULL)
-             AND r.kind IN ('call','field_access')
+             AND r.kind IN ('call','field_access','type_ref')
          JOIN files sf ON sf.id = r.source_file_id
          WHERE s.file_id = ?1
            AND s.kind IN ('function','method','struct','class','interface','type')
@@ -79,7 +84,8 @@ pub fn build_file_context(repo: &Repository, file: &str) -> Result<Option<serde_
         let source_symbol: Option<String> = row.get(4)?;
         let confidence: f64 = row.get(5)?;
         let source_file_path: String = row.get(6)?;
-        let is_test: i64 = row.get(7)?;
+        let ref_kind: String = row.get(7)?;
+        let is_test: i64 = row.get(8)?;
 
         let entry = serde_json::json!({
             "file": source_file_path,
@@ -87,6 +93,7 @@ pub fn build_file_context(repo: &Repository, file: &str) -> Result<Option<serde_
             "caller": source_symbol,
             "confidence": confidence,
             "is_test": is_test != 0,
+            "kind": ref_kind,
         });
 
         let needs_new_group = match groups.last() {
@@ -399,18 +406,30 @@ pub fn render_card(ctx: &serde_json::Value, file_path: &str, staleness_ms: u128)
     }
 
     // ---- depended-on: incoming production callers, with blast-radius flag ----
+    //
+    // "Depends" splits two ways:
+    //   * call/field_access — runtime invocation: breaks if signature changes
+    //   * type_ref          — type-position use: breaks if shape changes
+    // Both count toward blast radius, but the card shows the split so an
+    // agent editing an exported type knows whether the risk is "callers
+    // pass the wrong arg" or "implementers stop compiling".
     let mut prod_callers = 0usize;
+    let mut prod_type_users = 0usize;
     let mut test_callers = 0usize;
     let mut callers_per_file: Vec<(String, usize)> = Vec::new();
     for s in sym_callers {
         if let Some(arr) = s["external_callers"].as_array() {
             for c in arr {
                 let is_test = c["is_test"].as_bool().unwrap_or(false);
+                let is_type = c["kind"].as_str() == Some("type_ref");
                 let file = c["file"].as_str().unwrap_or("?").to_string();
                 if is_test {
                     test_callers += 1;
                 } else {
                     prod_callers += 1;
+                    if is_type {
+                        prod_type_users += 1;
+                    }
                     match callers_per_file.iter_mut().find(|(f, _)| f == &file) {
                         Some((_, n)) => *n += 1,
                         None => callers_per_file.push((file, 1)),
@@ -426,8 +445,14 @@ pub fn render_card(ctx: &serde_json::Value, file_path: &str, staleness_ms: u128)
             ""
         };
         body.push_str(&format!("\ndepended-on{blast}\n"));
+        let prod_split = if prod_type_users > 0 {
+            let calls = prod_callers - prod_type_users;
+            format!(" ({calls} call, {prod_type_users} type)")
+        } else {
+            String::new()
+        };
         body.push_str(&format!(
-            "  ← {prod_callers} prod callers across {} files, {test_callers} test callers\n",
+            "  ← {prod_callers} prod callers{prod_split} across {} files, {test_callers} test callers\n",
             callers_per_file.len()
         ));
         callers_per_file.sort_by_key(|x| std::cmp::Reverse(x.1));
@@ -622,6 +647,83 @@ mod tests {
         let card = render_card(&ctx, "src/auth/login.go", 10);
         assert!(card.contains("HIGH BLAST RADIUS"));
         assert!(card.contains("12 prod callers across 12 files"));
+    }
+
+    #[test]
+    fn render_card_splits_callers_by_kind_when_type_users_present() {
+        // Mix of invocation callers and type-position users — the depended-on
+        // line MUST surface the split so an agent editing an exported type
+        // knows part of the blast radius is implementers, not callers.
+        let mut callers = Vec::new();
+        for i in 0..3 {
+            callers.push(json!({
+                "file": format!("src/caller_{i}.ts"),
+                "line": 1, "caller": "uses_iface",
+                "confidence": 0.95, "is_test": false, "kind": "call",
+            }));
+        }
+        for i in 0..5 {
+            callers.push(json!({
+                "file": format!("src/impl_{i}.ts"),
+                "line": 1, "caller": "Impl",
+                "confidence": 0.95, "is_test": false, "kind": "type_ref",
+            }));
+        }
+        let ctx = json!({
+            "file": "src/types.ts",
+            "symbols_defined": 1,
+            "symbols_with_external_callers": [{
+                "symbol": "IFace",
+                "kind": "interface",
+                "line": 5,
+                "external_callers": callers,
+                "possible_callers": [],
+            }],
+            "dependencies": [],
+            "hotspot": null,
+            "coupled_files": [],
+        });
+        let card = render_card(&ctx, "src/types.ts", 0);
+        assert!(
+            card.contains("8 prod callers (3 call, 5 type)"),
+            "missing kind split in depended-on line:\n{card}"
+        );
+    }
+
+    #[test]
+    fn render_card_no_kind_split_when_only_call_users() {
+        // Backwards-compat: when no type users are present, the depended-on
+        // line stays in the legacy format so existing eyeballs/tests don't
+        // see a spurious "(N call, 0 type)" suffix.
+        let callers: Vec<_> = (0..3)
+            .map(|i| {
+                json!({
+                    "file": format!("src/c_{i}.go"),
+                    "line": 1, "caller": "Foo",
+                    "confidence": 1.0, "is_test": false, "kind": "call",
+                })
+            })
+            .collect();
+        let ctx = json!({
+            "file": "src/auth.go",
+            "symbols_defined": 1,
+            "symbols_with_external_callers": [{
+                "symbol": "Auth",
+                "kind": "function",
+                "line": 1,
+                "external_callers": callers,
+                "possible_callers": [],
+            }],
+            "dependencies": [],
+            "hotspot": null,
+            "coupled_files": [],
+        });
+        let card = render_card(&ctx, "src/auth.go", 0);
+        assert!(card.contains("3 prod callers across 3 files"));
+        assert!(
+            !card.contains("type)"),
+            "did not expect type split:\n{card}"
+        );
     }
 
     #[test]
