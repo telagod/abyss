@@ -505,12 +505,23 @@ impl IndexPipeline {
         // Patterns mirror Repository::is_test_file and the inline test-file
         // CASE in context.rs, plus a `playground/` rule to catch vite-style
         // sandbox dirs that aren't strictly tests but also aren't production.
+        //
+        // Each directory pattern comes in two flavors — `%/tests/%` for nested
+        // (`pkg/tests/foo.py`) and `tests/%` for top-level (`tests/main.py`).
+        // FastAPI v0.5.0 dogfood: tests/main.py imported `State` from
+        // fastapi/applications.py; the L4 candidate filter saw `tests/main.py`
+        // had no leading `/tests/`, so the test fixture's `State` won the
+        // global-unique tie. Both shapes matter.
         const NOT_TEST_PATH: &str = "f.path NOT LIKE '%\\_test.%' ESCAPE '\\' \
              AND f.path NOT LIKE '%.test.%' \
              AND f.path NOT LIKE '%.spec.%' \
+             AND f.path NOT LIKE 'test/%' \
              AND f.path NOT LIKE '%/test/%' \
+             AND f.path NOT LIKE 'tests/%' \
              AND f.path NOT LIKE '%/tests/%' \
+             AND f.path NOT LIKE '__tests__/%' \
              AND f.path NOT LIKE '%/__tests__/%' \
+             AND f.path NOT LIKE 'playground/%' \
              AND f.path NOT LIKE '%/playground/%'";
 
         // Level 0: Receiver-type match (confidence = 0.95).
