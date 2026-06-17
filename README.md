@@ -77,6 +77,7 @@ abyss hook post-edit          Agent hook: incremental refresh after an edit
 abyss history <file>          Evolution: commits, churn, coupled files [--symbol <fn>]
 abyss search "query"          Symbol + fulltext fusion search
 abyss map                     Codebase map: hotspots, coupling, risk areas
+abyss watch                   Foreground daemon-lite: reindex on file save (debounced)
 abyss stats                   Index statistics
 abyss mcp                     MCP server (stdio) — 7 tools for any MCP client
 ```
@@ -144,6 +145,15 @@ abyss indexed gin in **~150ms**; scip-go took ~40s. Full method, per-tier tables
 **Pre-edit hooks**: `abyss hook pre-edit` reads the tool-call JSON any agent platform pipes to its hooks (Claude Code, Codex CLI, Gemini CLI, Pi, Hermes, OpenClaw payload shapes auto-detected), refreshes the index incrementally, and warns about production callers, ambiguous references, and hotspots — before the edit happens. [code-abyss](https://github.com/telagod/code-abyss) installs the per-platform hook configs in one command.
 
 **Arch layers**: every file gets an architectural layer (`api`, `domain`, `infra`, `util`, …) via a built-in path-segment dictionary. Project-specific directory names? Drop a `.code-abyss/arch.toml` at the workspace root — see [docs/ARCH-LAYERS.md](docs/ARCH-LAYERS.md).
+
+**Ambient reindex (`abyss watch`)**: foreground daemon-lite that subscribes to file-system events and reindexes on save. The 150ms debounce coalesces editor write bursts (atomic-rename saves, formatter passes) into one update; hash-incremental skip keeps cost proportional to what actually changed.
+
+```sh
+abyss watch                        # default 150ms debounce
+abyss watch --debounce-ms 300      # tune for slower disks / heavier formatters
+```
+
+This is the V1 daemon-lite — a single foreground process per workspace. The V2 daemon (Unix-socket multi-reader so the hook, the MCP server, and an editor extension can share one index) is on the roadmap.
 
 ## Features
 
