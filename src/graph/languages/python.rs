@@ -90,6 +90,16 @@ fn collect_refs(
         }
         if let Some(params) = node.child_by_field_name("parameters") {
             harvest_parameters(&params, source, &mut vt);
+            // Emit type_ref edges for each typed parameter, mirroring
+            // Go/TS/Rust/Java/C++ which already surface typed params as
+            // first-class type evidence. Cross-language symmetry surfaced
+            // by the v0.5.1 docs-bundle agent.
+            emit_param_type_refs(&params, source, &enclosing, refs);
+        }
+        // `def f() -> SomeType:` — the return-type annotation. tree-sitter
+        // node field is `return_type`; the value beneath is a `type` node.
+        if let Some(ret) = node.child_by_field_name("return_type") {
+            emit_type_refs_from_annotation(&ret, source, &enclosing, refs);
         }
         if let Some(body) = node.child_by_field_name("body") {
             harvest_assignments(&body, source, &mut vt);
@@ -274,6 +284,18 @@ fn collect_refs(
                 }
             }
         }
+        // `x: T = ...` (typed assignment) and `y: B` (class field annotation,
+        // which the tree-sitter-python grammar also parses as an `assignment`
+        // node with `type` field but no `right`). Both flavors must emit a
+        // type_ref edge for first-class type-evidence — cross-language
+        // symmetry with the Go/TS/Rust/Java/C++ extractors. Plain
+        // `x = something` (no annotation) goes through the existing
+        // var_types harvest path only, no type_ref.
+        "assignment" => {
+            if let Some(ann) = node.child_by_field_name("type") {
+                emit_type_refs_from_annotation(&ann, source, &enclosing, refs);
+            }
+        }
         _ => {}
     }
 
@@ -387,6 +409,170 @@ fn base_py_type_name(annotation: &Node, source: &str) -> Option<String> {
 
 fn text(node: &Node, source: &str) -> String {
     source[node.start_byte()..node.end_byte()].to_string()
+}
+
+/// Emit type_ref edges for each typed parameter under a `parameters` node.
+/// Walks `typed_parameter` and `typed_default_parameter` shapes; ignores
+/// untyped params. The annotation is fed through the same recursive
+/// emitter used elsewhere so subscripted/attribute/typing-marker
+/// handling stays consistent.
+fn emit_param_type_refs(
+    params: &Node,
+    source: &str,
+    enclosing: &Option<String>,
+    refs: &mut Vec<RawReference>,
+) {
+    let mut cursor = params.walk();
+    for param in params.named_children(&mut cursor) {
+        let ty = match param.kind() {
+            "typed_parameter" | "typed_default_parameter" => param.child_by_field_name("type"),
+            _ => None,
+        };
+        if let Some(ty) = ty {
+            emit_type_refs_from_annotation(&ty, source, enclosing, refs);
+        }
+    }
+}
+
+/// Walk a type annotation and emit one `RefKind::TypeRef` per real type
+/// name encountered. Primitives and typing-system markers are dropped;
+/// subscripted forms (`List[Foo]`, `Base[T]`) are unwrapped per the B3
+/// generic-base convention — typing-marker wrappers recurse into the
+/// type args (`List[Foo]` → emit Foo), real bases collapse to the base
+/// name (`Base[T]` → emit Base). Bounded recursion (no fixpoint) since
+/// Python type annotations are shallow in practice.
+fn emit_type_refs_from_annotation(
+    node: &Node,
+    source: &str,
+    enclosing: &Option<String>,
+    refs: &mut Vec<RawReference>,
+) {
+    // `type` nodes wrap the actual expression; unwrap one level.
+    let inner = if node.kind() == "type" {
+        match node.named_child(0) {
+            Some(n) => n,
+            None => return,
+        }
+    } else {
+        *node
+    };
+    let line = inner.start_position().row as u32;
+    match inner.kind() {
+        "identifier" => {
+            let name = text(&inner, source);
+            if name.is_empty() || is_builtin_py_type(&name) || is_typing_marker(&name) {
+                return;
+            }
+            refs.push(RawReference {
+                line,
+                source_symbol: enclosing.clone(),
+                target_name: name,
+                target_qualifier: None,
+                receiver_type: None,
+                kind: RefKind::TypeRef,
+            });
+        }
+        "attribute" => {
+            if let Some((name, qualifier)) = extract_attribute_base(&inner, source) {
+                if name.is_empty() || is_builtin_py_type(&name) || is_typing_marker(&name) {
+                    return;
+                }
+                refs.push(RawReference {
+                    line,
+                    source_symbol: enclosing.clone(),
+                    target_name: name,
+                    target_qualifier: qualifier,
+                    receiver_type: None,
+                    kind: RefKind::TypeRef,
+                });
+            }
+        }
+        "string" => {
+            // Forward references: `x: "Foo"` → emit Foo if not primitive.
+            let raw = text(&inner, source);
+            let name = raw.trim_matches(|c| c == '"' || c == '\'').to_string();
+            if name.is_empty() || is_builtin_py_type(&name) || is_typing_marker(&name) {
+                return;
+            }
+            // Forward refs may contain dotted paths or subscripts; only
+            // emit when it's a bare identifier. Anything fancier is
+            // dropped to avoid mis-parsing string contents.
+            if name.chars().all(|c| c.is_alphanumeric() || c == '_') {
+                refs.push(RawReference {
+                    line,
+                    source_symbol: enclosing.clone(),
+                    target_name: name,
+                    target_qualifier: None,
+                    receiver_type: None,
+                    kind: RefKind::TypeRef,
+                });
+            }
+        }
+        "generic_type" => {
+            // `Wrapper[T]` in type-annotation position — tree-sitter-python
+            // wraps these as a `generic_type` node whose first child is the
+            // base name (identifier or attribute) and second child is a
+            // `type_parameter` node containing the type args (each as a
+            // nested `type` node).
+            //
+            // Behavior: if the base is a typing marker (List, Dict,
+            // Optional, Union, …) recurse into the type args so
+            // `List[Foo]` surfaces `Foo` not `List`. If the base is a real
+            // type, collapse to it (`Base[T]` → `Base`), matching the B3
+            // inheritance unwrap.
+            let mut cursor = inner.walk();
+            let mut base_node = None;
+            let mut type_params = Vec::new();
+            for child in inner.named_children(&mut cursor) {
+                match child.kind() {
+                    "identifier" | "attribute" if base_node.is_none() => base_node = Some(child),
+                    "type_parameter" => type_params.push(child),
+                    _ => {}
+                }
+            }
+            let base_name = base_node.and_then(|b| match b.kind() {
+                "identifier" => Some(text(&b, source)),
+                "attribute" => b.child_by_field_name("attribute").map(|a| text(&a, source)),
+                _ => None,
+            });
+            let is_marker = base_name.as_deref().is_some_and(is_typing_marker);
+            if is_marker {
+                // Recurse into the type_parameter's nested `type` children.
+                for tp in &type_params {
+                    let mut tc = tp.walk();
+                    for arg in tp.named_children(&mut tc) {
+                        emit_type_refs_from_annotation(&arg, source, enclosing, refs);
+                    }
+                }
+            } else if let Some(b) = base_node {
+                emit_type_refs_from_annotation(&b, source, enclosing, refs);
+            }
+        }
+        "subscript" => {
+            // Subscript shape (e.g. `x[0]` accidentally appearing in a
+            // type-annotation context, or older grammars) — apply the
+            // same marker-vs-real logic via the `value` field.
+            let value_node = inner.child_by_field_name("value");
+            let value_name = value_node.and_then(|v| match v.kind() {
+                "identifier" => Some(text(&v, source)),
+                "attribute" => v.child_by_field_name("attribute").map(|a| text(&a, source)),
+                _ => None,
+            });
+            let is_marker = value_name.as_deref().is_some_and(is_typing_marker);
+            if is_marker {
+                let mut sc = inner.walk();
+                for child in inner.named_children(&mut sc) {
+                    if child.id() == value_node.map(|v| v.id()).unwrap_or(0) {
+                        continue;
+                    }
+                    emit_type_refs_from_annotation(&child, source, enclosing, refs);
+                }
+            } else if let Some(v) = value_node {
+                emit_type_refs_from_annotation(&v, source, enclosing, refs);
+            }
+        }
+        _ => {}
+    }
 }
 
 /// `obj.Attr` → (Attr, Some(obj)). Falls back to (Attr, None) when the

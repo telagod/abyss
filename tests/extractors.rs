@@ -249,6 +249,68 @@ fn python_generic_base_inheritance_refs() {
     assert_eq!(qual_generic.target_qualifier.as_deref(), Some("other"));
 }
 
+#[test]
+fn python_type_ref_emission() {
+    // v0.5.3: typed parameters / returns / locals / class fields must
+    // emit first-class type_ref edges, mirroring Go/TS/Rust/Java/C++.
+    // Pre-fix, these positions only fed `var_types` for receiver
+    // inference but never became graph edges — cross-language
+    // asymmetry surfaced by the v0.5.1 docs-bundle agent.
+
+    // 1. typed parameter → type_ref to MyClass
+    let refs = extract("python", "def f(x: MyClass): pass\n");
+    let my = find(&refs, "MyClass", RefKind::TypeRef).expect("typed param emits TypeRef");
+    assert_eq!(my.source_symbol.as_deref(), Some("f"));
+
+    // 2. typed return → type_ref to Result
+    let refs = extract("python", "def f() -> Result: pass\n");
+    assert!(
+        find(&refs, "Result", RefKind::TypeRef).is_some(),
+        "typed return emits TypeRef, refs: {:?}",
+        refs.iter()
+            .map(|r| (&r.kind, &r.target_name))
+            .collect::<Vec<_>>(),
+    );
+
+    // 3. typed local with typing-marker subscript → emit Foo (not List, not Foo[…])
+    let refs = extract("python", "x: List[Foo] = []\n");
+    assert!(
+        find(&refs, "Foo", RefKind::TypeRef).is_some(),
+        "List[Foo] should surface Foo, got: {:?}",
+        refs.iter()
+            .map(|r| (&r.kind, &r.target_name))
+            .collect::<Vec<_>>(),
+    );
+    assert!(
+        find(&refs, "List", RefKind::TypeRef).is_none(),
+        "List is a typing marker, must not become a TypeRef edge",
+    );
+
+    // 4. class field annotation → type_ref to B
+    let refs = extract("python", "class A:\n    y: B\n");
+    let b = find(&refs, "B", RefKind::TypeRef).expect("class field annotation emits TypeRef");
+    assert!(b.target_qualifier.is_none());
+
+    // 5. primitive typed param → NO type_ref
+    let refs = extract("python", "def f(x: int): pass\n");
+    assert!(
+        find(&refs, "int", RefKind::TypeRef).is_none(),
+        "primitives must not emit TypeRef",
+    );
+
+    // 6. qualified type annotation (attribute) → emit name with qualifier
+    let refs = extract("python", "def f(x: mod.Custom): pass\n");
+    let qual = find(&refs, "Custom", RefKind::TypeRef).expect("mod.Custom typed param");
+    assert_eq!(qual.target_qualifier.as_deref(), Some("mod"));
+
+    // 7. simple Base[T] → emit Base (subscript collapses to value)
+    let refs = extract("python", "def f(x: Wrapper[T]): pass\n");
+    assert!(
+        find(&refs, "Wrapper", RefKind::TypeRef).is_some(),
+        "Wrapper[T] should surface Wrapper as a TypeRef",
+    );
+}
+
 // --- TypeScript / JavaScript ---
 
 #[test]
