@@ -494,6 +494,25 @@ impl IndexPipeline {
         // Update query planner stats for better index usage
         conn.execute_batch("ANALYZE symbols; ANALYZE refs; ANALYZE files;")?;
 
+        // Test/fixture path filter applied to L4 + L4b CANDIDATE files only
+        // (not to source files — a test calling a real impl still resolves).
+        //
+        // Why both tiers: L4 picks a globally-unique symbol by name; on vite,
+        // an exported `debug` collided with a same-named local in a `__tests__`
+        // spec — the test fixture was the unique match, so the import resolved
+        // there. L4b is its same-package multi-candidate cousin; same risk.
+        //
+        // Patterns mirror Repository::is_test_file and the inline test-file
+        // CASE in context.rs, plus a `playground/` rule to catch vite-style
+        // sandbox dirs that aren't strictly tests but also aren't production.
+        const NOT_TEST_PATH: &str = "f.path NOT LIKE '%\\_test.%' ESCAPE '\\' \
+             AND f.path NOT LIKE '%.test.%' \
+             AND f.path NOT LIKE '%.spec.%' \
+             AND f.path NOT LIKE '%/test/%' \
+             AND f.path NOT LIKE '%/tests/%' \
+             AND f.path NOT LIKE '%/__tests__/%' \
+             AND f.path NOT LIKE '%/playground/%'";
+
         // Level 0: Receiver-type match (confidence = 0.95).
         // The call site knows its receiver's static type (x.M() where x: T,
         // inferred lite from receivers/params/local literals) and exactly one
@@ -761,27 +780,39 @@ impl IndexPipeline {
         // produce cross-language pollution (a unique name in one language
         // can collide with one in another); the family filter applies to
         // BOTH the picked candidate and the uniqueness count.
+        //
+        // Test-path candidate filter: applied consistently to picker AND
+        // uniqueness count so a test-fixture target can't win a global-unique
+        // tie just because the real impl lives next to other same-named
+        // symbols. Source file is unrestricted — a test file calling a real
+        // function still resolves.
         let l3 = conn.execute(
-            "UPDATE refs SET
+            &format!(
+                "UPDATE refs SET
                  target_file_id = (SELECT s.file_id FROM symbols s JOIN files f ON s.file_id = f.id
                      WHERE s.name = refs.target_name
                        AND f.lang_family = (SELECT lang_family FROM files WHERE id = refs.source_file_id)
+                       AND {NOT_TEST_PATH}
                      LIMIT 1),
                  target_symbol_id = (SELECT s.id FROM symbols s JOIN files f ON s.file_id = f.id
                      WHERE s.name = refs.target_name
                        AND f.lang_family = (SELECT lang_family FROM files WHERE id = refs.source_file_id)
+                       AND {NOT_TEST_PATH}
                      LIMIT 1),
                  confidence = 0.8
              WHERE confidence = 0.0 AND kind NOT IN ('import', 'import_binding')
                AND receiver_type IS NULL
                AND (SELECT COUNT(DISTINCT s.file_id) FROM symbols s JOIN files f ON s.file_id = f.id
                    WHERE s.name = refs.target_name
-                     AND f.lang_family = (SELECT lang_family FROM files WHERE id = refs.source_file_id)) = 1
+                     AND f.lang_family = (SELECT lang_family FROM files WHERE id = refs.source_file_id)
+                     AND {NOT_TEST_PATH}) = 1
                AND (target_qualifier IS NULL
                     OR EXISTS (SELECT 1 FROM symbols s JOIN files f ON s.file_id = f.id
                         WHERE s.name = refs.target_name
                           AND f.lang_family = (SELECT lang_family FROM files WHERE id = refs.source_file_id)
-                          AND (s.scope IS NOT NULL OR s.kind = 'method')))",
+                          AND {NOT_TEST_PATH}
+                          AND (s.scope IS NOT NULL OR s.kind = 'method')))"
+            ),
             [],
         )?;
 
@@ -807,14 +838,21 @@ impl IndexPipeline {
         // Same-language-family guard: even below the gate, a JS file
         // shouldn't be listed as a possible caller of a Rust function — the
         // hint is actively misleading. Apply the same family filter.
+        //
+        // Test-path candidate filter mirrors L4: even below the gate, a
+        // possible-caller hint pointing at a test fixture in the same
+        // directory is more misleading than helpful. Same source-side
+        // unrestricted contract.
         let l2b = conn.execute(
-            "UPDATE refs SET
+            &format!(
+                "UPDATE refs SET
                  target_file_id = (SELECT s.file_id FROM symbols s
                      JOIN files f ON s.file_id = f.id
                      WHERE s.name = refs.target_name
                        AND f.dir = (SELECT dir FROM files WHERE id = refs.source_file_id)
                        AND s.file_id != refs.source_file_id
                        AND f.lang_family = (SELECT lang_family FROM files WHERE id = refs.source_file_id)
+                       AND {NOT_TEST_PATH}
                      LIMIT 1),
                  target_symbol_id = (SELECT s.id FROM symbols s
                      JOIN files f ON s.file_id = f.id
@@ -822,6 +860,7 @@ impl IndexPipeline {
                        AND f.dir = (SELECT dir FROM files WHERE id = refs.source_file_id)
                        AND s.file_id != refs.source_file_id
                        AND f.lang_family = (SELECT lang_family FROM files WHERE id = refs.source_file_id)
+                       AND {NOT_TEST_PATH}
                      LIMIT 1),
                  confidence = 0.6
              WHERE confidence = 0.0 AND kind NOT IN ('import', 'import_binding')
@@ -829,7 +868,9 @@ impl IndexPipeline {
                    WHERE s.name = refs.target_name
                      AND f.dir = (SELECT dir FROM files WHERE id = refs.source_file_id)
                      AND s.file_id != refs.source_file_id
-                     AND f.lang_family = (SELECT lang_family FROM files WHERE id = refs.source_file_id))",
+                     AND f.lang_family = (SELECT lang_family FROM files WHERE id = refs.source_file_id)
+                     AND {NOT_TEST_PATH})"
+            ),
             [],
         )?;
 
