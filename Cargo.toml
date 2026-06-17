@@ -87,6 +87,10 @@ thiserror = "2"
 rayon = "1"
 num_cpus = "1"
 
+# Daemon: pidfile lock (flock) + signals. Unix-only; transitive already.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 # Graph algorithms (arch L0 — PageRank / SCC / Louvain)
 petgraph = "0.8"
 

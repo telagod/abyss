@@ -128,12 +128,33 @@ enum Commands {
     /// Run as MCP server (stdio transport)
     Mcp,
     /// Foreground daemon-lite: watch the workspace and incrementally
-    /// reindex on file save. V1 — Unix-socket multi-reader is on the roadmap.
+    /// reindex on file save. Equivalent to `abyss daemon start --foreground`.
     Watch {
         /// Debounce window in milliseconds (default 150ms — tier-A target)
         #[arg(long, default_value_t = code_abyss::watcher::DEFAULT_DEBOUNCE_MS)]
         debounce_ms: u64,
     },
+    /// Background daemon (Unix-only): pidfile-locked, Unix-socket fronted.
+    /// `start [--foreground]` / `stop` / `status`.
+    Daemon {
+        #[command(subcommand)]
+        action: DaemonCmd,
+    },
+}
+
+#[derive(Subcommand)]
+enum DaemonCmd {
+    /// Acquire pidfile lock, bind socket, start watching. Run with `&` to
+    /// background (V1 doesn't double-fork); pass --foreground to stay attached.
+    Start {
+        /// Stay attached to the controlling terminal (don't redirect logs).
+        #[arg(long)]
+        foreground: bool,
+    },
+    /// SIGTERM the recorded pid; wait up to 5s for cleanup.
+    Stop,
+    /// Print pid, uptime, last reindex, socket path. Exit 1 if not running.
+    Status,
 }
 
 #[derive(Subcommand)]
@@ -204,7 +225,18 @@ fn main() -> Result<()> {
         Commands::Attach { host, local } => cmd_attach(&host, local),
         Commands::Mcp => cmd_mcp(config),
         Commands::Watch { debounce_ms } => cmd_watch(config, debounce_ms),
+        Commands::Daemon { action } => cmd_daemon(config, action),
     }
+}
+
+fn cmd_daemon(config: Config, action: DaemonCmd) -> Result<()> {
+    use code_abyss::daemon::{DaemonAction, run};
+    let mapped = match action {
+        DaemonCmd::Start { foreground } => DaemonAction::Start { foreground },
+        DaemonCmd::Stop => DaemonAction::Stop,
+        DaemonCmd::Status => DaemonAction::Status,
+    };
+    run(config, mapped)
 }
 
 const DEFAULT_MAX_FILES_NO_GIT: u64 = 50_000;

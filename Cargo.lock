@@ -409,6 +409,7 @@ dependencies = [
  "dirs",
  "fastembed",
  "ignore",
+ "libc",
  "notify",
  "notify-debouncer-full",
  "num_cpus",

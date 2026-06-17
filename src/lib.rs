@@ -2,6 +2,7 @@ pub mod arch;
 pub mod attach;
 pub mod config;
 pub mod context;
+pub mod daemon;
 pub mod embedding;
 pub mod graph;
 pub mod indexer;

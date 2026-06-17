@@ -22,9 +22,16 @@ pub const DEFAULT_DEBOUNCE_MS: u64 = 150;
 /// without busy-spinning.
 const POLL_TICK: Duration = Duration::from_millis(200);
 
+/// Callback fired after each incremental reindex batch completes.
+/// Receives the wall-clock milliseconds the batch took. Used by the daemon
+/// to surface "last reindex" telemetry over the socket; foreground `abyss
+/// watch` callers can ignore it.
+pub type ReindexCallback = Box<dyn Fn(u64) + Send + Sync>;
+
 pub struct FileWatcher {
     config: Config,
     debounce: Duration,
+    on_reindex: Option<ReindexCallback>,
 }
 
 impl FileWatcher {
@@ -32,6 +39,7 @@ impl FileWatcher {
         Self {
             config,
             debounce: Duration::from_millis(DEFAULT_DEBOUNCE_MS),
+            on_reindex: None,
         }
     }
 
@@ -39,6 +47,18 @@ impl FileWatcher {
     /// (150ms — matches the daemon-lite blueprint).
     pub fn with_debounce(mut self, debounce: Duration) -> Self {
         self.debounce = debounce;
+        self
+    }
+
+    /// Register a callback to be invoked after every reindex batch with the
+    /// elapsed milliseconds. The daemon uses this to keep its socket-exposed
+    /// `last_reindex_ms` field current without the watcher knowing about the
+    /// daemon.
+    pub fn with_on_reindex<F>(mut self, cb: F) -> Self
+    where
+        F: Fn(u64) + Send + Sync + 'static,
+    {
+        self.on_reindex = Some(Box::new(cb));
         self
     }
 
@@ -155,12 +175,16 @@ impl FileWatcher {
                         }
                     }
 
+                    let elapsed_ms = start.elapsed().as_millis() as u64;
                     info!(
                         "incremental update: {} reindexed, {} removed in {}ms",
                         pending.len(),
                         removed.len(),
-                        start.elapsed().as_millis()
+                        elapsed_ms
                     );
+                    if let Some(cb) = self.on_reindex.as_ref() {
+                        cb(elapsed_ms);
+                    }
                 }
                 Ok(Err(errors)) => {
                     for e in errors {
