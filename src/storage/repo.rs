@@ -500,6 +500,66 @@ impl Repository {
         Ok(rows.filter_map(|r| r.ok()).collect())
     }
 
+    /// Total visible caller refs for the "showing N of M" footer (B3).
+    /// Returns the count of refs whose `target_name` matches, `kind` is in
+    /// the filter set, and `confidence >= min_confidence`. When
+    /// `include_tests=false`, refs originating from test files are excluded
+    /// so M matches the denominator the agent actually sees.
+    ///
+    /// Snapshot of *visible* callers, not DB-wide — a footer "showing 20 of
+    /// 50" where 30 of those 50 are hidden test callers would be more
+    /// misleading than helpful. Test detection mixes path regexes + content
+    /// sniffing so it stays Rust-side (cheap: one symbol's caller rowset).
+    pub fn count_callers_at(
+        &self,
+        target_name: &str,
+        kinds: &[&str],
+        min_confidence: f64,
+        include_tests: bool,
+    ) -> Result<usize> {
+        let kinds: Vec<&str> = if kinds.is_empty() {
+            vec!["call", "field_access"]
+        } else {
+            kinds.to_vec()
+        };
+        debug_assert!(
+            kinds
+                .iter()
+                .all(|k| k.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')),
+            "kinds must be SQL-safe ascii idents, got {kinds:?}"
+        );
+        let placeholders: Vec<String> = kinds.iter().map(|k| format!("'{k}'")).collect();
+        let kinds_sql = placeholders.join(",");
+
+        if include_tests {
+            let sql = format!(
+                "SELECT COUNT(*) FROM refs r
+                 WHERE r.target_name = ?1
+                   AND r.kind IN ({kinds_sql})
+                   AND r.confidence >= ?2"
+            );
+            let n: i64 = self
+                .conn
+                .query_row(&sql, params![target_name, min_confidence], |r| r.get(0))?;
+            return Ok(n as usize);
+        }
+        let sql = format!(
+            "SELECT r.source_file_id FROM refs r
+             WHERE r.target_name = ?1
+               AND r.kind IN ({kinds_sql})
+               AND r.confidence >= ?2"
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        let rows = stmt.query_map(params![target_name, min_confidence], |r| r.get::<_, i64>(0))?;
+        let mut n = 0usize;
+        for fid in rows.flatten() {
+            if !self.is_test_file(fid).unwrap_or(false) {
+                n += 1;
+            }
+        }
+        Ok(n)
+    }
+
     pub fn find_refs_from_file(&self, file_id: i64) -> Result<Vec<RefRecord>> {
         let mut stmt = self.conn.prepare(
             "SELECT r.id, r.source_file_id, r.source_line, r.source_symbol,

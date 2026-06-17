@@ -77,6 +77,10 @@ enum Commands {
     /// for "every subclass of this base".
     Callers {
         symbol: String,
+        /// Max results (default: 20). Use `0` for unlimited (50_000 internal
+        /// cap so a hot framework primitive can't OOM the process). When
+        /// the result is capped, a "showing N of M" footer tells you to
+        /// rerun with `--limit 0` or a larger N.
         #[arg(short, long, default_value = "20")]
         limit: usize,
         /// Hide references resolved below this confidence (0 shows everything)
@@ -463,11 +467,43 @@ fn cmd_callers(
         _ => CallerKindFilter::Both,
     };
     let restricted = calls_only || types_only || inherits_only;
-    let result =
-        gq.find_callers_filtered_kinds(symbol, limit, min_confidence, include_tests, kind_filter)?;
+    // `--limit 0` → unlimited (capped internally at UNLIMITED_CAP so a hot
+    // framework primitive — Django Model, hono Context — can't OOM the
+    // process). Two orders of magnitude above any caller list seen in
+    // dogfood (Django Model topped at ~1k).
+    const UNLIMITED_CAP: usize = 50_000;
+    let effective_limit = if limit == 0 { UNLIMITED_CAP } else { limit };
+    let result = gq.find_callers_filtered_kinds(
+        symbol,
+        effective_limit,
+        min_confidence,
+        include_tests,
+        kind_filter,
+    )?;
+    // Total visible count — for the "showing N of M" footer (B3). Counted
+    // server-side under the same filter so M honestly matches the view; test
+    // callers are not counted toward M when include_tests=false (they're
+    // invisible to the agent here).
+    let total_available = repo.count_callers_at(
+        symbol,
+        kind_filter.as_slice(),
+        min_confidence,
+        include_tests,
+    )?;
+    let shown = result.callers.len();
+    let was_capped = shown < total_available;
 
     if json {
-        println!("{}", serde_json::to_string(&result)?);
+        // Augment JSON with the total + cap info so MCP / scripts can
+        // reproduce the footer without re-querying.
+        let payload = serde_json::json!({
+            "callers": result.callers,
+            "excluded_tests": result.excluded_tests,
+            "total_available": total_available,
+            "limit": limit,
+            "was_capped": was_capped,
+        });
+        println!("{}", serde_json::to_string(&payload)?);
     } else {
         if result.callers.is_empty() && result.excluded_tests == 0 {
             eprintln!("no callers found for '{symbol}'");
@@ -507,6 +543,20 @@ fn cmd_callers(
                 c.symbol,
                 c.confidence * 100.0,
             );
+        }
+        // Capped-list footer (B3). hono dogfood (2026-06-17): `callers
+        // Context` showed 20 but 235 refs existed — no footer meant the
+        // agent stopped reading at 20 and missed the real call sites.
+        if was_capped {
+            if limit == 0 {
+                println!(
+                    "\n(showing {shown} of {total_available} total — hit the {UNLIMITED_CAP} safety cap)"
+                );
+            } else {
+                println!(
+                    "\n(showing {shown} of {total_available} total — use --limit 0 for all, --limit N for more)"
+                );
+            }
         }
     }
     Ok(())

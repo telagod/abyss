@@ -111,7 +111,8 @@ pub struct SymbolItem {
 pub struct FindCallersInput {
     /// Symbol name to find callers of
     pub symbol: String,
-    /// Max results (default: 20)
+    /// Max results (default: 20). Pass `0` for unlimited (capped at 50_000
+    /// internally so a hot framework primitive can't OOM the agent).
     #[serde(default = "default_20")]
     pub limit: usize,
     /// Hide references resolved below this confidence (default: 0.7; 0 shows all)
@@ -139,6 +140,16 @@ pub struct FindCallersOutput {
     /// Number of test-file callers omitted from `callers` because
     /// `include_tests` was false. Always 0 when `include_tests` is true.
     pub excluded_tests: usize,
+    /// Total visible callers in the index (above `min_confidence`, filtered
+    /// to the requested `kinds`, with test callers excluded when
+    /// `include_tests=false`). Lets the agent tell "all callers" from "the
+    /// first N of M" without re-querying.
+    #[serde(default)]
+    pub total_available: usize,
+    /// True when `callers.len() < total_available` — the agent should
+    /// consider raising `limit` (or passing `0`) to see the full set.
+    #[serde(default)]
+    pub was_capped: bool,
 }
 
 #[derive(Serialize, schemars::JsonSchema)]
@@ -449,7 +460,7 @@ impl McpServer {
 
     #[tool(
         name = "find_callers",
-        description = "Find who depends on a symbol. Returns invocation callers, type-position users (interface implementers, generic instantiations, `extends`), AND inheritance users (every subclass of a base class) — for an agent asking 'who uses this' all three matter. Default kind set is [call, field_access, type_ref, inherit]; pass `kinds: [\"call\",\"field_access\"]` for invocation-only, `kinds: [\"type_ref\"]` for type users only, or `kinds: [\"inherit\"]` for 'every subclass of this base'. Each row carries `kind` so the agent can tell them apart. Test-file callers are hidden by default (set `include_tests: true` to include them; `excluded_tests` reports how many were dropped)."
+        description = "Find who depends on a symbol. Returns invocation callers, type-position users (interface implementers, generic instantiations, `extends`), AND inheritance users (every subclass of a base class) — for an agent asking 'who uses this' all three matter. Default kind set is [call, field_access, type_ref, inherit]; pass `kinds: [\"call\",\"field_access\"]` for invocation-only, `kinds: [\"type_ref\"]` for type users only, or `kinds: [\"inherit\"]` for 'every subclass of this base'. Each row carries `kind` so the agent can tell them apart. `limit: 0` means unlimited (50_000 internal cap). Output reports `total_available` + `was_capped` so the agent knows when there's more to see. Test-file callers are hidden by default (set `include_tests: true` to include them; `excluded_tests` reports how many were dropped)."
     )]
     fn find_callers(
         &self,
@@ -467,11 +478,20 @@ impl McpServer {
         // superset) so a malformed agent call never hides results silently.
         let kind_filter = classify_kinds(&input.kinds).unwrap_or(CallerKindFilter::Both);
 
+        // `limit: 0` → unlimited, capped at 50_000 internally (B3).
+        const UNLIMITED_CAP: usize = 50_000;
+        let effective_limit = if input.limit == 0 {
+            UNLIMITED_CAP
+        } else {
+            input.limit
+        };
+        let min_confidence = input.min_confidence.unwrap_or(0.7);
+
         let result = gq
             .find_callers_filtered_kinds(
                 &input.symbol,
-                input.limit,
-                input.min_confidence.unwrap_or(0.7),
+                effective_limit,
+                min_confidence,
                 input.include_tests,
                 kind_filter,
             )
@@ -480,6 +500,18 @@ impl McpServer {
             Some(r) => (r.callers, r.excluded_tests),
             None => (Vec::new(), 0),
         };
+        // Total visible callers for the "showing N of M" agent hint (B3).
+        // Falls back to `callers.len()` if the count query errors so the
+        // tool never fails open.
+        let total_available = repo
+            .count_callers_at(
+                &input.symbol,
+                kind_filter.as_slice(),
+                min_confidence,
+                input.include_tests,
+            )
+            .unwrap_or(callers.len());
+        let was_capped = callers.len() < total_available;
 
         Json(FindCallersOutput {
             callers: callers
@@ -495,6 +527,8 @@ impl McpServer {
                 })
                 .collect(),
             excluded_tests,
+            total_available,
+            was_capped,
         })
     }
 
