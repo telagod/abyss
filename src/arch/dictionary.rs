@@ -217,6 +217,13 @@ fn rules() -> &'static [CompiledRule] {
     })
 }
 
+/// How many compiled layer rules ship in the built-in dictionary. Useful
+/// for `abyss config show` so operators can sanity-check that the binary
+/// they're running carries the dictionary they expect.
+pub fn builtin_rule_count() -> usize {
+    rules().len()
+}
+
 /// Classify a relative path against the dictionary. Returns every layer
 /// hint that matches; an empty `Vec` means "no opinion" — let downstream
 /// signals decide.

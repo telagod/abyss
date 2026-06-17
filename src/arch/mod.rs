@@ -20,7 +20,7 @@ pub mod inference;
 pub mod naming;
 pub mod override_config;
 
-pub use dictionary::{LayerHint, classify_path};
+pub use dictionary::{LayerHint, builtin_rule_count, classify_path};
 pub use entry::is_entry_point;
 pub use graph::{
     ArchGraph, CentralityResult, ModuleResult, SccResult, build_arch_graph, compute_centrality,
