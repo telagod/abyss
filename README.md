@@ -128,7 +128,7 @@ This is not a compiler. Measured against SCIP (compiler-grade) ground truth — 
 |--------|----------|----------------:|-------------:|
 | gin v1.10.0 | Go | **99.3%** | **82.6%** |
 | hono v4.6.14 | TypeScript | **98.8%** | 63.8%* |
-| click 8.1.8 | Python | **98.7%** | **94.6%** |
+| click 8.1.8 | Python | **97.9%** | **93.0%** |
 | ripgrep 14.1.1 | Rust | **98.5%** | **75.3%** |
 | abyss (dogfood) | Rust | **100.0%** | **90.9%** |
 | cmark 0.31.1 | C | **99.1%** | **74.8%** |

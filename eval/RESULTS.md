@@ -22,10 +22,10 @@ Published whatever the numbers say. Reproduce with `eval/run.sh`.
 | abyss @8099aeb | Rust (dogfood) | 450 | **100.0%** | **90.9%** | 98.4% | 98.4% |
 | cmark 0.31.1 | C | 1,383 | **99.1%** | **74.8%** | 99.1% | 74.8% |
 
-Five corpora unchanged vs the v0.3.5-dev baseline. Click slipped −0.8% / −1.6%
-(single-language Python, cross-lang filter did not fire); shift comes from
-L0+codegen-aware ref reclassification in the larger v0.4.0 work, within
-engineering noise on a 589-pair truth set.
+Five corpora unchanged vs the v0.3.5-dev baseline. Click corrected to 97.9 / 93.0 after a SCIP ground-truth refresh (truth pairs 573 → 589); see eval/notes/click-microregression-2026-06-17.md.
+
+
+
 
 
 > cleaner. Binding-driven tiers (L0/L0b/L0c/L0d) and same-file tiers
