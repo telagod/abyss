@@ -185,6 +185,32 @@ fn python_test_file_detection() {
     assert!(!ex.is_test_file("pkg/handler.py"));
 }
 
+#[test]
+fn python_class_inheritance_refs() {
+    let refs = extract(
+        "python",
+        "import click\n\nclass Base:\n    pass\n\nclass Mid(Base):\n    pass\n\nclass Leaf(Mid, OtherBase, metaclass=Meta):\n    pass\n\nclass Q(click.Command):\n    pass\n",
+    );
+
+    let base_inh = find(&refs, "Base", RefKind::Inherit).expect("Mid -> Base");
+    assert_eq!(base_inh.source_symbol.as_deref(), Some("Mid"));
+    assert!(base_inh.target_qualifier.is_none());
+
+    // Multi-base: both Mid and OtherBase emitted, metaclass kwarg skipped.
+    let mid_inh = find(&refs, "Mid", RefKind::Inherit).expect("Leaf -> Mid");
+    assert_eq!(mid_inh.source_symbol.as_deref(), Some("Leaf"));
+    assert!(find(&refs, "OtherBase", RefKind::Inherit).is_some());
+    assert!(
+        find(&refs, "Meta", RefKind::Inherit).is_none(),
+        "metaclass kwarg must not become an inherits ref"
+    );
+
+    // Qualified base: target_name is the type, qualifier is the module.
+    let qual_inh = find(&refs, "Command", RefKind::Inherit).expect("Q -> click.Command");
+    assert_eq!(qual_inh.target_qualifier.as_deref(), Some("click"));
+    assert_eq!(qual_inh.source_symbol.as_deref(), Some("Q"));
+}
+
 // --- TypeScript / JavaScript ---
 
 #[test]

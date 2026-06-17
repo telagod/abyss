@@ -104,6 +104,46 @@ fn collect_refs(
     // Class boundary: `self.m()` below resolves to this class.
     if kind == "class_definition" {
         let class_name = node.child_by_field_name("name").map(|n| text(&n, source));
+
+        // Inheritance: `class Sub(Base, OtherBase):` → one Inherit ref per
+        // base. Feeds the MRO walker in the resolver (L0e tier). Skip
+        // `metaclass=...` / kwarg bases, and skip parameterized generics
+        // (Generic[T]) for V1 — only bare `identifier` and `attribute`
+        // bases. `attribute` bases (`click.Command`) reuse the same
+        // import-binding path as call qualifiers.
+        if let Some(bases) = node.child_by_field_name("superclasses") {
+            let mut bc = bases.walk();
+            for base in bases.named_children(&mut bc) {
+                let (name, qualifier) = match base.kind() {
+                    "identifier" => (text(&base, source), None),
+                    "attribute" => {
+                        let attr = base.child_by_field_name("attribute");
+                        let obj = base.child_by_field_name("object");
+                        match (attr, obj) {
+                            (Some(a), Some(o)) if o.kind() == "identifier" => {
+                                (text(&a, source), Some(text(&o, source)))
+                            }
+                            (Some(a), _) => (text(&a, source), None),
+                            _ => continue,
+                        }
+                    }
+                    // `metaclass=...`, `Generic[T]`, comments → skip.
+                    _ => continue,
+                };
+                if name.is_empty() || is_builtin_py_type(&name) {
+                    continue;
+                }
+                refs.push(RawReference {
+                    line: base.start_position().row as u32,
+                    source_symbol: class_name.clone(),
+                    target_name: name,
+                    target_qualifier: qualifier,
+                    receiver_type: None,
+                    kind: RefKind::Inherit,
+                });
+            }
+        }
+
         let mut cursor = node.walk();
         for child in node.children(&mut cursor) {
             collect_refs(
