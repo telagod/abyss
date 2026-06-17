@@ -78,8 +78,9 @@ abyss history <file>          Evolution: commits, churn, coupled files [--symbol
 abyss search "query"          Symbol + fulltext fusion search
 abyss map                     Codebase map: hotspots, coupling, risk areas
 abyss watch                   Foreground daemon-lite: reindex on file save (debounced)
-abyss daemon start            Background daemon (Unix): pidfile + socket [--foreground]
+abyss daemon start            Background daemon (Unix): pidfile + socket [--foreground|--detach]
 abyss daemon stop|status      Stop daemon / report pid + uptime + last reindex
+abyss daemon logs             Tail .code-abyss/daemon.log [--tail N]
 abyss stats                   Index statistics
 abyss mcp                     MCP server (stdio) — 7 tools for any MCP client
 ```
@@ -153,21 +154,29 @@ abyss indexed gin in **~150ms**; scip-go took ~40s. Full method, per-tier tables
 Two flavors share the same watcher:
 
 ```sh
-# V1 background daemon (Unix only) — pidfile-locked, Unix-socket fronted.
-# Run `start` with `&` to background; we don't double-fork.
-abyss daemon start &               # claim .code-abyss/daemon.{pid,sock,log}, start watching
+# Background daemon (Unix only) — pidfile-locked, Unix-socket fronted.
+# V1.5: --detach does a proper double-fork; pre-V1.5 `start &` still works.
+abyss daemon start --detach        # double-fork + setsid, returns once pidfile is claimed
+abyss daemon start &               # alternative: shell-backgrounded (no double-fork)
 abyss daemon status                # prints pid, uptime, last reindex; exit 1 if not running
 abyss daemon stop                  # SIGTERM the recorded pid, wait ≤5s for cleanup
+abyss daemon logs --tail 50        # tail .code-abyss/daemon.log (default N=50)
 
 # Foreground equivalent — unchanged from v0.4.0, alias of `daemon start --foreground`.
 abyss watch                        # default 150ms debounce
 abyss watch --debounce-ms 300      # tune for slower disks / heavier formatters
 ```
 
-The V1 socket protocol is newline-delimited JSON and exposes two verbs — `{"cmd":"ping"}` returns uptime + last-reindex telemetry, `{"cmd":"stats"}` returns file/symbol/ref counts. Useful sanity probe:
+The V1.5 socket protocol is newline-delimited JSON and exposes four verbs:
+
+- `{"cmd":"ping"}` — uptime + last-reindex telemetry + epoch counter.
+- `{"cmd":"stats"}` — file / symbol / ref / chunk counts.
+- `{"cmd":"reindex"}` — synchronous hash-incremental reindex on a worker thread; returns `{reindexed, removed, duration_ms, epoch}`. Two concurrent reindex calls get one structured `index lock contention` error rather than fighting at the SQLite layer.
+- `{"cmd":"logs","tail":N}` — last N lines of `daemon.log`.
 
 ```sh
-echo '{"cmd":"ping"}' | nc -U .code-abyss/daemon.sock
+echo '{"cmd":"ping"}'     | nc -U .code-abyss/daemon.sock
+echo '{"cmd":"reindex"}'  | nc -U .code-abyss/daemon.sock
 ```
 
 The full MCP-over-socket surface (so the hook, the MCP server, and an editor extension can share one in-process index) is V2 territory. Hooks still read SQLite directly — no daemon round-trip for the pre-edit fast path.

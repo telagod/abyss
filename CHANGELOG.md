@@ -17,6 +17,26 @@
   the roadmap; the V1 pre-edit hook still reads SQLite directly — no daemon
   round-trip on the fast path.
 
+### Daemon V1.5
+
+- `abyss daemon start --detach` — proper double-fork + `setsid` so the
+  daemon survives the shell that launched it without `&`. Stdin is closed,
+  stdout/stderr land in `.code-abyss/daemon.log`. The parent process
+  returns once the grandchild has claimed the pidfile (≤500ms), so
+  `daemon start --detach && daemon status` chains cleanly.
+- `abyss daemon logs [--tail N]` (default `N=50`) — tail the daemon log.
+  Goes through the socket's new `{"cmd":"logs","tail":N}` verb when the
+  daemon is live; falls back to a direct file read when it's not.
+- Socket verb `{"cmd":"reindex"}` — synchronous hash-incremental
+  `IndexPipeline::run_structural` on a worker thread. Returns
+  `{ok, reindexed, removed, duration_ms, epoch}`. Operator-triggered
+  reindexes are serialized against each other via a `try_lock`'d mutex;
+  the loser gets `{"ok":false,"error":"index lock contention"}` rather
+  than queueing silently.
+- Socket verb `{"cmd":"logs","tail":N}` — last N lines of `daemon.log`,
+  streamed via a bounded `VecDeque` so memory stays O(N) regardless of
+  log size.
+
 ## v0.4.0 — 2026-06-17
 
 The "agent always has the map" release. 39 commits since v0.3.6, organized
