@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use anyhow::{Context, Result};
-use rusqlite::{Connection, ffi::sqlite3_auto_extension, params};
+use rusqlite::{Connection, OpenFlags, ffi::sqlite3_auto_extension, params};
 
 use super::schema;
 
@@ -64,6 +64,39 @@ impl Repository {
 
         schema::init_db(&conn)?;
         schema::init_vec_table(&conn, dimensions)?;
+
+        Ok(Self {
+            conn,
+            _dimensions: dimensions,
+        })
+    }
+
+    /// Open a read-only handle to an existing index. Used by per-connection
+    /// MCP handlers inside the daemon — SQLite WAL allows N concurrent readers
+    /// alongside the watcher's single writer, but only if every reader opens
+    /// with `SQLITE_OPEN_READ_ONLY`, otherwise rusqlite defaults to RW which
+    /// still tries to acquire an exclusive lock for `journal_mode` checks.
+    ///
+    /// The vec extension is auto-registered (matches [`open`]) so vector
+    /// queries work; the vec virtual table is not (re)initialized — the
+    /// writer already created it during the structural pass.
+    pub fn open_read_only(db_path: &Path, dimensions: usize) -> Result<Self> {
+        // Register sqlite-vec as auto extension BEFORE opening connection.
+        // Idempotent across opens — `sqlite3_auto_extension` deduplicates.
+        #[allow(clippy::missing_transmute_annotations)]
+        unsafe {
+            sqlite3_auto_extension(Some(std::mem::transmute(
+                sqlite_vec::sqlite3_vec_init as *const (),
+            )));
+        }
+
+        let conn = Connection::open_with_flags(
+            db_path,
+            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )
+        .with_context(|| format!("failed to open db read-only: {}", db_path.display()))?;
+
+        schema::init_db_read_only(&conn)?;
 
         Ok(Self {
             conn,

@@ -3,6 +3,17 @@ use rusqlite::Connection;
 
 pub const SCHEMA_VERSION: u32 = 6;
 
+/// Pragmas safe to apply to a read-only handle. `journal_mode = WAL` is a
+/// *file-level* setting — it's already persisted on the DB by the writer's
+/// [`init_db`], so the read-only handle just needs cache/foreign-keys.
+/// Setting `journal_mode` on a read-only connection would fail with
+/// `attempt to write a readonly database`.
+pub fn init_db_read_only(conn: &Connection) -> Result<()> {
+    conn.execute_batch("PRAGMA foreign_keys = ON;")?;
+    conn.execute_batch("PRAGMA cache_size = -64000;")?; // 64MB cache
+    Ok(())
+}
+
 pub fn init_db(conn: &Connection) -> Result<()> {
     conn.execute_batch("PRAGMA journal_mode = WAL;")?;
     conn.execute_batch("PRAGMA synchronous = NORMAL;")?;
