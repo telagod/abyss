@@ -1,6 +1,6 @@
 {
   "name": "@code-abyss/cli",
-  "version": "0.5.2",
+  "version": "0.5.3",
   "description": "abyss — the code graph your agent checks before it edits. npm wrapper that downloads the prebuilt binary.",
   "bin": {
     "abyss": "bin/abyss.js"
