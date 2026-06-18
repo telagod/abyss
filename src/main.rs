@@ -186,11 +186,11 @@ enum Commands {
         action: HookAction,
     },
     /// Install abyss hooks into an agent host's settings (idempotent).
-    /// Supported hosts: claude
+    /// Supported hosts: claude, codex, gemini, openclaw, all
     Attach {
-        /// Agent host (currently: claude)
+        /// Agent host: claude | codex | gemini | openclaw | all
         host: String,
-        /// Write to <cwd>/.claude/settings.json instead of $HOME
+        /// Write to <cwd>/.<host>/<settings file> instead of $HOME
         #[arg(long)]
         local: bool,
     },
@@ -1748,9 +1748,39 @@ fn live_daemon_pid(config: &Config) -> Option<u32> {
 }
 
 fn cmd_attach(host: &str, local: bool) -> Result<()> {
-    match host {
-        "claude" => code_abyss::attach::claude::install(local),
-        other => anyhow::bail!("unknown host: {other}; supported: claude"),
+    use code_abyss::attach;
+
+    if host == "all" {
+        let results = attach::install_all(local);
+        println!("\nabyss attach all — per-host summary:");
+        let mut any_failed = false;
+        for r in &results {
+            match &r.outcome {
+                Ok((status, path)) => {
+                    println!("  {:<9} {status:>16}  {path}", r.host);
+                }
+                Err(msg) => {
+                    println!("  {:<9} {msg}", r.host);
+                    // "skipped" entries are not failures — only real install errors are.
+                    if !msg.starts_with("skipped:") {
+                        any_failed = true;
+                    }
+                }
+            }
+        }
+        if any_failed {
+            anyhow::bail!("one or more hosts failed to install — see summary above");
+        }
+        return Ok(());
+    }
+
+    if attach::SUPPORTED_HOSTS.contains(&host) {
+        attach::install_host(host, local).map(|_| ())
+    } else {
+        anyhow::bail!(
+            "unknown host: {host}; supported: {} (or `all`)",
+            attach::SUPPORTED_HOSTS.join(", ")
+        );
     }
 }
 

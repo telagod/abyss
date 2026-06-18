@@ -20,12 +20,24 @@ to its hooks, refreshes the index incrementally, and writes a structured
 warning to stderr — **before** the edit happens. Payload shapes are
 auto-detected per platform.
 
-The fastest setup is the companion tool:
+The fastest setup is the built-in `abyss attach` command:
 
 ```sh
-# installs per-platform hook configs in one command
-# see https://github.com/telagod/code-abyss
+abyss attach claude     # ~/.claude/settings.json
+abyss attach codex      # ~/.codex/config.toml
+abyss attach gemini     # ~/.gemini/settings.json
+abyss attach openclaw   # ~/.openclaw/config.toml
+abyss attach all        # all of the above; skips any whose home dir is missing
+abyss attach claude --local   # write into <cwd>/.<host>/ instead of $HOME
 ```
+
+All installers are idempotent: re-running upgrades in place, never
+duplicates entries, and preserves any unrelated keys you (or another
+tool) put in the settings file.
+
+For Pi and Hermes — whose hook shapes are still evolving — use the
+companion [`code-abyss`](https://github.com/telagod/code-abyss)
+package, which carries shape adapters per host.
 
 ## The pre-edit card
 

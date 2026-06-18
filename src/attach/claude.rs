@@ -50,9 +50,9 @@ pub fn install(local: bool) -> Result<()> {
 }
 
 /// Test-friendly variant: install into an explicit settings.json path.
-/// Kept `pub(crate)` so external callers go through [`install`] which
-/// applies the host policy (`--local` vs `$HOME`).
-pub(crate) fn install_at(path: &std::path::Path) -> Result<()> {
+/// Used by `attach all` integration tests; production callers should go
+/// through [`install`] which applies the host policy (`--local` vs `$HOME`).
+pub fn install_at(path: &std::path::Path) -> Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
             .with_context(|| format!("creating {}", parent.display()))?;

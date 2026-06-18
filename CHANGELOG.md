@@ -1,5 +1,39 @@
 # Changelog
 
+## v0.5.21 — 2026-06-18
+
+The "agent ecosystem catch-up" patch. `abyss attach` grows from
+Claude-only to the full code-abyss host roster.
+
+### Added
+
+- **`abyss attach codex`** — installs hooks into `~/.codex/config.toml`
+  (or `<cwd>/.codex/config.toml` with `--local`). TOML
+  `[[hooks.PreToolUse]]` / `[[hooks.PostToolUse]]` blocks with the
+  same idempotency contract as the Claude installer.
+- **`abyss attach gemini`** — installs hooks into
+  `~/.gemini/settings.json`. JSON shape mirrors Claude's so existing
+  hook-config muscle memory carries over.
+- **`abyss attach openclaw`** — installs hooks into
+  `~/.openclaw/config.toml`.
+- **`abyss attach all`** — fan-out installer that runs every host's
+  installer and prints a per-host summary (`installed` /
+  `already present` / `skipped: ~/.host does not exist`). In `--local`
+  mode no host is skipped — useful for end-to-end testing.
+
+### Notes
+
+- Codex / Gemini / OpenClaw hook schemas are still maturing. The
+  installers ship a best-effort layout and log a "please file an issue
+  if this doesn't match your version" line. Re-runs never duplicate
+  entries, and existing unrelated config keys are preserved verbatim.
+- Pi and Hermes are not wired here yet — their hook shapes are not
+  stable enough across versions for an opinionated installer. Use the
+  companion `code-abyss` package for those until the shapes settle.
+- `attach::install_at` is now `pub` on every host module so external
+  tests (and the companion `code-abyss` package) can drive a tempdir
+  target without mutating process-wide `$HOME` / cwd.
+
 ## v0.5.2 — 2026-06-17
 
 The "more dogfood than features" release. Six small lines of work, no

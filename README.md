@@ -99,6 +99,10 @@ abyss daemon logs [--tail N]  Tail .code-abyss/daemon.log via socket or direct f
 abyss stats                   Index statistics
 abyss mcp                     MCP server (stdio) — 7 tools for any MCP client
 abyss mcp --via-daemon        V2: stdio MCP that tunnels through `abyss daemon` over its socket
+abyss attach <host>           Idempotently install hook config for an agent host.
+                              host ∈ { claude | codex | gemini | openclaw | all }
+                              --local writes <cwd>/.<host>/... instead of $HOME
+abyss skill-manifest          Emit machine-readable JSON for skill-discovery consumers (code-abyss)
 ```
 
 ## Language support
