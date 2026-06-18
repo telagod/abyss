@@ -1,5 +1,34 @@
 # Changelog
 
+## v0.5.22 — 2026-06-18
+
+The "interop with code-abyss" patch. abyss now emits a single
+machine-readable manifest that sister tools (the companion `code-abyss`
+package and any other skill-discovery consumer) can read instead of
+hand-coding the integration.
+
+### Added
+
+- **`abyss skill-manifest`** — emits a JSON document describing the CLI
+  surface (every subcommand + one-line summary), the MCP tool list
+  (8 tools), the hook entry points, the four `attach` hosts, and the
+  daemon socket verbs. Defaults to pretty-printed; `--compact` collapses
+  to a single line for machine pipelines.
+- **`schema_version: 1`** — a single integer at the top level so
+  consumers can pin a known-good shape. Bumped only on breaking shape
+  changes; adding a new field or new array element is free.
+- **`src/manifest.rs`** — pure builder that returns a `serde_json::Value`.
+  Unit tests assert the manifest structure without spawning the binary.
+
+### Design
+
+- The manifest is the contract. Adding a CLI command, MCP tool, or
+  attach host requires updating `src/manifest.rs` in the same patch.
+- Sister tools should not have to ask agents to integrate — the
+  manifest answers what's exposed before they have to ask.
+- Documented as principle §11 in `docs/PRINCIPLES.md` ("co-existence
+  with sister tools via machine-readable manifests").
+
 ## v0.5.21 — 2026-06-18
 
 The "agent ecosystem catch-up" patch. `abyss attach` grows from

@@ -147,7 +147,30 @@ the slim build. One `abyss` binary, one `.code-abyss/index.db` per
 workspace. Add `--features semantic` only when you need
 embedding-based search.
 
-## 11. Publish whatever the numbers say
+## 11. Co-existence with sister tools via machine-readable manifests
+
+abyss does not own the agent's entire surface — it lives next to
+sister tools (the companion [`code-abyss`](https://github.com/telagod/code-abyss)
+ships personas + 30 engineering skills + per-host installers). When
+those tools want to consume abyss, they should not have to hand-write
+the integration and re-derive it on every release.
+
+- **`abyss skill-manifest`** emits a JSON document describing the CLI
+  surface, MCP tool list, hook entry points, the four `attach` hosts,
+  and the daemon socket verbs. `schema_version` is a single integer so
+  consumers can pin a known-good shape without a semver dance.
+- **The manifest is the contract.** Adding a CLI command, MCP tool, or
+  attach host means updating `src/manifest.rs` in the same patch — that
+  is how skill-discovery consumers learn the surface grew.
+- **Bump `schema_version` only on breaking shape changes**: renamed
+  keys, removed fields, semantic shifts. Adding a new array element or
+  optional key is free.
+
+This principle complements §3 (ambient delivery): sister tools should
+not have to ask agents to *do* anything to integrate with abyss; the
+manifest answers what's exposed before they have to ask.
+
+## 12. Publish whatever the numbers say
 
 `eval/RESULTS.md` is the source of truth for resolver accuracy. Every
 release re-runs the SCIP eval; the numbers ship unredacted, including

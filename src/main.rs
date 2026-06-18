@@ -272,6 +272,19 @@ enum Commands {
         #[arg(long)]
         dry_run: bool,
     },
+    /// Emit a machine-readable skill manifest for skill-discovery
+    /// consumers (e.g. the companion `code-abyss` package). Describes
+    /// the CLI surface, MCP tools, hook entry points, daemon socket
+    /// verbs — everything an integrating tool needs without hand-coding.
+    ///
+    /// Defaults to pretty-printed JSON; pass `--compact` for a single
+    /// line suitable for machine pipelines.
+    SkillManifest {
+        /// Emit a single-line JSON payload instead of the default
+        /// pretty-printed form.
+        #[arg(long)]
+        compact: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -439,7 +452,22 @@ fn main() -> Result<()> {
             dry_run,
         } => cmd_reset(config, all, daemon, dry_run, json),
         Commands::Ingest { action } => cmd_ingest(action, json),
+        Commands::SkillManifest { compact } => cmd_skill_manifest(compact),
     }
+}
+
+/// Emit the abyss skill manifest as JSON on stdout. Always exits 0 on
+/// success. Default is pretty-printed because humans usually want it;
+/// `--compact` collapses to a single line for machine pipelines.
+fn cmd_skill_manifest(compact: bool) -> Result<()> {
+    let v = code_abyss::manifest::build_manifest();
+    let rendered = if compact {
+        serde_json::to_string(&v)?
+    } else {
+        serde_json::to_string_pretty(&v)?
+    };
+    println!("{rendered}");
+    Ok(())
 }
 
 /// `abyss ingest` dispatcher. v0.5.15 ships only the SCIP subverb in

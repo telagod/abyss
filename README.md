@@ -165,7 +165,9 @@ abyss indexed gin in **~150ms**; scip-go took ~40s. Full method, per-tier tables
 
 **MCP**: `abyss mcp` exposes `search_context`, `get_symbols`, `find_callers`, `impact_analysis`, `code_map`, `evolution`, `index_project` over stdio. With a running daemon, `abyss mcp --via-daemon` tunnels the same surface through `.code-abyss/daemon.sock` so multiple MCP clients share one in-process index and one set of read-only SQLite handles.
 
-**Pre-edit hooks**: `abyss hook pre-edit` reads the tool-call JSON any agent platform pipes to its hooks (Claude Code, Codex CLI, Gemini CLI, Pi, Hermes, OpenClaw payload shapes auto-detected), refreshes the index incrementally, and warns about production callers, ambiguous references, and hotspots — before the edit happens. [code-abyss](https://github.com/telagod/code-abyss) installs the per-platform hook configs in one command.
+**Pre-edit hooks**: `abyss hook pre-edit` reads the tool-call JSON any agent platform pipes to its hooks (Claude Code, Codex CLI, Gemini CLI, Pi, Hermes, OpenClaw payload shapes auto-detected), refreshes the index incrementally, and warns about production callers, ambiguous references, and hotspots — before the edit happens. `abyss attach <host>` installs the per-host config (`claude | codex | gemini | openclaw | all`). For Pi and Hermes — whose hook shapes are still evolving — use the companion [code-abyss](https://github.com/telagod/code-abyss) package, which ships shape adapters.
+
+**Skill manifest**: `abyss skill-manifest` emits a machine-readable JSON document (CLI commands, MCP tools, hook entry points, attach hosts, daemon verbs) for skill-discovery consumers like `code-abyss`. Pass `--compact` for single-line output. Pin against `schema_version` rather than the abyss version.
 
 **Arch layers**: every file gets an architectural layer (`api`, `domain`, `infra`, `util`, …) via a built-in path-segment dictionary. Project-specific directory names? Drop a `.code-abyss/arch.toml` at the workspace root — see [docs/ARCH-LAYERS.md](docs/ARCH-LAYERS.md).
 
