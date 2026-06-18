@@ -1,70 +1,58 @@
-//! Integration test for the OpenClaw hook installer.
+//! Integration test for the OpenClaw `attach` downgrade.
+//!
+//! v0.5.23 deliberately disables hook injection for OpenClaw because
+//! OpenClaw uses a per-pack install layout (see the sister `code-abyss`
+//! package's `bin/adapters/openclaw.js`). The right migration is
+//! `npx code-abyss -t openclaw --with-abyss`. This test pins the
+//! downgrade so it can't silently flip back to writing the wrong file.
 
 use code_abyss::attach::openclaw;
-use toml::Value;
-
-fn count_cmds(root: &Value, event: &str, cmd: &str) -> usize {
-    root.get("hooks")
-        .and_then(|h| h.get(event))
-        .and_then(Value::as_array)
-        .map(|arr| {
-            arr.iter()
-                .filter(|e| e.get("command").and_then(Value::as_str) == Some(cmd))
-                .count()
-        })
-        .unwrap_or(0)
-}
 
 #[test]
-fn install_at_writes_valid_toml() {
+fn install_at_is_a_clear_error_and_writes_nothing() {
     let tmp = tempfile::tempdir().unwrap();
     let path = tmp.path().join(".openclaw/config.toml");
 
-    openclaw::install_at(&path).unwrap();
-    assert!(path.exists());
+    let err = openclaw::install_at(&path).expect_err("openclaw install must fail loudly");
+    let msg = format!("{err}");
 
-    let raw = std::fs::read_to_string(&path).unwrap();
-    let v: Value = raw.parse().unwrap();
-    assert_eq!(count_cmds(&v, "PreToolUse", "abyss hook pre-edit"), 1);
-    assert_eq!(count_cmds(&v, "PostToolUse", "abyss hook post-edit"), 1);
-
-    let arr = v["hooks"]["PreToolUse"].as_array().unwrap();
-    assert_eq!(
-        arr[0].get("matcher").and_then(Value::as_str),
-        Some("Edit|Write")
+    assert!(
+        msg.contains("per-pack install layout"),
+        "error message must explain why we refuse: {msg}"
     );
-    assert!(openclaw::already_installed(&path));
+    assert!(
+        msg.contains("npx code-abyss"),
+        "error message must point users at the working alternative: {msg}"
+    );
+
+    // CRITICAL: no settings file is written. Writing a file OpenClaw
+    // doesn't read would be worse than no-op — silent failure.
+    assert!(
+        !path.exists(),
+        "openclaw downgrade must NOT create {}",
+        path.display()
+    );
 }
 
 #[test]
-fn install_at_is_idempotent() {
-    let tmp = tempfile::tempdir().unwrap();
-    let path = tmp.path().join("config.toml");
-    for _ in 0..3 {
-        openclaw::install_at(&path).unwrap();
-    }
-    let raw = std::fs::read_to_string(&path).unwrap();
-    let v: Value = raw.parse().unwrap();
-    assert_eq!(count_cmds(&v, "PreToolUse", "abyss hook pre-edit"), 1);
-    assert_eq!(count_cmds(&v, "PostToolUse", "abyss hook post-edit"), 1);
+fn install_returns_error_in_home_and_local_mode() {
+    assert!(openclaw::install(true).is_err());
+    assert!(openclaw::install(false).is_err());
 }
 
 #[test]
-fn install_preserves_existing_config() {
+fn already_installed_is_always_false() {
     let tmp = tempfile::tempdir().unwrap();
     let path = tmp.path().join("config.toml");
-    std::fs::write(&path, "model = \"opus-4\"\n[persona]\nname = \"邪修\"\n").unwrap();
-    openclaw::install_at(&path).unwrap();
-    let raw = std::fs::read_to_string(&path).unwrap();
-    let v: Value = raw.parse().unwrap();
-    assert_eq!(v.get("model").and_then(Value::as_str), Some("opus-4"));
-    assert_eq!(
-        v.get("persona")
-            .and_then(|p| p.get("name"))
-            .and_then(Value::as_str),
-        Some("邪修")
-    );
-    assert_eq!(count_cmds(&v, "PreToolUse", "abyss hook pre-edit"), 1);
+    assert!(!openclaw::already_installed(&path));
+    // Even with a hook-shaped file, the downgrade must NOT claim
+    // "already present" — the file is irrelevant to OpenClaw.
+    std::fs::write(
+        &path,
+        "[hooks.PreToolUse]\ncommand = \"abyss hook pre-edit\"\n",
+    )
+    .unwrap();
+    assert!(!openclaw::already_installed(&path));
 }
 
 #[test]

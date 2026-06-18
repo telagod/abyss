@@ -1,31 +1,84 @@
 //! Install abyss hooks into Gemini CLI's `settings.json`.
 //!
-//! Layout (only touches the `hooks` subtree, leaves the rest alone):
+//! Gemini's event names and matchers are NOT the same as Claude's —
+//! ground truth lives in `code-abyss/bin/lib/abyss-integration.js`
+//! (`injectGeminiHooks`). The schema is:
 //!
 //! ```json
 //! {
 //!   "hooks": {
-//!     "PreToolUse":  [{ "matcher": "Edit|Write",
-//!                       "hooks": [{ "type": "command", "command": "abyss hook pre-edit"  }] }],
-//!     "PostToolUse": [{ "matcher": "Edit|Write",
-//!                       "hooks": [{ "type": "command", "command": "abyss hook post-edit" }] }]
+//!     "SessionStart": [{
+//!       "matcher": "startup",
+//!       "hooks": [{
+//!         "name": "abyss-init",
+//!         "type": "command",
+//!         "command": "abyss hook pre-edit",
+//!         "timeout": 10000,
+//!         "description": "Auto-index project with abyss"
+//!       }]
+//!     }],
+//!     "BeforeTool": [{
+//!       "matcher": "write_file|replace|edit_file",
+//!       "hooks": [{
+//!         "name": "abyss-check",
+//!         "type": "command",
+//!         "command": "abyss hook pre-edit",
+//!         "timeout": 5000,
+//!         "description": "Check callers before editing code"
+//!       }]
+//!     }],
+//!     "AfterTool": [{
+//!       "matcher": "write_file|replace|edit_file",
+//!       "hooks": [{
+//!         "name": "abyss-post",
+//!         "type": "command",
+//!         "command": "abyss hook post-edit",
+//!         "timeout": 5000,
+//!         "description": "Reindex after edit"
+//!       }]
+//!     }]
 //!   }
 //! }
 //! ```
 //!
-//! Shape mirrors Claude Code's `settings.json` because Gemini CLI's
-//! hook surface is the closest analogue. Best-effort schema — if your
-//! Gemini CLI version uses different keys, please file an issue at
-//! <https://github.com/telagod/abyss/issues>.
+//! Timeout units are **milliseconds** for Gemini (Codex uses seconds —
+//! don't confuse the two).
+//!
+//! Idempotency: hook entries keyed by `name` (`abyss-*`) are upserted
+//! in place; entries authored by the user are preserved.
 
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, anyhow};
 use serde_json::{Value, json};
 
-const MATCHER: &str = "Edit|Write";
-const PRE_CMD: &str = "abyss hook pre-edit";
-const POST_CMD: &str = "abyss hook post-edit";
+/// (event, matcher, hook_name, command, timeout_ms, description)
+const ENTRIES: &[(&str, &str, &str, &str, u32, &str)] = &[
+    (
+        "SessionStart",
+        "startup",
+        "abyss-init",
+        "abyss hook pre-edit",
+        10_000,
+        "Auto-index project with abyss",
+    ),
+    (
+        "BeforeTool",
+        "write_file|replace|edit_file",
+        "abyss-check",
+        "abyss hook pre-edit",
+        5_000,
+        "Check callers before editing code",
+    ),
+    (
+        "AfterTool",
+        "write_file|replace|edit_file",
+        "abyss-post",
+        "abyss hook post-edit",
+        5_000,
+        "Reindex after edit",
+    ),
+];
 
 /// Resolve the target `settings.json` path.
 ///
@@ -42,7 +95,7 @@ pub fn settings_path(local: bool) -> Result<PathBuf> {
     Ok(home.join(".gemini").join("settings.json"))
 }
 
-/// True iff the file already contains both abyss hook commands.
+/// True iff every abyss-managed hook entry is present.
 pub fn already_installed(path: &Path) -> bool {
     let Ok(raw) = std::fs::read_to_string(path) else {
         return false;
@@ -50,24 +103,27 @@ pub fn already_installed(path: &Path) -> bool {
     let Ok(value) = serde_json::from_str::<Value>(&raw) else {
         return false;
     };
-    has_command(&value, "PreToolUse", PRE_CMD) && has_command(&value, "PostToolUse", POST_CMD)
+    ENTRIES
+        .iter()
+        .all(|(event, matcher, name, _, _, _)| has_named_hook(&value, event, matcher, name))
 }
 
-fn has_command(root: &Value, event: &str, cmd: &str) -> bool {
+fn has_named_hook(root: &Value, event: &str, matcher: &str, name: &str) -> bool {
     root.get("hooks")
         .and_then(|h| h.get(event))
         .and_then(Value::as_array)
         .map(|arr| {
             arr.iter().any(|entry| {
-                entry
-                    .get("hooks")
-                    .and_then(Value::as_array)
-                    .map(|inner| {
-                        inner
-                            .iter()
-                            .any(|h| h.get("command").and_then(Value::as_str) == Some(cmd))
-                    })
-                    .unwrap_or(false)
+                entry.get("matcher").and_then(Value::as_str) == Some(matcher)
+                    && entry
+                        .get("hooks")
+                        .and_then(Value::as_array)
+                        .map(|inner| {
+                            inner
+                                .iter()
+                                .any(|h| h.get("name").and_then(Value::as_str) == Some(name))
+                        })
+                        .unwrap_or(false)
             })
         })
         .unwrap_or(false)
@@ -106,44 +162,51 @@ pub fn install_at(path: &Path) -> Result<()> {
         );
     }
 
-    let hooks = root
-        .as_object_mut()
-        .expect("checked")
-        .entry("hooks")
-        .or_insert_with(|| json!({}));
-    if !hooks.is_object() {
-        anyhow::bail!("`hooks` field exists but is not an object");
-    }
+    {
+        let hooks = root
+            .as_object_mut()
+            .expect("checked")
+            .entry("hooks")
+            .or_insert_with(|| json!({}));
+        if !hooks.is_object() {
+            anyhow::bail!("`hooks` field exists but is not an object");
+        }
 
-    let pre_added = upsert_hook(hooks, "PreToolUse", MATCHER, PRE_CMD)?;
-    let post_added = upsert_hook(hooks, "PostToolUse", MATCHER, POST_CMD)?;
+        for (event, matcher, name, command, timeout_ms, description) in ENTRIES {
+            upsert_named_hook(
+                hooks,
+                event,
+                matcher,
+                name,
+                command,
+                *timeout_ms,
+                description,
+            )?;
+        }
+    }
 
     let pretty = serde_json::to_string_pretty(&root)?;
     std::fs::write(path, pretty).with_context(|| format!("writing {}", path.display()))?;
 
     println!("✓ abyss hook installed at {}", path.display());
-    println!(
-        "  PreToolUse  ({}): {PRE_CMD}",
-        if pre_added {
-            "added"
-        } else {
-            "already present"
-        }
-    );
-    println!(
-        "  PostToolUse ({}): {POST_CMD}",
-        if post_added {
-            "added"
-        } else {
-            "already present"
-        }
-    );
-    println!("  note: Gemini CLI hook schema is evolving — if this layout doesn't");
-    println!("        match your version, please file an issue.");
+    for (event, matcher, name, _, timeout_ms, _) in ENTRIES {
+        println!("  {event} ({matcher}) → {name} timeout={timeout_ms}ms");
+    }
+    println!("  shape: Gemini SessionStart + BeforeTool/AfterTool (ms timeouts)");
     Ok(())
 }
 
-fn upsert_hook(hooks: &mut Value, event: &str, matcher: &str, command: &str) -> Result<bool> {
+/// Upsert a single named hook. Existing matcher-block is reused; an
+/// inner hook with the same `name` is replaced; otherwise we append.
+fn upsert_named_hook(
+    hooks: &mut Value,
+    event: &str,
+    matcher: &str,
+    name: &str,
+    command: &str,
+    timeout_ms: u32,
+    description: &str,
+) -> Result<()> {
     let arr = hooks
         .as_object_mut()
         .expect("hooks object")
@@ -154,9 +217,16 @@ fn upsert_hook(hooks: &mut Value, event: &str, matcher: &str, command: &str) -> 
     }
     let arr = arr.as_array_mut().expect("array");
 
+    let new_entry = json!({
+        "name": name,
+        "type": "command",
+        "command": command,
+        "timeout": timeout_ms,
+        "description": description,
+    });
+
     for entry in arr.iter_mut() {
-        let entry_matcher = entry.get("matcher").and_then(Value::as_str).unwrap_or("");
-        if entry_matcher != matcher {
+        if entry.get("matcher").and_then(Value::as_str) != Some(matcher) {
             continue;
         }
         let inner = entry
@@ -165,72 +235,116 @@ fn upsert_hook(hooks: &mut Value, event: &str, matcher: &str, command: &str) -> 
         let Some(inner) = inner else {
             anyhow::bail!("hook entry for matcher `{matcher}` has malformed inner hooks");
         };
-        let already = inner
-            .iter()
-            .any(|h| h.get("command").and_then(Value::as_str) == Some(command));
-        if already {
-            return Ok(false);
+        // Replace by name if present.
+        for h in inner.iter_mut() {
+            if h.get("name").and_then(Value::as_str) == Some(name) {
+                *h = new_entry;
+                return Ok(());
+            }
         }
-        inner.push(json!({ "type": "command", "command": command }));
-        return Ok(true);
+        inner.push(new_entry);
+        return Ok(());
     }
 
     arr.push(json!({
         "matcher": matcher,
-        "hooks": [{ "type": "command", "command": command }]
+        "hooks": [new_entry]
     }));
-    Ok(true)
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn count_cmds(root: &Value, event: &str, cmd: &str) -> usize {
-        root["hooks"][event]
-            .as_array()
-            .map(|arr| {
-                arr.iter()
-                    .flat_map(|entry| {
-                        entry["hooks"]
-                            .as_array()
-                            .into_iter()
-                            .flat_map(|inner| inner.iter())
-                    })
-                    .filter(|h| h.get("command").and_then(Value::as_str) == Some(cmd))
-                    .count()
-            })
-            .unwrap_or(0)
+    fn find_named(root: &Value, event: &str, name: &str) -> Option<Value> {
+        root["hooks"][event].as_array()?.iter().find_map(|entry| {
+            entry["hooks"]
+                .as_array()?
+                .iter()
+                .find(|h| h.get("name").and_then(Value::as_str) == Some(name))
+                .cloned()
+        })
     }
 
     #[test]
-    fn install_at_writes_settings_and_is_idempotent() {
+    fn install_at_writes_gemini_native_events() {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join(".gemini/settings.json");
         install_at(&path).unwrap();
         assert!(path.exists());
-        let v: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-        assert_eq!(count_cmds(&v, "PreToolUse", PRE_CMD), 1);
-        assert_eq!(count_cmds(&v, "PostToolUse", POST_CMD), 1);
 
-        install_at(&path).unwrap();
         let v: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-        assert_eq!(count_cmds(&v, "PreToolUse", PRE_CMD), 1);
-        assert_eq!(count_cmds(&v, "PostToolUse", POST_CMD), 1);
+
+        // SessionStart / BeforeTool / AfterTool (NOT PreToolUse / PostToolUse —
+        // those are Claude-only event names).
+        for ev in ["SessionStart", "BeforeTool", "AfterTool"] {
+            assert!(
+                v["hooks"].get(ev).is_some(),
+                "missing Gemini event {ev}: {v}"
+            );
+        }
+        assert!(v["hooks"].get("PreToolUse").is_none());
+        assert!(v["hooks"].get("PostToolUse").is_none());
+
+        // Matchers per ground truth.
+        let session_entry = &v["hooks"]["SessionStart"][0];
+        assert_eq!(session_entry["matcher"], "startup");
+        let before_entry = &v["hooks"]["BeforeTool"][0];
+        assert_eq!(before_entry["matcher"], "write_file|replace|edit_file");
+
+        // Hook entries are name/type/command/timeout(ms)/description objects.
+        let init = find_named(&v, "SessionStart", "abyss-init").expect("abyss-init present");
+        assert_eq!(init["type"], "command");
+        assert_eq!(init["command"], "abyss hook pre-edit");
+        assert_eq!(init["timeout"], 10_000);
+        assert!(init.get("description").is_some());
+
+        let check = find_named(&v, "BeforeTool", "abyss-check").expect("abyss-check present");
+        assert_eq!(check["timeout"], 5_000);
+
+        let post = find_named(&v, "AfterTool", "abyss-post").expect("abyss-post present");
+        assert_eq!(post["command"], "abyss hook post-edit");
+
+        assert!(already_installed(&path));
+    }
+
+    #[test]
+    fn install_at_is_idempotent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("settings.json");
+        for _ in 0..3 {
+            install_at(&path).unwrap();
+        }
+        let v: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        // Exactly one matcher block per event, one named inner hook each.
+        for ev in ["SessionStart", "BeforeTool", "AfterTool"] {
+            assert_eq!(v["hooks"][ev].as_array().unwrap().len(), 1);
+            assert_eq!(v["hooks"][ev][0]["hooks"].as_array().unwrap().len(), 1);
+        }
     }
 
     #[test]
     fn install_preserves_unrelated_top_level_keys() {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("settings.json");
-        std::fs::write(&path, r#"{"theme":"dark","model":"gemini-2.5-pro"}"#).unwrap();
-
+        std::fs::write(
+            &path,
+            r#"{"theme":"dark","model":"gemini-2.5-pro","other":{"keep":"me"}}"#,
+        )
+        .unwrap();
         install_at(&path).unwrap();
-
         let v: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(v["theme"], "dark");
         assert_eq!(v["model"], "gemini-2.5-pro");
-        assert_eq!(count_cmds(&v, "PreToolUse", PRE_CMD), 1);
+        assert_eq!(v["other"]["keep"], "me");
+        assert!(
+            v["hooks"]["SessionStart"][0]["hooks"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|h| h["name"] == "abyss-init")
+        );
     }
 
     #[test]
@@ -240,7 +354,24 @@ mod tests {
         std::fs::write(&path, "").unwrap();
         install_at(&path).unwrap();
         let v: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-        assert_eq!(count_cmds(&v, "PreToolUse", PRE_CMD), 1);
+        assert!(find_named(&v, "BeforeTool", "abyss-check").is_some());
+    }
+
+    #[test]
+    fn user_authored_hooks_are_preserved() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("settings.json");
+        std::fs::write(
+            &path,
+            r#"{"hooks":{"SessionStart":[{"matcher":"startup","hooks":[{"name":"my-init","type":"command","command":"echo hi","timeout":1000}]}]}}"#,
+        )
+        .unwrap();
+        install_at(&path).unwrap();
+        let v: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        // User's `my-init` survives, our `abyss-init` is appended to the same matcher block.
+        let inner = v["hooks"]["SessionStart"][0]["hooks"].as_array().unwrap();
+        assert!(inner.iter().any(|h| h["name"] == "my-init"));
+        assert!(inner.iter().any(|h| h["name"] == "abyss-init"));
     }
 
     #[test]

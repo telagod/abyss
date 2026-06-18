@@ -7,9 +7,12 @@
 //! Supported hosts (today):
 //!
 //! - [`claude`]    — Claude Code `~/.claude/settings.json`
-//! - [`codex`]     — Codex CLI    `~/.codex/config.toml`
-//! - [`gemini`]    — Gemini CLI   `~/.gemini/settings.json`
-//! - [`openclaw`]  — OpenClaw     `~/.openclaw/config.toml`
+//! - [`codex`]     — Codex CLI    `~/.codex/config.toml` (two-level array tables)
+//! - [`gemini`]    — Gemini CLI   `~/.gemini/settings.json` (`SessionStart`/`BeforeTool`/`AfterTool`)
+//! - [`openclaw`]  — OpenClaw     **downgraded to no-op** in v0.5.23. OpenClaw
+//!   uses a per-pack install layout (`packs/abyss/openclaw/`), not a
+//!   shared settings file. `abyss attach openclaw` now errors with a
+//!   migration message pointing at `npx code-abyss -t openclaw --with-abyss`.
 //!
 //! Pi and Hermes are not yet wired here — their hook-config shapes are
 //! not stable enough across versions to ship a best-effort installer
@@ -142,6 +145,19 @@ pub fn install_all(local: bool) -> Vec<AttachResult> {
 }
 
 fn install_one_for_all(host: &'static str, local: bool) -> AttachResult {
+    // OpenClaw is intentionally a no-op in v0.5.23+ (see attach/openclaw.rs).
+    // We surface that to `attach all` as a "skipped: …" line so re-running
+    // never tags the host as installed and never fails the batch.
+    if host == "openclaw" {
+        return AttachResult {
+            host,
+            outcome: Err(
+                "skipped: openclaw uses a per-pack install layout; use `npx code-abyss -t openclaw --with-abyss`"
+                    .to_string(),
+            ),
+        };
+    }
+
     // Resolve the settings path first so we can both report it and decide
     // whether to skip (home-mode only).
     let path_res: anyhow::Result<std::path::PathBuf> = match host {

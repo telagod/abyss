@@ -42,8 +42,18 @@ pub fn build_manifest() -> Value {
                     "claude":   "abyss attach claude",
                     "codex":    "abyss attach codex",
                     "gemini":   "abyss attach gemini",
+                    // v0.5.23: OpenClaw downgraded to a no-op with a clear
+                    // migration message. Sister code-abyss adapter uses a
+                    // per-pack install layout (packs/abyss/openclaw/),
+                    // which abyss attach cannot replicate from a single
+                    // binary. Keep the key in the manifest so consumers
+                    // know the command exists, but advertise the real
+                    // alternative via `note`.
                     "openclaw": "abyss attach openclaw",
                     "all":      "abyss attach all",
+                },
+                "attach_notes": {
+                    "openclaw": "no-op in v0.5.23+: OpenClaw uses a per-pack install layout. Use `npx code-abyss -t openclaw --with-abyss` instead.",
                 },
             },
             "daemon": {

@@ -1,24 +1,24 @@
 //! Integration test for the Codex CLI hook installer.
 //!
-//! Validates TOML shape, idempotency, preservation of unrelated keys.
+//! Validates the **two-level array-of-tables** layout that Codex 0.125+
+//! requires (`[[hooks.Event]]` + `[[hooks.Event.hooks]]`), TOML
+//! parseability, idempotency, and preservation of unrelated keys.
 
 use code_abyss::attach::codex;
 use toml::Value;
 
-fn count_cmds(root: &Value, event: &str, cmd: &str) -> usize {
-    root.get("hooks")
-        .and_then(|h| h.get(event))
-        .and_then(Value::as_array)
-        .map(|arr| {
-            arr.iter()
-                .filter(|e| e.get("command").and_then(Value::as_str) == Some(cmd))
-                .count()
-        })
-        .unwrap_or(0)
+fn count_event_blocks(raw: &str, event: &str) -> usize {
+    let needle = format!("[[hooks.{event}]]");
+    raw.matches(&needle).count()
+}
+
+fn count_inner_hooks(raw: &str, event: &str) -> usize {
+    let needle = format!("[[hooks.{event}.hooks]]");
+    raw.matches(&needle).count()
 }
 
 #[test]
-fn install_at_writes_valid_toml() {
+fn install_at_writes_valid_codex_125_toml() {
     let tmp = tempfile::tempdir().unwrap();
     let path = tmp.path().join(".codex/config.toml");
 
@@ -26,16 +26,76 @@ fn install_at_writes_valid_toml() {
     assert!(path.exists(), "config.toml should be created");
 
     let raw = std::fs::read_to_string(&path).unwrap();
+
+    // Two-level array tables for every event we manage. The old flat
+    // `[hooks.X]` shape is REJECTED by Codex 0.125+ with
+    // `invalid type: map, expected a sequence in hooks`.
+    for ev in ["SessionStart", "PreToolUse", "PostToolUse"] {
+        assert_eq!(
+            count_event_blocks(&raw, ev),
+            1,
+            "missing [[hooks.{ev}]] header in:\n{raw}"
+        );
+        assert_eq!(
+            count_inner_hooks(&raw, ev),
+            1,
+            "missing [[hooks.{ev}.hooks]] header in:\n{raw}"
+        );
+    }
+
     let v: Value = raw.parse().expect("output must be valid TOML");
 
-    assert_eq!(count_cmds(&v, "PreToolUse", "abyss hook pre-edit"), 1);
-    assert_eq!(count_cmds(&v, "PostToolUse", "abyss hook post-edit"), 1);
+    // Codex 0.125+: hooks.<event> must be a *sequence*, not a map.
+    let hooks = v.get("hooks").unwrap().as_table().unwrap();
+    for ev in ["SessionStart", "PreToolUse", "PostToolUse"] {
+        let arr = hooks
+            .get(ev)
+            .unwrap_or_else(|| panic!("hooks.{ev} missing"))
+            .as_array()
+            .expect("hooks.<event> must be array-of-tables");
+        assert_eq!(arr.len(), 1);
+        let inner = arr[0]
+            .get("hooks")
+            .expect("inner hooks present")
+            .as_array()
+            .expect("inner hooks must be array-of-tables too");
+        assert_eq!(inner.len(), 1);
+        // Inner entries carry type/command/timeout.
+        assert_eq!(
+            inner[0].get("type").and_then(Value::as_str),
+            Some("command")
+        );
+        assert!(inner[0].get("command").and_then(Value::as_str).is_some());
+        assert!(
+            inner[0]
+                .get("timeout")
+                .and_then(Value::as_integer)
+                .is_some()
+        );
+    }
 
-    // The hook entries must carry a matcher so the consumer can scope them.
-    let arr = v["hooks"]["PreToolUse"].as_array().unwrap();
+    // Matchers per ground truth (code-abyss/bin/adapters/codex.js).
     assert_eq!(
-        arr[0].get("matcher").and_then(Value::as_str),
-        Some("Edit|Write")
+        v["hooks"]["SessionStart"][0]["matcher"].as_str(),
+        Some("startup|resume")
+    );
+    assert_eq!(
+        v["hooks"]["PreToolUse"][0]["matcher"].as_str(),
+        Some("Bash|shell")
+    );
+    assert_eq!(
+        v["hooks"]["PostToolUse"][0]["matcher"].as_str(),
+        Some("Bash|shell")
+    );
+
+    // Pre/post commands wired correctly.
+    assert_eq!(
+        v["hooks"]["PreToolUse"][0]["hooks"][0]["command"].as_str(),
+        Some("abyss hook pre-edit")
+    );
+    assert_eq!(
+        v["hooks"]["PostToolUse"][0]["hooks"][0]["command"].as_str(),
+        Some("abyss hook post-edit")
     );
 
     assert!(codex::already_installed(&path));
@@ -50,9 +110,10 @@ fn install_at_is_idempotent() {
     codex::install_at(&path).unwrap();
 
     let raw = std::fs::read_to_string(&path).unwrap();
-    let v: Value = raw.parse().unwrap();
-    assert_eq!(count_cmds(&v, "PreToolUse", "abyss hook pre-edit"), 1);
-    assert_eq!(count_cmds(&v, "PostToolUse", "abyss hook post-edit"), 1);
+    for ev in ["SessionStart", "PreToolUse", "PostToolUse"] {
+        assert_eq!(count_event_blocks(&raw, ev), 1);
+        assert_eq!(count_inner_hooks(&raw, ev), 1);
+    }
 }
 
 #[test]
@@ -81,7 +142,8 @@ mode = "on-failure"
             .and_then(Value::as_str),
         Some("on-failure")
     );
-    assert_eq!(count_cmds(&v, "PreToolUse", "abyss hook pre-edit"), 1);
+    // Hooks still installed.
+    assert!(v["hooks"]["SessionStart"].is_array());
 }
 
 #[test]

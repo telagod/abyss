@@ -1,5 +1,55 @@
 # Changelog
 
+## v0.5.23 — 2026-06-18
+
+The "ground-truth attach shapes" fix. v0.5.21 shipped `abyss attach
+codex/gemini/openclaw` with best-effort schemas; a cross-check against
+the production-tested adapters in the sister `code-abyss` package
+revealed all three were wrong. v0.5.23 corrects each against the
+sister project's shape contract.
+
+### Fixed
+
+- **`abyss attach codex`** — now emits Codex 0.125+ **two-level
+  array-of-tables** (`[[hooks.Event]]` + `[[hooks.Event.hooks]]`).
+  The old flat `[hooks.X]` map was REJECTED by Codex with
+  `invalid type: map, expected a sequence in hooks`. New events:
+  `SessionStart` (matcher `startup|resume`, timeout 10s),
+  `PreToolUse` and `PostToolUse` (matcher `Bash|shell`, timeout 5s).
+- **`abyss attach gemini`** — now uses Gemini-native event names
+  (`SessionStart`, `BeforeTool`, `AfterTool`) with Gemini-native
+  matchers (`startup`, `write_file|replace|edit_file`). Hook entries
+  are `{name, type, command, timeout, description}` objects with
+  timeout in **milliseconds** (Codex uses seconds — don't mix).
+  v0.5.21 incorrectly copied Claude's `PreToolUse/PostToolUse +
+  Edit|Write` shape; those are Claude-only.
+- **`abyss attach openclaw`** — intentionally **downgraded to a clear
+  error**. OpenClaw uses a per-pack install layout
+  (`packs/abyss/openclaw/`), not a settings file. Shipping a
+  `~/.openclaw/config.toml` stanza that OpenClaw never reads is worse
+  than no-op — it silently fails. Users are pointed at
+  `npx code-abyss -t openclaw --with-abyss` for the working install.
+- **`abyss attach all`** — surfaces `openclaw` as a `skipped: …` row
+  rather than tagging it installed or failing the batch.
+
+### Changed
+
+- `src/manifest.rs` `providers.hooks.attach_notes.openclaw` annotates
+  the downgrade so machine-readable consumers know the command is a
+  no-op rather than silently misleading them.
+- Docs (`docs/book/getting-started/agent-hook.md`) call out that
+  `abyss attach` is the cargo-only fallback; production multi-host
+  installs with the latest schemas should use
+  `npx code-abyss -t <host> --with-abyss`.
+
+### Ground truth
+
+Shape decisions are anchored against the sister `code-abyss` package
+(local at `/home/telagod/project/code-abyss/bin/{lib/abyss-integration.js,
+adapters/codex.js, adapters/openclaw.js}`), which has been
+production-tested across Claude Code, Codex 0.125+, Gemini CLI, and
+OpenClaw.
+
 ## v0.5.22 — 2026-06-18
 
 The "interop with code-abyss" patch. abyss now emits a single

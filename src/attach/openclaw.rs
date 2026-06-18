@@ -1,36 +1,37 @@
-//! Install abyss hooks into OpenClaw's `config.toml`.
+//! `abyss attach openclaw` — intentional no-op with guidance.
 //!
-//! Layout (only touches the `[hooks]` subtree, leaves the rest alone):
+//! Reality check against the sister `code-abyss` package's adapter
+//! (`bin/adapters/openclaw.js`): **OpenClaw does not consume hook
+//! definitions from `~/.openclaw/config.toml`**. The production-tested
+//! installer puts abyss integration into a per-pack directory layout
+//! (`packs/abyss/openclaw/`), not into a shared settings file.
 //!
-//! ```toml
-//! [[hooks.PreToolUse]]
-//! matcher = "Edit|Write"
-//! command = "abyss hook pre-edit"
+//! Shipping a `config.toml` hook stanza from `abyss attach openclaw`
+//! would write a file that OpenClaw never reads — which is worse than
+//! useless, because the user thinks they've wired the hook when they
+//! haven't. So this installer is deliberately downgraded:
 //!
-//! [[hooks.PostToolUse]]
-//! matcher = "Edit|Write"
-//! command = "abyss hook post-edit"
+//! * `install()` returns an error with a clear migration message.
+//! * `already_installed()` returns `false` so `attach all` won't tag the
+//!   host as "already present".
+//! * `settings_path()` still resolves the path so the per-host summary
+//!   in `attach all` can mention the historical target.
+//!
+//! For real OpenClaw integration today, point users at:
+//!
+//! ```sh
+//! npx code-abyss -t openclaw --with-abyss
 //! ```
 //!
-//! Idempotent: a hook entry with the same `command` string is never
-//! duplicated. Best-effort schema — OpenClaw's hook config layout is
-//! still maturing. If your version disagrees, please file an issue at
-//! <https://github.com/telagod/abyss/issues>.
+//! or the in-tree pack at
+//! `/home/telagod/project/code-abyss/packs/abyss/openclaw/`.
 
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, anyhow};
-use toml::Value;
-use toml::value::Table;
 
-const MATCHER: &str = "Edit|Write";
-const PRE_CMD: &str = "abyss hook pre-edit";
-const POST_CMD: &str = "abyss hook post-edit";
-
-/// Resolve the target `config.toml` path.
-///
-/// * `--local` → `<cwd>/.openclaw/config.toml`
-/// * default   → `<home>/.openclaw/config.toml`
+/// Same path as before so `attach all`'s summary line keeps a stable
+/// shape. The path is never written to — the install path bails out.
 pub fn settings_path(local: bool) -> Result<PathBuf> {
     if local {
         let cwd = std::env::current_dir().context("cannot read current dir")?;
@@ -42,194 +43,92 @@ pub fn settings_path(local: bool) -> Result<PathBuf> {
     Ok(home.join(".openclaw").join("config.toml"))
 }
 
-pub fn already_installed(path: &Path) -> bool {
-    let Ok(raw) = std::fs::read_to_string(path) else {
-        return false;
-    };
-    let Ok(value) = raw.parse::<Value>() else {
-        return false;
-    };
-    has_command(&value, "PreToolUse", PRE_CMD) && has_command(&value, "PostToolUse", POST_CMD)
+/// Always `false`: there is nothing for us to install, so there is
+/// nothing for us to be "already" installed as. Returning `false`
+/// guarantees `attach all` doesn't claim success for this host.
+pub fn already_installed(_path: &Path) -> bool {
+    false
 }
 
-fn has_command(root: &Value, event: &str, cmd: &str) -> bool {
-    root.get("hooks")
-        .and_then(|h| h.get(event))
-        .and_then(Value::as_array)
-        .map(|arr| {
-            arr.iter()
-                .any(|e| e.get("command").and_then(Value::as_str) == Some(cmd))
-        })
-        .unwrap_or(false)
+/// Always errors with the migration message. Both `attach openclaw` and
+/// `attach all` route here.
+pub fn install(_local: bool) -> Result<()> {
+    bail_with_message()
 }
 
-pub fn install(local: bool) -> Result<()> {
-    let path = settings_path(local)?;
-    install_at(&path)
+/// Same shape as the other adapters' `install_at` so integration tests
+/// and `attach all` can call it uniformly.
+pub fn install_at(_path: &Path) -> Result<()> {
+    bail_with_message()
 }
 
-/// Test-friendly variant: install into an explicit `config.toml` path.
-pub fn install_at(path: &Path) -> Result<()> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .with_context(|| format!("creating {}", parent.display()))?;
-    }
-
-    let mut root: Value = if path.exists() {
-        let raw =
-            std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
-        if raw.trim().is_empty() {
-            Value::Table(Table::new())
-        } else {
-            raw.parse::<Value>()
-                .with_context(|| format!("parsing {} as TOML", path.display()))?
-        }
-    } else {
-        Value::Table(Table::new())
-    };
-
-    if !root.is_table() {
-        anyhow::bail!(
-            "{} is not a TOML table — refusing to overwrite",
-            path.display()
-        );
-    }
-
-    let pre_added = upsert_hook(&mut root, "PreToolUse", MATCHER, PRE_CMD)?;
-    let post_added = upsert_hook(&mut root, "PostToolUse", MATCHER, POST_CMD)?;
-
-    let serialized = toml::to_string_pretty(&root)?;
-    std::fs::write(path, serialized).with_context(|| format!("writing {}", path.display()))?;
-
-    println!("✓ abyss hook installed at {}", path.display());
-    println!(
-        "  [hooks.PreToolUse]  ({}): {PRE_CMD}",
-        if pre_added {
-            "added"
-        } else {
-            "already present"
-        }
-    );
-    println!(
-        "  [hooks.PostToolUse] ({}): {POST_CMD}",
-        if post_added {
-            "added"
-        } else {
-            "already present"
-        }
-    );
-    println!("  note: OpenClaw hook schema is evolving — if this layout doesn't");
-    println!("        match your version, please file an issue.");
-    Ok(())
-}
-
-fn upsert_hook(root: &mut Value, event: &str, matcher: &str, command: &str) -> Result<bool> {
-    let root_table = root
-        .as_table_mut()
-        .ok_or_else(|| anyhow!("root is not a TOML table"))?;
-
-    let hooks_entry = root_table
-        .entry("hooks".to_string())
-        .or_insert_with(|| Value::Table(Table::new()));
-    if !hooks_entry.is_table() {
-        anyhow::bail!("`hooks` field exists but is not a TOML table");
-    }
-    let hooks_table = hooks_entry.as_table_mut().expect("checked");
-
-    let arr_entry = hooks_table
-        .entry(event.to_string())
-        .or_insert_with(|| Value::Array(Vec::new()));
-    if !arr_entry.is_array() {
-        anyhow::bail!("`hooks.{event}` exists but is not a TOML array");
-    }
-    let arr = arr_entry.as_array_mut().expect("checked");
-
-    let already = arr.iter().any(|entry| {
-        entry.get("command").and_then(Value::as_str) == Some(command)
-            && entry.get("matcher").and_then(Value::as_str).unwrap_or("") == matcher
-    });
-    if already {
-        return Ok(false);
-    }
-
-    let mut entry = Table::new();
-    entry.insert("matcher".to_string(), Value::String(matcher.to_string()));
-    entry.insert("command".to_string(), Value::String(command.to_string()));
-    arr.push(Value::Table(entry));
-    Ok(true)
+fn bail_with_message() -> Result<()> {
+    Err(anyhow!(
+        "abyss attach openclaw: OpenClaw uses a per-pack install layout, not a settings file. \
+         The sister code-abyss adapter installs abyss into packs/abyss/openclaw/, which `abyss attach` \
+         cannot replicate from a single binary. \
+         Use `npx code-abyss -t openclaw --with-abyss` instead, or copy /home/telagod/project/code-abyss/packs/abyss/openclaw/ manually. \
+         This downgrade is intentional — see CHANGELOG v0.5.23."
+    ))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn count_cmds(root: &Value, event: &str, cmd: &str) -> usize {
-        root.get("hooks")
-            .and_then(|h| h.get(event))
-            .and_then(Value::as_array)
-            .map(|arr| {
-                arr.iter()
-                    .filter(|e| e.get("command").and_then(Value::as_str) == Some(cmd))
-                    .count()
-            })
-            .unwrap_or(0)
-    }
-
     #[test]
-    fn install_at_writes_settings_and_is_idempotent() {
+    fn install_at_returns_clear_error() {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join(".openclaw/config.toml");
-        install_at(&path).unwrap();
-        assert!(path.exists());
-        let raw = std::fs::read_to_string(&path).unwrap();
-        let v: Value = raw.parse().unwrap();
-        assert_eq!(count_cmds(&v, "PreToolUse", PRE_CMD), 1);
-        assert_eq!(count_cmds(&v, "PostToolUse", POST_CMD), 1);
-
-        install_at(&path).unwrap();
-        let raw = std::fs::read_to_string(&path).unwrap();
-        let v: Value = raw.parse().unwrap();
-        assert_eq!(count_cmds(&v, "PreToolUse", PRE_CMD), 1);
-        assert_eq!(count_cmds(&v, "PostToolUse", POST_CMD), 1);
-    }
-
-    #[test]
-    fn install_preserves_unrelated_keys() {
-        let tmp = tempfile::tempdir().unwrap();
-        let path = tmp.path().join("config.toml");
-        std::fs::write(&path, "model = \"opus-4\"\n[persona]\nname = \"邪修\"\n").unwrap();
-
-        install_at(&path).unwrap();
-
-        let raw = std::fs::read_to_string(&path).unwrap();
-        let v: Value = raw.parse().unwrap();
-        assert_eq!(v.get("model").and_then(Value::as_str), Some("opus-4"));
-        assert_eq!(
-            v.get("persona")
-                .and_then(|p| p.get("name"))
-                .and_then(Value::as_str),
-            Some("邪修")
+        let err = install_at(&path).unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("per-pack install layout"),
+            "error message must explain why we refuse: {msg}"
         );
-        assert_eq!(count_cmds(&v, "PreToolUse", PRE_CMD), 1);
+        assert!(
+            msg.contains("npx code-abyss"),
+            "error message must point at the working alternative: {msg}"
+        );
+        // And we must NOT have written the file.
+        assert!(!path.exists(), "openclaw downgrade must not create files");
     }
 
     #[test]
-    fn install_at_accepts_empty_file() {
-        let tmp = tempfile::tempdir().unwrap();
-        let path = tmp.path().join("config.toml");
-        std::fs::write(&path, "").unwrap();
-        install_at(&path).unwrap();
-        let raw = std::fs::read_to_string(&path).unwrap();
-        let v: Value = raw.parse().unwrap();
-        assert_eq!(count_cmds(&v, "PreToolUse", PRE_CMD), 1);
+    fn install_returns_error() {
+        let err = install(true).unwrap_err();
+        assert!(format!("{err}").contains("OpenClaw uses a per-pack install layout"));
     }
 
     #[test]
-    fn already_installed_detects_existing() {
+    fn already_installed_is_always_false() {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("config.toml");
         assert!(!already_installed(&path));
-        install_at(&path).unwrap();
-        assert!(already_installed(&path));
+        // Even if the file exists with hooks-shaped content — still false.
+        std::fs::write(
+            &path,
+            "[hooks.PreToolUse]\ncommand = \"abyss hook pre-edit\"\n",
+        )
+        .unwrap();
+        assert!(!already_installed(&path));
+    }
+
+    #[test]
+    fn settings_path_local_is_cwd_relative() {
+        let p = settings_path(true).unwrap();
+        assert!(p.is_absolute());
+        let tail: std::path::PathBuf = p
+            .iter()
+            .rev()
+            .take(2)
+            .collect::<Vec<_>>()
+            .iter()
+            .rev()
+            .collect();
+        assert_eq!(
+            tail,
+            std::path::PathBuf::from(".openclaw").join("config.toml")
+        );
     }
 }
