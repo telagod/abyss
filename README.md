@@ -99,8 +99,12 @@ abyss daemon logs [--tail N]  Tail .code-abyss/daemon.log via socket or direct f
 abyss stats                   Index statistics
 abyss mcp                     MCP server (stdio) — 7 tools for any MCP client
 abyss mcp --via-daemon        V2: stdio MCP that tunnels through `abyss daemon` over its socket
-abyss attach <host>           Idempotently install hook config for an agent host.
-                              host ∈ { claude | codex | gemini | openclaw | all }
+abyss attach <host>           Idempotently install hook config for an agent host (production
+                              entrypoint for claude/codex/gemini).
+                              host ∈ { claude | codex | gemini | openclaw* | all }
+                              * openclaw is an intentional no-op (architectural delegation);
+                                use `npx code-abyss -t openclaw --with-hooks` instead.
+                              For pi/hermes, see the companion `code-abyss` npm package.
                               --local writes <cwd>/.<host>/... instead of $HOME
 abyss skill-manifest          Emit machine-readable JSON for skill-discovery consumers (code-abyss)
 ```
@@ -165,7 +169,14 @@ abyss indexed gin in **~150ms**; scip-go took ~40s. Full method, per-tier tables
 
 **MCP**: `abyss mcp` exposes `search_context`, `get_symbols`, `find_callers`, `impact_analysis`, `code_map`, `evolution`, `index_project` over stdio. With a running daemon, `abyss mcp --via-daemon` tunnels the same surface through `.code-abyss/daemon.sock` so multiple MCP clients share one in-process index and one set of read-only SQLite handles.
 
-**Pre-edit hooks**: `abyss hook pre-edit` reads the tool-call JSON any agent platform pipes to its hooks (Claude Code, Codex CLI, Gemini CLI, Pi, Hermes, OpenClaw payload shapes auto-detected), refreshes the index incrementally, and warns about production callers, ambiguous references, and hotspots — before the edit happens. `abyss attach <host>` installs the per-host config (`claude | codex | gemini | openclaw | all`). For Pi and Hermes — whose hook shapes are still evolving — use the companion [code-abyss](https://github.com/telagod/code-abyss) package, which ships shape adapters.
+**Pre-edit hooks**: `abyss hook pre-edit` reads the tool-call JSON any agent platform pipes to its hooks (Claude Code, Codex CLI, Gemini CLI, Pi, Hermes, OpenClaw payload shapes auto-detected), refreshes the index incrementally, and warns about production callers, ambiguous references, and hotspots — before the edit happens.
+
+Host integration is split by hook-surface shape (stable contract as of v0.5.24):
+
+- **abyss attach (production entrypoint)** — `claude`, `codex`, `gemini`. Shared-settings-file hosts, idempotent installer, single static binary owns the install.
+- **companion [`code-abyss`](https://github.com/telagod/code-abyss) (architectural delegation)** — `openclaw` (per-pack layout, not a settings file), `pi`, `hermes` (hook shapes still evolving). The npm package's shape adapters iterate independently of abyss's release cadence.
+
+Run `abyss attach all` to install all three abyss-owned hosts in one go (`openclaw` is surfaced as a `skipped: …` row pointing at the code-abyss flow).
 
 **Skill manifest**: `abyss skill-manifest` emits a machine-readable JSON document (CLI commands, MCP tools, hook entry points, attach hosts, daemon verbs) for skill-discovery consumers like `code-abyss`. Pass `--compact` for single-line output. Pin against `schema_version` rather than the abyss version.
 

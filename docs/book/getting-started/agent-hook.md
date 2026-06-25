@@ -20,32 +20,28 @@ to its hooks, refreshes the index incrementally, and writes a structured
 warning to stderr — **before** the edit happens. Payload shapes are
 auto-detected per platform.
 
-### Production install (recommended)
+Host integration is split by hook-surface shape — a stable architectural
+contract as of v0.5.24:
 
-For a full multi-host install with the **latest per-host schemas**
-(Codex 0.125+ array-of-tables, Gemini `SessionStart`/`BeforeTool`,
-OpenClaw per-pack layout), use the companion `code-abyss` npm package:
+| Host           | Owner                | Reason                                                      |
+|----------------|----------------------|-------------------------------------------------------------|
+| Claude Code    | `abyss attach`       | Shared `~/.claude/settings.json`, idempotent JSON edit      |
+| Codex CLI      | `abyss attach`       | Shared `~/.codex/config.toml` (Codex 0.125+ array tables)   |
+| Gemini CLI     | `abyss attach`       | Shared `~/.gemini/settings.json`                            |
+| OpenClaw       | `code-abyss` (npm)   | Per-pack layout `packs/abyss/openclaw/`, not a settings file |
+| Pi             | `code-abyss` (npm)   | Hook-config shape still evolving across versions            |
+| Hermes         | `code-abyss` (npm)   | Hook-config shape still evolving across versions            |
 
-```sh
-npx code-abyss -t claude   --with-abyss
-npx code-abyss -t codex    --with-abyss
-npx code-abyss -t gemini   --with-abyss
-npx code-abyss -t openclaw --with-abyss
-```
+### Production install: `abyss attach` (claude / codex / gemini)
 
-`code-abyss` is the single source of truth for shape adapters and is
-updated alongside upstream agent releases.
-
-### Cargo-only fallback: `abyss attach`
-
-If you only have the cargo-installed binary on hand, `abyss attach` ships
-adapters for three of the four hosts:
+For the three hosts whose hook config lives in a single shared settings
+file, `abyss attach` is the production main entrypoint:
 
 ```sh
 abyss attach claude     # ~/.claude/settings.json
 abyss attach codex      # ~/.codex/config.toml (Codex 0.125+ array tables)
 abyss attach gemini     # ~/.gemini/settings.json (SessionStart/BeforeTool/AfterTool)
-abyss attach all        # all of the above; openclaw skipped (see note)
+abyss attach all        # all three; openclaw surfaced as a skipped row
 abyss attach claude --local   # write into <cwd>/.<host>/ instead of $HOME
 ```
 
@@ -61,20 +57,59 @@ What gets written:
   `BeforeTool` (matcher `write_file|replace|edit_file`), `AfterTool`
   (same matcher). Each hook entry carries `{name, type, command,
   timeout, description}` with timeout in **milliseconds**.
-* **OpenClaw** — **not supported by `abyss attach`** in v0.5.23+.
-  OpenClaw uses a per-pack install layout (`packs/abyss/openclaw/`),
-  not a shared settings file. Use `npx code-abyss -t openclaw
-  --with-abyss` instead. Running `abyss attach openclaw` directly will
-  exit with a clear migration message; `abyss attach all` skips the
-  host with the same note.
 
-All installers (claude, codex, gemini) are idempotent: re-running
-upgrades in place, never duplicates entries, and preserves any unrelated
-keys you (or another tool) put in the settings file.
+All three installers are idempotent: re-running upgrades in place,
+never duplicates entries, and preserves any unrelated keys you (or
+another tool) put in the settings file.
 
-For Pi and Hermes — whose hook shapes are still evolving — use the
-companion [`code-abyss`](https://github.com/telagod/code-abyss)
-package, which carries shape adapters per host.
+### Architectural delegation: `code-abyss` (openclaw / pi / hermes)
+
+OpenClaw, Pi, and Hermes have hook surfaces the abyss binary cannot
+reliably manage from a single static install:
+
+* **OpenClaw** uses a **per-pack install layout** (`packs/abyss/openclaw/`)
+  rather than a shared settings file. A single binary cannot reliably
+  create that per-pack directory tree across user workspaces. Running
+  `abyss attach openclaw` directly exits with a migration message;
+  `abyss attach all` surfaces it as a `skipped: …` row.
+* **Pi & Hermes** hook-config shapes are still evolving across versions.
+  Shipping a best-effort installer from abyss would risk breaking user
+  configs on every host version bump; the npm package's adapters can
+  iterate independently of abyss's release cadence.
+
+These three hosts are owned by the companion
+[`code-abyss`](https://github.com/telagod/code-abyss) npm package:
+
+```sh
+npx code-abyss -t openclaw --with-hooks
+npx code-abyss -t pi       --with-hooks
+npx code-abyss -t hermes   --with-hooks
+```
+
+> code-abyss v4.8.x still accepts the legacy `--with-abyss` flag; that
+> flag enters deprecation in v4.9.0 and is removed in v5.0. For
+> openclaw/pi/hermes, switch to `--with-hooks` — the forward-compatible
+> name that survives the v5.0 cut.
+
+### Migrating from `code-abyss --with-abyss` (claude / codex / gemini)
+
+If you previously ran `npx code-abyss -t claude --with-abyss` (or
+`codex` / `gemini`), that flag is being **deprecated in code-abyss
+v4.9.0** and **removed in v5.0**. The shared-settings-file hosts move
+to `abyss attach` as the single source of truth:
+
+```sh
+# old (code-abyss v4.8.x, deprecated)
+npx code-abyss -t claude --with-abyss
+
+# new (v4.9+; the installer is idempotent and replaces any prior shape)
+abyss attach claude
+```
+
+The installer is idempotent — re-running it overwrites the previous
+shape in place, so the migration is just "run the new command once,
+done." For openclaw/pi/hermes the recommendation is unchanged: keep
+using `code-abyss`, just rename the flag to `--with-hooks`.
 
 ## The pre-edit card
 

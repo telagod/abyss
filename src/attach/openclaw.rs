@@ -1,15 +1,19 @@
-//! `abyss attach openclaw` — intentional no-op with guidance.
+//! `abyss attach openclaw` — intentional architectural delegation.
 //!
-//! Reality check against the sister `code-abyss` package's adapter
-//! (`bin/adapters/openclaw.js`): **OpenClaw does not consume hook
-//! definitions from `~/.openclaw/config.toml`**. The production-tested
-//! installer puts abyss integration into a per-pack directory layout
-//! (`packs/abyss/openclaw/`), not into a shared settings file.
+//! OpenClaw consumes hook integration via a **per-pack install layout**
+//! (`packs/abyss/openclaw/`), not from a shared `~/.openclaw/config.toml`.
+//! A single static abyss binary cannot reliably create that per-pack
+//! directory tree across user workspaces, so the responsibility lives
+//! with the companion `code-abyss` npm package — by design, not by gap.
+//!
+//! This is not "downgraded" or "not yet supported"; it is **architectural
+//! delegation** stable as of v0.5.24. See `attach/mod.rs` for the full
+//! 6-host responsibility split (claude/codex/gemini → abyss attach;
+//! openclaw/pi/hermes → code-abyss).
 //!
 //! Shipping a `config.toml` hook stanza from `abyss attach openclaw`
-//! would write a file that OpenClaw never reads — which is worse than
-//! useless, because the user thinks they've wired the hook when they
-//! haven't. So this installer is deliberately downgraded:
+//! would write a file OpenClaw never reads — worse than useless, because
+//! the user thinks they've wired the hook when they haven't. So:
 //!
 //! * `install()` returns an error with a clear migration message.
 //! * `already_installed()` returns `false` so `attach all` won't tag the
@@ -17,14 +21,14 @@
 //! * `settings_path()` still resolves the path so the per-host summary
 //!   in `attach all` can mention the historical target.
 //!
-//! For real OpenClaw integration today, point users at:
+//! For OpenClaw integration, point users at the companion package:
 //!
 //! ```sh
-//! npx code-abyss -t openclaw --with-abyss
+//! npx code-abyss -t openclaw --with-hooks
 //! ```
 //!
-//! or the in-tree pack at
-//! `/home/telagod/project/code-abyss/packs/abyss/openclaw/`.
+//! (Note: `--with-abyss` works on code-abyss v4.8.x but enters deprecation
+//! in v4.9.0; `--with-hooks` is the forward-compatible flag for openclaw.)
 
 use std::path::{Path, PathBuf};
 
@@ -66,9 +70,9 @@ fn bail_with_message() -> Result<()> {
     Err(anyhow!(
         "abyss attach openclaw: OpenClaw uses a per-pack install layout, not a settings file. \
          The sister code-abyss adapter installs abyss into packs/abyss/openclaw/, which `abyss attach` \
-         cannot replicate from a single binary. \
-         Use `npx code-abyss -t openclaw --with-abyss` instead, or copy /home/telagod/project/code-abyss/packs/abyss/openclaw/ manually. \
-         This downgrade is intentional — see CHANGELOG v0.5.23."
+         cannot replicate from a single binary. This is architectural delegation, not a gap. \
+         Use `npx code-abyss -t openclaw --with-hooks` instead (or `--with-abyss` on code-abyss v4.8.x). \
+         See CHANGELOG v0.5.24 for the 6-host responsibility split."
     ))
 }
 
