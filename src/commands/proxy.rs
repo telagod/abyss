@@ -68,11 +68,11 @@ pub fn cmd_proxy(
             proxy::filter::apply_filter(def, raw_output)
         } else {
             let line_count = raw_output.lines().count();
-            if line_count > 100 {
-                filter_reason = "passthrough (line-capped at 100)";
+            if line_count > 80 {
+                filter_reason = "passthrough (line-capped)";
                 let lines: Vec<&str> = raw_output.lines().collect();
-                let head = 60;
-                let tail = 30;
+                let head = 40;
+                let tail = 20;
                 let mut out: String = lines[..head].join("\n");
                 out.push_str(&format!(
                     "\n... ({} lines skipped)\n",

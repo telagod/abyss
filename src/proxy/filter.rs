@@ -358,6 +358,84 @@ pub fn builtin_filters() -> std::collections::HashMap<String, FilterDef> {
         },
     );
 
+    m.insert(
+        "cargo-clippy".into(),
+        FilterDef {
+            match_command: r"^cargo clippy\b".into(),
+            strip_ansi: true,
+            keep_lines_matching: vec![r"^(error|warning)\b".into(), r"^\s*-->".into()],
+            max_lines: Some(60),
+            on_empty: Some("clippy: clean".into()),
+            ..default_def()
+        },
+    );
+
+    m.insert(
+        "cargo-fmt".into(),
+        FilterDef {
+            match_command: r"^cargo fmt\b".into(),
+            strip_ansi: true,
+            strip_lines_matching: vec![r"^\s*$".into()],
+            max_lines: Some(30),
+            on_empty: Some("fmt: clean".into()),
+            ..default_def()
+        },
+    );
+
+    m.insert(
+        "apt-install".into(),
+        FilterDef {
+            match_command: r"^(sudo )?(apt|apt-get|dnf|yum|brew) install\b".into(),
+            strip_ansi: true,
+            strip_lines_matching: vec![
+                r"^(Get|Hit|Ign):".into(),
+                r"^(Reading|Building|Unpacking|Setting up|Processing|Selecting)".into(),
+                r"^\s*$".into(),
+            ],
+            tail_lines: Some(10),
+            max_lines: Some(20),
+            on_empty: Some("install: ok".into()),
+            ..default_def()
+        },
+    );
+
+    m.insert(
+        "curl".into(),
+        FilterDef {
+            match_command: r"^curl\b".into(),
+            strip_ansi: false,
+            truncate_lines_at: Some(200),
+            max_lines: Some(80),
+            ..default_def()
+        },
+    );
+
+    m.insert(
+        "tree".into(),
+        FilterDef {
+            match_command: r"^tree\b".into(),
+            strip_ansi: true,
+            max_lines: Some(60),
+            ..default_def()
+        },
+    );
+
+    m.insert(
+        "rustc-output".into(),
+        FilterDef {
+            match_command: r"^(cargo build|rustc)\b".into(),
+            strip_ansi: true,
+            strip_lines_matching: vec![
+                r"^\s*$".into(),
+                r"^\s*= note:".into(),
+                r"^\s*= help: for further".into(),
+            ],
+            max_lines: Some(60),
+            on_empty: Some("build: ok".into()),
+            ..default_def()
+        },
+    );
+
     m
 }
 

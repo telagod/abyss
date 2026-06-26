@@ -165,9 +165,9 @@ impl ProxyHandler for FindHandler {
 
 pub struct GrepHandler;
 
-const GREP_MAX_RESULTS: usize = 100;
-const GREP_MAX_PER_FILE: usize = 10;
-const GREP_MAX_FILES_DETAIL: usize = 15;
+const GREP_MAX_RESULTS: usize = 50;
+const GREP_MAX_PER_FILE: usize = 5;
+const GREP_MAX_FILES_DETAIL: usize = 10;
 
 impl ProxyHandler for GrepHandler {
     fn name(&self) -> &'static str {
@@ -276,7 +276,7 @@ impl ProxyHandler for CatHandler {
         _ctx: Option<&ProxyContext>,
     ) -> String {
         let lines: Vec<&str> = stdout.lines().collect();
-        if lines.len() <= 100 {
+        if lines.len() <= 50 {
             return stdout.to_string();
         }
 
