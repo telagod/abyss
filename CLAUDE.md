@@ -94,7 +94,7 @@ SQLite via rusqlite (bundled). Schema in `schema.rs`: files → chunks → symbo
 
 ### MCP server (`src/mcp/server.rs`)
 
-rmcp-based stdio MCP server exposing 7 tools: `search_context`, `get_symbols`, `find_callers`, `impact_analysis`, `code_map`, `evolution`, `index_project`. Wraps Repository in `Arc<Mutex<>>`.
+rmcp-based stdio MCP server exposing 9 tools: `search_context`, `get_symbols`, `find_callers`, `impact_analysis`, `code_map`, `evolution`, `index_project`, `arch_map`, `proxy_gain`. Wraps Repository in `Arc<Mutex<>>`.
 
 ### Embedding (`src/embedding/`)
 

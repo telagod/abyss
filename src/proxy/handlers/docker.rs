@@ -98,3 +98,64 @@ impl ProxyHandler for DockerPsHandler {
         out
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn compose_strips_pull_progress() {
+        let h = DockerComposeHandler;
+        let stderr = "\
+Pulling web (node:18)...
+Downloading [==>        ] 12.3MB/45.6MB
+Extracting  [====>      ]
+Digest: sha256:abc123
+Status: Downloaded newer image
+Pull complete
+web-1  | Started
+db-1   | Running";
+        let out = h.filter("", stderr, 0, &[], None);
+        assert!(!out.contains("Pulling"), "should strip pull: {out}");
+        assert!(!out.contains("Downloading"), "should strip download: {out}");
+        assert!(!out.contains("Digest:"), "should strip digest: {out}");
+        assert!(out.contains("containers (2):"), "container summary: {out}");
+        assert!(out.contains("Started"), "should keep status: {out}");
+    }
+
+    #[test]
+    fn compose_empty_output() {
+        let h = DockerComposeHandler;
+        let out = h.filter("", "", 0, &[], None);
+        assert!(out.contains("docker compose ok"), "empty = ok: {out}");
+    }
+
+    #[test]
+    fn docker_ps_small_passthrough() {
+        let h = DockerPsHandler;
+        let stdout = "CONTAINER ID   IMAGE   STATUS\nabc123   nginx   Up 5m\n";
+        let out = h.filter(stdout, "", 0, &[], None);
+        assert_eq!(out, stdout);
+    }
+
+    #[test]
+    fn docker_ps_truncates_wide_lines() {
+        let h = DockerPsHandler;
+        let header = "CONTAINER ID   IMAGE   COMMAND   CREATED   STATUS   PORTS   NAMES\n";
+        let mut stdout = header.to_string();
+        for i in 0..25 {
+            let wide = format!("abc{i:03}   nginx   \"nginx -g 'daemon off;'\"   2 hours ago   Up 2 hours   0.0.0.0:{}->{}/tcp, :::{}->{}   web-server-{i}\n",
+                8080 + i, 80 + i, 8080 + i, 80 + i);
+            stdout.push_str(&wide);
+        }
+        let out = h.filter(&stdout, "", 0, &[], None);
+        assert!(out.contains("..."), "should truncate wide: {out}");
+    }
+
+    #[test]
+    fn compose_matches() {
+        let h = DockerComposeHandler;
+        assert!(h.matches("docker", &[String::from("compose")]));
+        assert!(!h.matches("docker", &[String::from("run")]));
+    }
+}

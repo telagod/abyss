@@ -131,3 +131,75 @@ fn generic_test_filter(lines: &[&str], exit_code: i32) -> String {
     }
     out
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn jest_summary_extracted() {
+        let h = NpmTestHandler;
+        let stdout = "\
+PASS src/app.test.tsx
+PASS src/utils.test.ts
+Test Suites: 2 passed, 2 total
+Tests:       15 passed, 15 total
+Snapshots:   0 total
+Time:        3.42s";
+        let out = h.filter(stdout, "", 0, &[String::from("test")], None);
+        assert!(out.contains("Test Suites:"), "jest summary: {out}");
+        assert!(out.contains("15 passed"), "test count: {out}");
+    }
+
+    #[test]
+    fn jest_failure_shows_details() {
+        let h = NpmTestHandler;
+        let stdout = "\
+FAIL src/app.test.tsx
+  ● renders correctly
+    Expected: 42
+    Received: 0
+
+Tests:       1 failed, 2 passed, 3 total
+Test Suites: 1 failed, 1 passed, 2 total
+Time:        1.23s";
+        let out = h.filter(stdout, "", 1, &[String::from("test")], None);
+        assert!(out.contains("1 failed"), "failure count: {out}");
+        assert!(out.contains("FAIL "), "shows FAIL marker: {out}");
+    }
+
+    #[test]
+    fn vitest_summary_extracted() {
+        let h = NpmTestHandler;
+        let stdout = "\
+ ✓ src/utils.test.ts (3 tests) 12ms
+ ✓ src/app.test.tsx (5 tests) 45ms
+
+Test Files  2 passed (2)
+Tests  8 passed (8)
+Duration  1.23s";
+        let out = h.filter(stdout, "", 0, &[String::from("test")], None);
+        assert!(out.contains("Test Files"), "vitest summary: {out}");
+        assert!(out.contains("8 passed"), "test count: {out}");
+    }
+
+    #[test]
+    fn generic_short_passthrough() {
+        let h = NpmTestHandler;
+        let stdout = "line1\nline2\nline3";
+        let out = h.filter(stdout, "", 0, &[String::from("test")], None);
+        assert!(out.contains("line1"));
+        assert!(out.contains("line3"));
+    }
+
+    #[test]
+    fn matches_npm_pnpm_yarn() {
+        let h = NpmTestHandler;
+        let test_arg = vec![String::from("test")];
+        assert!(h.matches("npm", &test_arg));
+        assert!(h.matches("pnpm", &test_arg));
+        assert!(h.matches("yarn", &test_arg));
+        assert!(h.matches("npx", &test_arg));
+        assert!(!h.matches("npm", &[String::from("install")]));
+    }
+}

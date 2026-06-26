@@ -113,3 +113,71 @@ fn strip_log_timestamp(line: &str) -> String {
     }
     trimmed.to_string()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn kubectl_get_small_passthrough() {
+        let h = KubectlGetHandler;
+        let stdout = "NAME   READY   STATUS\npod-1  1/1     Running\npod-2  1/1     Running\n";
+        let out = h.filter(stdout, "", 0, &[], None);
+        assert_eq!(out, stdout);
+    }
+
+    #[test]
+    fn kubectl_get_caps_rows() {
+        let h = KubectlGetHandler;
+        let mut stdout = String::from("NAME   READY   STATUS   AGE\n");
+        for i in 0..50 {
+            stdout.push_str(&format!("pod-{i:<4}  1/1     Running  {i}m\n"));
+        }
+        let out = h.filter(&stdout, "", 0, &[], None);
+        assert!(out.contains("NAME"), "keeps header: {out}");
+        assert!(out.contains("... 25 more rows"), "caps rows: {out}");
+    }
+
+    #[test]
+    fn kubectl_logs_dedup() {
+        let h = KubectlLogsHandler;
+        let mut stdout = String::new();
+        for i in 0..80 {
+            let ts = format!("2024-01-15T10:30:{:02}.000Z", i % 10);
+            stdout.push_str(&format!("{ts} INFO request handled\n"));
+        }
+        let out = h.filter(&stdout, "", 0, &[], None);
+        assert!(out.contains("80 log lines"), "total count: {out}");
+        assert!(out.contains("unique"), "unique count: {out}");
+        assert!(out.contains("×"), "dedup marker: {out}");
+    }
+
+    #[test]
+    fn kubectl_logs_short_passthrough() {
+        let h = KubectlLogsHandler;
+        let stdout = "line1\nline2\nline3\n";
+        let out = h.filter(stdout, "", 0, &[], None);
+        assert_eq!(out, stdout);
+    }
+
+    #[test]
+    fn strip_iso_timestamp() {
+        let stripped = strip_log_timestamp("2024-01-15T10:30:45.123Z INFO hello");
+        assert_eq!(stripped, "INFO hello");
+    }
+
+    #[test]
+    fn strip_syslog_timestamp() {
+        let stripped = strip_log_timestamp("Jan 15 10:30:45 myhost INFO hello");
+        assert_eq!(stripped, "myhost INFO hello");
+    }
+
+    #[test]
+    fn matches_kubectl_get_logs() {
+        let h = KubectlGetHandler;
+        assert!(h.matches("kubectl", &[String::from("get")]));
+        assert!(!h.matches("kubectl", &[String::from("apply")]));
+        let hl = KubectlLogsHandler;
+        assert!(hl.matches("kubectl", &[String::from("logs")]));
+    }
+}

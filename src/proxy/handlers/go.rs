@@ -128,3 +128,78 @@ impl ProxyHandler for GoBuildHandler {
         out
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn go_test_summary() {
+        let h = GoTestHandler;
+        let stdout = "\
+ok  \tgithub.com/user/repo/pkg1\t0.042s
+ok  \tgithub.com/user/repo/pkg2\t0.108s
+ok  \tgithub.com/user/repo/pkg3\t1.203s";
+        let out = h.filter(stdout, "", 0, &[String::from("test"), String::from("./...")], None);
+        assert!(out.contains("3 passed"), "pass count: {out}");
+        assert!(out.contains("0 failed"), "fail count: {out}");
+        assert!(out.contains("✓"), "checkmark: {out}");
+    }
+
+    #[test]
+    fn go_test_failure_details() {
+        let h = GoTestHandler;
+        let stdout = "\
+--- FAIL: TestFoo (0.00s)
+    foo_test.go:15: expected 42, got 0
+    foo_test.go:16: assertion failed
+--- PASS: TestBar (0.01s)
+FAIL\tgithub.com/user/repo/pkg1\t0.042s
+ok  \tgithub.com/user/repo/pkg2\t0.108s";
+        let out = h.filter(stdout, "", 1, &[String::from("test")], None);
+        assert!(out.contains("FAILED"), "status: {out}");
+        assert!(out.contains("1 failed"), "fail count: {out}");
+        assert!(out.contains("failures:"), "failure section: {out}");
+        assert!(out.contains("expected 42"), "failure details: {out}");
+    }
+
+    #[test]
+    fn go_build_ok_empty() {
+        let h = GoBuildHandler;
+        let out = h.filter("", "", 0, &[], None);
+        assert_eq!(out, "go build: ok\n");
+    }
+
+    #[test]
+    fn go_build_errors() {
+        let h = GoBuildHandler;
+        let stderr = "\
+./main.go:15:2: undefined: Foo
+./main.go:20:5: cannot use x (type int) as type string";
+        let out = h.filter("", stderr, 1, &[], None);
+        assert!(out.contains("FAILED"), "status: {out}");
+        assert!(out.contains("2 errors"), "error count: {out}");
+        assert!(out.contains("undefined: Foo"), "error detail: {out}");
+    }
+
+    #[test]
+    fn go_test_skipped() {
+        let h = GoTestHandler;
+        let stdout = "\
+--- SKIP: TestIntegration (0.00s)
+    test.go:10: requires database
+ok  \tgithub.com/user/repo/pkg1\t0.042s";
+        let out = h.filter(stdout, "", 0, &[String::from("test")], None);
+        assert!(out.contains("1 skipped"), "skip count: {out}");
+    }
+
+    #[test]
+    fn matches_go_test_and_build() {
+        let h = GoTestHandler;
+        assert!(h.matches("go", &[String::from("test")]));
+        assert!(!h.matches("go", &[String::from("build")]));
+        let hb = GoBuildHandler;
+        assert!(hb.matches("go", &[String::from("build")]));
+        assert!(!hb.matches("go", &[String::from("test")]));
+    }
+}

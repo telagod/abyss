@@ -342,6 +342,41 @@ pub struct EvCommit {
     pub message: String,
 }
 
+// --- Proxy gain tool types ---
+
+#[derive(Deserialize, schemars::JsonSchema, Default)]
+pub struct ProxyGainInput {
+    /// Number of days to look back (default: 30)
+    #[serde(default)]
+    pub days: u32,
+}
+
+#[derive(Serialize, schemars::JsonSchema)]
+pub struct ProxyGainOutput {
+    pub total_commands: u64,
+    pub total_raw_tokens: u64,
+    pub total_filtered_tokens: u64,
+    pub total_saved_tokens: u64,
+    pub avg_savings_pct: f64,
+    pub top_commands: Vec<ProxyGainCommand>,
+    pub daily: Vec<ProxyGainDay>,
+}
+
+#[derive(Serialize, schemars::JsonSchema)]
+pub struct ProxyGainCommand {
+    pub command: String,
+    pub saved_tokens: u64,
+    pub savings_pct: f64,
+}
+
+#[derive(Serialize, schemars::JsonSchema)]
+pub struct ProxyGainDay {
+    pub date: String,
+    pub commands: u64,
+    pub saved_tokens: u64,
+    pub raw_tokens: u64,
+}
+
 // --- Tool router ---
 
 #[tool_router(server_handler)]
@@ -733,6 +768,60 @@ impl McpServer {
             churn_rate: result.churn_rate,
             unique_authors: result.unique_authors,
             total_changes: result.total_changes,
+        })
+    }
+
+    #[tool(
+        name = "proxy_gain",
+        description = "Show token savings from proxied commands. Returns total tokens saved, average compression ratio, top commands by savings, and daily breakdown. Use to measure how much context budget the proxy is recovering."
+    )]
+    fn proxy_gain(
+        &self,
+        Parameters(input): Parameters<ProxyGainInput>,
+    ) -> Json<ProxyGainOutput> {
+        let repo = self.repo.lock().unwrap();
+        let conn = repo.conn();
+        let days = if input.days == 0 { 30 } else { input.days };
+        let summary = match crate::proxy::tracking::gain_summary(conn, days) {
+            Ok(s) => s,
+            Err(_) => {
+                return Json(ProxyGainOutput {
+                    total_commands: 0,
+                    total_raw_tokens: 0,
+                    total_filtered_tokens: 0,
+                    total_saved_tokens: 0,
+                    avg_savings_pct: 0.0,
+                    top_commands: Vec::new(),
+                    daily: Vec::new(),
+                });
+            }
+        };
+
+        Json(ProxyGainOutput {
+            total_commands: summary.total_commands,
+            total_raw_tokens: summary.total_raw_tokens,
+            total_filtered_tokens: summary.total_filtered_tokens,
+            total_saved_tokens: summary.total_saved_tokens,
+            avg_savings_pct: summary.avg_savings_pct,
+            top_commands: summary
+                .top_commands
+                .into_iter()
+                .map(|(cmd, saved, pct)| ProxyGainCommand {
+                    command: cmd,
+                    saved_tokens: saved,
+                    savings_pct: pct,
+                })
+                .collect(),
+            daily: summary
+                .daily
+                .into_iter()
+                .map(|d| ProxyGainDay {
+                    date: d.date,
+                    commands: d.commands,
+                    saved_tokens: d.saved,
+                    raw_tokens: d.raw,
+                })
+                .collect(),
         })
     }
 }

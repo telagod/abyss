@@ -47,3 +47,9 @@ jobs:
           cargo run -- stats
           cargo run -- map --json
         shell: bash
+      - name: smoke — proxy round-trip
+        run: |
+          cargo run -- proxy echo "proxy smoke test"
+          cargo run -- proxy --explain echo "explain smoke"
+          cargo run -- rewrite git status
+        shell: bash

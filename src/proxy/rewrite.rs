@@ -6,7 +6,8 @@
 /// Known commands that have proxy handlers or TOML filters.
 const REWRITE_PREFIXES: &[&str] = &[
     "git", "cargo", "npm", "pnpm", "yarn", "npx", "pytest", "python", "python3",
-    "go", "make", "docker", "kubectl", "pip", "pip3",
+    "go", "make", "gmake", "docker", "kubectl", "pip", "pip3", "uv",
+    "terraform", "helm", "mvn", "gradle", "gradlew",
     "eslint", "ruff", "tsc", "mypy", "flake8",
     "ls", "find", "grep", "rg", "ag", "cat", "head", "tail", "wc",
 ];

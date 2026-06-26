@@ -103,3 +103,51 @@ impl PytestHandler {
         args.iter().any(|a| a == "pytest" || a == "-m")
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pytest_summary_parsed() {
+        let h = PytestHandler;
+        let stdout = "\
+============================= test session starts ==============================
+collected 42 items
+test_foo.py ..........................................                     [100%]
+============================== 42 passed in 1.23s ==============================";
+        let out = h.filter(stdout, "", 0, &[String::from("-m"), String::from("pytest")], None);
+        assert!(out.contains("42 passed"), "pass count: {out}");
+        assert!(out.contains("0 failed"), "fail count: {out}");
+        assert!(out.contains("pytest ok"), "status: {out}");
+    }
+
+    #[test]
+    fn pytest_failure_sections() {
+        let h = PytestHandler;
+        let stdout = "\
+============================= test session starts ==============================
+collected 5 items
+test_foo.py ..F..
+_____________________________ TestFoo.test_bar _________________________________
+
+    def test_bar():
+>       assert 1 == 2
+E       AssertionError
+FAILED test_foo.py::TestFoo::test_bar
+============================= 1 failed, 4 passed in 0.5s ==============================";
+        let out = h.filter(stdout, "", 1, &[String::from("pytest")], None);
+        assert!(out.contains("FAILED"), "status: {out}");
+        assert!(out.contains("1 failed"), "fail count: {out}");
+        assert!(out.contains("4 passed"), "pass count: {out}");
+    }
+
+    #[test]
+    fn pytest_matches() {
+        let h = PytestHandler;
+        assert!(h.matches("pytest", &[]));
+        assert!(h.matches("python", &[]));
+        assert!(h.matches("python3", &[]));
+        assert!(!h.matches("node", &[]));
+    }
+}

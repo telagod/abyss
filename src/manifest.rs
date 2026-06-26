@@ -99,6 +99,7 @@ fn mcp_tools() -> Value {
         "evolution",
         "index_project",
         "arch_map",
+        "proxy_gain",
     ])
 }
 
