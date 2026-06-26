@@ -39,7 +39,7 @@ if [[ "$DRY_RUN" == "--dry-run" ]]; then
 fi
 
 # Check clean working tree
-if [[ -n "$(git status --porcelain -- ':!.claude/')" ]]; then
+if [[ -n "$(git status --porcelain -- ':!.claude/' ':!.codex/' ':!.gemini/' ':!.openclaw/')" ]]; then
   echo "❌ Working tree not clean. Commit or stash first."
   exit 1
 fi
