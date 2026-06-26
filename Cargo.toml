@@ -1,6 +1,6 @@
 [package]
 name = "code-abyss"
-version = "0.5.24"
+version = "0.5.25"
 edition = "2024"
 description = "Code relationship graph and temporal intelligence CLI — the code graph your agent checks before it edits"
 license = "Apache-2.0"
@@ -88,15 +88,19 @@ thiserror = "2"
 rayon = "1"
 num_cpus = "1"
 
-# Daemon: pidfile lock (flock) + signals. Unix-only; transitive already.
-[target.'cfg(unix)'.dependencies]
-libc = "0.2"
-
 # Graph algorithms (arch L0 — PageRank / SCC / Louvain)
 petgraph = "0.8"
 
 # Path-segment dictionary regex (arch L0 signal extractors)
 regex = "1"
+
+# Daemon: pidfile lock (flock) + signals. Unix-only; transitive already.
+# Keep this section LAST in [dependencies]-adjacent area to avoid the trap
+# where target-gated `[target.'cfg(unix)'.dependencies]` swallows subsequent
+# crates (v0.5.23 regression: petgraph + regex were accidentally unix-only,
+# breaking the windows build — see CHANGELOG v0.5.25).
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 [dev-dependencies]
 tempfile = "3"

@@ -1,5 +1,40 @@
 # Changelog
 
+## v0.5.25 — 2026-06-26
+
+The "windows build fix" patch — fixes a chronic build regression that
+silently affected v0.5.14 → v0.5.24 (5+ release cycles).
+
+### Fixed
+
+- **Windows build no longer fails with `unresolved import regex/petgraph`.**
+  `Cargo.toml` had `petgraph` and `regex` declared *after* a
+  `[target.'cfg(unix)'.dependencies]` table opened (originally just for
+  `libc`), which TOML parsed as making those two crates **unix-only**.
+  Result: every `cargo build` / `cargo test` on Windows since v0.5.14
+  failed to compile (11 `E0432` / `E0433` errors). `arch::naming`,
+  `arch::dictionary`, `arch::override_config` need `regex`;
+  `arch::graph`, `arch::inference` need `petgraph` — all five modules
+  are platform-agnostic core code, not unix-only.
+  Fix: moved `petgraph` and `regex` to the top-level `[dependencies]`
+  section. Relocated the `[target.'cfg(unix)'.dependencies]` table to
+  the end with a regression-guard comment so future deps added after
+  it don't fall into the same trap.
+
+### Why this slipped 5 releases
+
+Linux + macOS CI both pass; only Windows fails, and Windows had been
+red continuously since v0.5.14 (see release.yml history). The pattern
+was filed under "Windows CI is chronically broken" rather than
+investigated. A docs-only PR (v0.5.24) running through the same
+matrix surfaced the same failure and made the root cause obvious.
+
+### Not changed
+
+- All v0.5.24 docs / comments / error messages (still in effect).
+- Hook shapes, skill-manifest schema, hook payload — all identical.
+- `cargo test --lib attach` 26/26 passes on Linux (no regression).
+
 ## v0.5.24 — 2026-06-26
 
 The "positioning reversal" docs+notes patch. As of v0.5.23 the docs
