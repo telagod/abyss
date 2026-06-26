@@ -2181,21 +2181,17 @@ fn cmd_proxy(config: Config, command: Vec<String>, force_tee: bool, explain: boo
     let result = proxy::runner::run_captured(program, &args)?;
     let exec_ms = start.elapsed().as_millis() as u64;
 
+    // Zero-copy raw output: borrows when only one stream has data (>90%
+    // of commands), allocates only when both stdout and stderr are non-empty.
+    let raw = result.raw_output();
+    let raw_output: &str = &raw;
+
     if result.truncated {
         let tee_dir = config.workspace.join(".code-abyss").join("tee");
-        let combined = format!("{}\n{}", result.stdout, result.stderr);
-        if let Ok(Some(path)) = proxy::tee::write_tee(&tee_dir, &full_cmd, &combined) {
+        if let Ok(Some(path)) = proxy::tee::write_tee(&tee_dir, &full_cmd, raw_output) {
             eprintln!("[abyss proxy] output exceeded 10MiB, truncated. Full: {}", path.display());
         }
     }
-
-    let raw_output = if result.stderr.is_empty() {
-        result.stdout.clone()
-    } else if result.stdout.is_empty() {
-        result.stderr.clone()
-    } else {
-        format!("{}\n{}", result.stdout, result.stderr)
-    };
 
     // Route: Rust handler → TOML filter → passthrough
     let handlers = proxy::handlers::all_handlers();
@@ -2217,7 +2213,7 @@ fn cmd_proxy(config: Config, command: Vec<String>, force_tee: bool, explain: boo
 
         if let Some(def) = proxy::filter::find_filter(&all_filters, &full_cmd) {
             filter_reason = "toml-filter";
-            proxy::filter::apply_filter(def, &raw_output)
+            proxy::filter::apply_filter(def, raw_output)
         } else {
             let line_count = raw_output.lines().count();
             if line_count > 100 {
@@ -2230,13 +2226,13 @@ fn cmd_proxy(config: Config, command: Vec<String>, force_tee: bool, explain: boo
                 out.push_str(&lines[line_count - tail..].join("\n"));
                 out
             } else {
-                raw_output.clone()
+                raw_output.to_string()
             }
         }
     };
 
     // Never-worse guard
-    let output = never_worse(&raw_output, &filtered);
+    let output = never_worse(raw_output, &filtered);
 
     // Tee: save full output if needed
     let tee_mode = if force_tee {
@@ -2246,7 +2242,7 @@ fn cmd_proxy(config: Config, command: Vec<String>, force_tee: bool, explain: boo
     };
     if proxy::tee::should_tee(tee_mode, result.exit_code, raw_output.len()) {
         let tee_dir = config.workspace.join(".code-abyss").join("tee");
-        if let Ok(Some(path)) = proxy::tee::write_tee(&tee_dir, &full_cmd, &raw_output) {
+        if let Ok(Some(path)) = proxy::tee::write_tee(&tee_dir, &full_cmd, raw_output) {
             eprintln!("{}", proxy::tee::tee_hint(&path));
         }
     }
@@ -2261,7 +2257,7 @@ fn cmd_proxy(config: Config, command: Vec<String>, force_tee: bool, explain: boo
         let _ = proxy::tracking::record(
             conn,
             &full_cmd,
-            &raw_output,
+            raw_output,
             output,
             exec_ms,
             config
@@ -2275,7 +2271,7 @@ fn cmd_proxy(config: Config, command: Vec<String>, force_tee: bool, explain: boo
     };
 
     if json {
-        let raw_tokens = estimate_tokens(&raw_output);
+        let raw_tokens = estimate_tokens(raw_output);
         let filtered_tokens = estimate_tokens(output);
         println!(
             "{}",
@@ -2298,7 +2294,7 @@ fn cmd_proxy(config: Config, command: Vec<String>, force_tee: bool, explain: boo
     }
 
     if explain {
-        let raw_tokens = estimate_tokens(&raw_output);
+        let raw_tokens = estimate_tokens(raw_output);
         let filtered_tokens = estimate_tokens(output);
         let saved = raw_tokens.saturating_sub(filtered_tokens);
         let pct = if raw_tokens > 0 {
