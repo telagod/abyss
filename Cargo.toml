@@ -1,6 +1,6 @@
 [package]
 name = "code-abyss"
-version = "0.5.23"
+version = "0.5.24"
 edition = "2024"
 description = "Code relationship graph and temporal intelligence CLI — the code graph your agent checks before it edits"
 license = "Apache-2.0"

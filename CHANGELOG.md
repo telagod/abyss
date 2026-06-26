@@ -1,5 +1,61 @@
 # Changelog
 
+## v0.5.24 — 2026-06-26
+
+The "positioning reversal" docs+notes patch. As of v0.5.23 the docs
+called `abyss attach` a "cargo-only fallback" and pointed users at
+`npx code-abyss -t <host> --with-abyss` as the production entrypoint.
+With the sister `code-abyss` package landing its v4.9.0 deprecation /
+v5.0 cut of host-side hook integration (claude/codex/gemini moving to
+abyss attach; openclaw/pi/hermes staying with code-abyss), the
+positioning reverses: **`abyss attach` is the production main
+entrypoint** for the three shared-settings-file hosts; the companion
+package keeps the per-pack and unstable-shape hosts.
+
+This release is documentation + comment changes only — no behavior
+changes, no new crates published, no schema bumps.
+
+### Changed
+
+- `src/attach/mod.rs` — module docs upgraded from "supported hosts
+  today" framing to an explicit 6-host responsibility split, stable as
+  of v0.5.24. openclaw/pi/hermes are explicitly delegated to the
+  companion `code-abyss` package, not "not yet wired."
+- `src/attach/openclaw.rs` — module docs reframe the openclaw no-op
+  from "intentional downgrade" to "architectural delegation." The
+  `bail_with_message()` migration string now points at
+  `npx code-abyss -t openclaw --with-hooks` (the forward-compatible
+  flag), with a note that `--with-abyss` is the v4.8.x legacy name
+  entering deprecation in code-abyss v4.9.0.
+- `README.md` — `Pre-edit hooks` section restructured into an explicit
+  "abyss attach (production)" vs "code-abyss (architectural
+  delegation)" split. The Commands table's `abyss attach <host>` row
+  marks openclaw as `openclaw*` with a footnote pointing at the
+  delegation.
+- `docs/book/getting-started/agent-hook.md` — full rewrite of the
+  "Pre-edit hooks" page: 6-host responsibility table at the top;
+  `abyss attach` as the recommended production install; a new
+  "Migrating from `code-abyss --with-abyss`" subsection guides users
+  off the deprecated flag onto `abyss attach`.
+
+### Why now
+
+`code-abyss` shipped a v4.9.0 deprecation entry today: `--with-abyss` /
+`--with-mcp` go to warning, and `--with-hooks` narrows to
+openclaw/pi/hermes only. Removing them in v5.0 requires that abyss own
+its half of the integration plainly in docs before users hit the
+deprecation warnings; otherwise the migration message points at a path
+the docs still call "cargo-only fallback."
+
+### Not changed
+
+- Hook shapes (claude/codex/gemini) — identical to v0.5.23.
+- skill-manifest schema — `schema_version=1`, identical to v0.5.22.
+- Hook payload format — identical to v0.5.x.
+- All 386 existing tests pass without modification; openclaw's
+  `install_at_returns_clear_error` test still passes (the new error
+  message still contains `npx code-abyss`).
+
 ## v0.5.23 — 2026-06-18
 
 The "ground-truth attach shapes" fix. v0.5.21 shipped `abyss attach

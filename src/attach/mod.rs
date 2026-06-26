@@ -1,23 +1,29 @@
 //! `abyss attach <host>` — install agent-side hooks idempotently.
 //!
-//! Each supported host has its own settings layout; the shared contract is
-//! that re-running `attach` against an already-configured host must be a
-//! no-op (no duplicate hook entries, no clobbered unrelated config).
+//! **Production main entrypoint** for the three hosts whose hook surface
+//! is a single shared settings file. Each host has its own layout; the
+//! shared contract is that re-running `attach` against an already-configured
+//! host must be a no-op (no duplicate entries, no clobbered unrelated keys).
 //!
-//! Supported hosts (today):
+//! ## 6-host responsibility split (architectural decision, stable as of v0.5.24)
 //!
-//! - [`claude`]    — Claude Code `~/.claude/settings.json`
-//! - [`codex`]     — Codex CLI    `~/.codex/config.toml` (two-level array tables)
-//! - [`gemini`]    — Gemini CLI   `~/.gemini/settings.json` (`SessionStart`/`BeforeTool`/`AfterTool`)
-//! - [`openclaw`]  — OpenClaw     **downgraded to no-op** in v0.5.23. OpenClaw
-//!   uses a per-pack install layout (`packs/abyss/openclaw/`), not a
-//!   shared settings file. `abyss attach openclaw` now errors with a
-//!   migration message pointing at `npx code-abyss -t openclaw --with-abyss`.
+//! `abyss attach` owns the hosts whose hook config lives in a single shared
+//! settings file. The companion `code-abyss` npm package owns the hosts
+//! whose hook config either needs a per-pack layout or a still-evolving
+//! shape. These are **not** temporary gaps — they're a deliberate split:
 //!
-//! Pi and Hermes are not yet wired here — their hook-config shapes are
-//! not stable enough across versions to ship a best-effort installer
-//! that won't break user config. Use the companion `code-abyss` package
-//! for those hosts until shapes settle.
+//! - [`claude`]    — `~/.claude/settings.json` — **abyss attach (production)**
+//! - [`codex`]     — `~/.codex/config.toml` (two-level array tables) — **abyss attach (production)**
+//! - [`gemini`]    — `~/.gemini/settings.json` (`SessionStart`/`BeforeTool`/`AfterTool`) — **abyss attach (production)**
+//! - [`openclaw`]  — per-pack layout `packs/abyss/openclaw/` — **delegated to `code-abyss`**.
+//!   A single static binary cannot reliably create the per-pack directory
+//!   tree, so `abyss attach openclaw` is an intentional no-op that errors
+//!   with a migration message.
+//! - Pi & Hermes — hook-config shapes still evolving across versions —
+//!   **delegated to `code-abyss`**, where shape adapters can iterate
+//!   independently of abyss's release cadence.
+//!
+//! See the `code-abyss` README for the openclaw/pi/hermes installer flow.
 
 pub mod claude;
 pub mod codex;
