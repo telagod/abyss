@@ -1,7 +1,7 @@
 use anyhow::Result;
 use rusqlite::Connection;
 
-pub const SCHEMA_VERSION: u32 = 6;
+pub const SCHEMA_VERSION: u32 = 7;
 
 /// Pragmas safe to apply to a read-only handle. `journal_mode = WAL` is a
 /// *file-level* setting — it's already persisted on the DB by the writer's
@@ -70,6 +70,11 @@ pub fn init_db(conn: &Connection) -> Result<()> {
         CREATE INDEX IF NOT EXISTS idx_symbols_file ON symbols(file_id);
         CREATE INDEX IF NOT EXISTS idx_symbols_kind ON symbols(kind);
         CREATE INDEX IF NOT EXISTS idx_symbols_name_file ON symbols(name, file_id);
+        -- v7: compound index for L0 receiver-type tier (s.name + s.scope)
+        -- and L0d type-file tier (s.name + s.kind). Turns correlated
+        -- subqueries from filtered scans into pure index seeks.
+        CREATE INDEX IF NOT EXISTS idx_symbols_name_scope ON symbols(name, scope);
+        CREATE INDEX IF NOT EXISTS idx_symbols_name_kind ON symbols(name, kind);
 
         -- FTS5 full-text index on chunk content
         CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(
@@ -119,6 +124,12 @@ pub fn init_db(conn: &Connection) -> Result<()> {
         -- unresolved ref; partial index keeps it tiny.
         CREATE INDEX IF NOT EXISTS idx_refs_binding ON refs(source_file_id, target_name)
             WHERE kind = 'import_binding';
+        -- v7: Resolver working-set index — each of the 11 resolver tiers
+        -- filters `WHERE confidence = 0.0 AND kind NOT IN (...)`. Without
+        -- this partial index every tier scans the full refs table. Rows
+        -- drop out automatically as confidence is set > 0.
+        CREATE INDEX IF NOT EXISTS idx_refs_unresolved ON refs(target_name, kind)
+            WHERE confidence = 0.0;
 
         -- ═══ v0.2: Temporal ═══
 
@@ -138,6 +149,8 @@ pub fn init_db(conn: &Connection) -> Result<()> {
             PRIMARY KEY (commit_id, file_path)
         );
         CREATE INDEX IF NOT EXISTS idx_cf_path ON commit_files(file_path);
+        -- v7: speeds up the coupling self-join's GROUP BY commit_id HAVING COUNT(*)
+        CREATE INDEX IF NOT EXISTS idx_cf_commit ON commit_files(commit_id);
 
         -- ═══ v0.2: Precomputed Metrics ═══
 
@@ -234,6 +247,26 @@ pub fn init_db(conn: &Connection) -> Result<()> {
         );
         let _ = conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_files_lang_family ON files(lang_family)",
+            [],
+        );
+    }
+    if version < 7 {
+        // v7: performance indices for the resolver and coupling.
+        // All are CREATE IF NOT EXISTS so this is idempotent for fresh DBs.
+        let _ = conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_refs_unresolved ON refs(target_name, kind) WHERE confidence = 0.0",
+            [],
+        );
+        let _ = conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_symbols_name_scope ON symbols(name, scope)",
+            [],
+        );
+        let _ = conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_symbols_name_kind ON symbols(name, kind)",
+            [],
+        );
+        let _ = conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_cf_commit ON commit_files(commit_id)",
             [],
         );
     }

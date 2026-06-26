@@ -28,11 +28,22 @@ The resolver's precision/recall is measured against SCIP (compiler-grade) ground
 cd eval && ./run.sh      # clones 5 corpora, builds SCIP ground truth, runs compare.py
 ```
 
-Results in `eval/RESULTS.md`. All corpora must stay ≥98.5% gated precision — regressions here are release-blockers.
+Results in `eval/RESULTS.md`. All corpora must stay ≥98.5% gated precision — regressions here are release-blockers. `compare.py` enforces this with `sys.exit(1)` on violation.
 
 ## Architecture
 
-**Single binary CLI + library crate.** The binary (`src/main.rs`) is a thin clap dispatcher. All logic lives in the library (`src/lib.rs` re-exports).
+**Single binary CLI + library crate.** The binary (`src/main.rs`) is a thin clap dispatcher (~500 lines: clap struct definitions + dispatch match + tracing init). All logic lives in the library (`src/lib.rs` re-exports).
+
+### CLI commands (`src/commands/` — extracted from main.rs)
+
+Command handlers are organized into focused modules:
+- `index.rs` — `cmd_index`, `cmd_reset`, workspace safety, git diff changeset
+- `query.rs` — `cmd_callers`, `cmd_impact`, `cmd_where`, `cmd_context`, `cmd_search`
+- `inspect.rs` — `cmd_stats`, `cmd_map`, `cmd_config_show`, daemon state view
+- `proxy.rs` — `cmd_proxy`, `cmd_gain`, `cmd_rewrite`
+- `hooks.rs` — `cmd_hook` (pre-edit, post-edit, proxy-rewrite)
+- `daemon.rs` — `cmd_daemon`, `cmd_mcp`, `cmd_watch`
+- `attach.rs` — `cmd_attach`, `cmd_setup`, `cmd_skill_manifest`, `cmd_ingest`
 
 ### Index pipeline (`src/indexer/pipeline.rs` — the orchestrator)
 
