@@ -1,0 +1,495 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>abyss — code intelligence + token compression for AI agents</title>
+<meta name="description" content="abyss indexes your codebase into a call graph with blast-radius analysis, then compresses agent command output by 70-99%. One binary, zero setup.">
+<style>
+:root {
+  --bg: #0a0a0f;
+  --bg2: #12121a;
+  --bg3: #1a1a28;
+  --fg: #e0dfe6;
+  --fg2: #9896a8;
+  --accent: #7c6fef;
+  --accent2: #a78bfa;
+  --green: #34d399;
+  --red: #f87171;
+  --yellow: #fbbf24;
+  --cyan: #22d3ee;
+  --border: #2a2a3a;
+  --font: 'SF Mono', 'Cascadia Code', 'JetBrains Mono', 'Fira Code', Consolas, monospace;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+body { font-family: var(--font); background: var(--bg); color: var(--fg); line-height: 1.6; }
+a { color: var(--accent2); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+.container { max-width: 960px; margin: 0 auto; padding: 0 24px; }
+
+/* Hero */
+.hero {
+  padding: 80px 0 60px;
+  text-align: center;
+  background: linear-gradient(180deg, var(--bg) 0%, var(--bg2) 100%);
+  border-bottom: 1px solid var(--border);
+}
+.hero h1 {
+  font-size: 3.2rem;
+  font-weight: 800;
+  letter-spacing: -0.03em;
+  margin-bottom: 8px;
+}
+.hero h1 span { color: var(--accent); }
+.hero .tagline {
+  font-size: 1.15rem;
+  color: var(--fg2);
+  max-width: 600px;
+  margin: 0 auto 32px;
+}
+.hero .stats {
+  display: flex;
+  justify-content: center;
+  gap: 40px;
+  margin-bottom: 36px;
+  flex-wrap: wrap;
+}
+.hero .stat {
+  text-align: center;
+}
+.hero .stat .num {
+  font-size: 2rem;
+  font-weight: 700;
+  color: var(--green);
+}
+.hero .stat .label {
+  font-size: 0.8rem;
+  color: var(--fg2);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+.cta-row {
+  display: flex;
+  gap: 12px;
+  justify-content: center;
+  flex-wrap: wrap;
+}
+.btn {
+  display: inline-block;
+  padding: 12px 28px;
+  border-radius: 8px;
+  font-size: 0.95rem;
+  font-weight: 600;
+  transition: all 0.15s;
+  border: 1px solid transparent;
+}
+.btn-primary {
+  background: var(--accent);
+  color: #fff;
+}
+.btn-primary:hover { background: var(--accent2); text-decoration: none; }
+.btn-outline {
+  border-color: var(--border);
+  color: var(--fg2);
+}
+.btn-outline:hover { border-color: var(--accent); color: var(--fg); text-decoration: none; }
+
+/* Terminal */
+.terminal {
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 20px 24px;
+  margin: 40px auto;
+  max-width: 720px;
+  overflow-x: auto;
+  font-size: 0.85rem;
+  line-height: 1.7;
+  text-align: left;
+}
+.terminal .prompt { color: var(--accent2); }
+.terminal .cmd { color: var(--fg); font-weight: 600; }
+.terminal .out { color: var(--fg2); }
+.terminal .ok { color: var(--green); }
+.terminal .warn { color: var(--yellow); }
+.terminal .hi { color: var(--cyan); }
+
+/* Sections */
+section {
+  padding: 64px 0;
+  border-bottom: 1px solid var(--border);
+}
+section:last-of-type { border-bottom: none; }
+section h2 {
+  font-size: 1.8rem;
+  font-weight: 700;
+  margin-bottom: 12px;
+  letter-spacing: -0.02em;
+}
+section .subtitle {
+  color: var(--fg2);
+  margin-bottom: 36px;
+  font-size: 0.95rem;
+}
+
+/* Feature grid */
+.features {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 20px;
+}
+.feature {
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 24px;
+}
+.feature .icon { font-size: 1.5rem; margin-bottom: 8px; }
+.feature h3 { font-size: 1.05rem; margin-bottom: 6px; }
+.feature p { color: var(--fg2); font-size: 0.85rem; }
+
+/* Benchmark table */
+.bench-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.85rem;
+}
+.bench-table th {
+  text-align: left;
+  padding: 10px 12px;
+  border-bottom: 2px solid var(--border);
+  color: var(--fg2);
+  font-weight: 600;
+  text-transform: uppercase;
+  font-size: 0.75rem;
+  letter-spacing: 0.06em;
+}
+.bench-table td {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+}
+.bench-table tr:last-child td { border-bottom: none; }
+.bench-table .bar-cell { width: 200px; }
+.bar {
+  height: 18px;
+  border-radius: 3px;
+  background: var(--accent);
+  display: inline-block;
+  vertical-align: middle;
+  opacity: 0.85;
+}
+.pct { font-weight: 700; }
+.pct-high { color: var(--green); }
+.pct-mid { color: var(--yellow); }
+.pct-low { color: var(--fg2); }
+
+/* Comparison */
+.compare {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 20px;
+}
+@media (max-width: 640px) { .compare { grid-template-columns: 1fr; } }
+.compare-col {
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 24px;
+}
+.compare-col h3 { margin-bottom: 12px; font-size: 1.05rem; }
+.compare-col.highlight { border-color: var(--accent); }
+.compare-col ul { list-style: none; }
+.compare-col li {
+  padding: 4px 0;
+  font-size: 0.85rem;
+  color: var(--fg2);
+}
+.compare-col li::before { content: ""; display: inline-block; width: 16px; }
+.compare-col li.yes::before { content: "\2713 "; color: var(--green); }
+.compare-col li.no::before { content: "\2717 "; color: var(--red); }
+.compare-col li.partial::before { content: "\25CB "; color: var(--yellow); }
+
+/* Setup */
+.setup-steps {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 16px;
+}
+.step {
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 20px;
+  text-align: center;
+}
+.step .num {
+  display: inline-block;
+  width: 28px; height: 28px;
+  line-height: 28px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: #fff;
+  font-weight: 700;
+  font-size: 0.85rem;
+  margin-bottom: 10px;
+}
+.step code {
+  display: block;
+  background: var(--bg3);
+  padding: 8px;
+  border-radius: 6px;
+  margin-top: 8px;
+  font-size: 0.8rem;
+  color: var(--cyan);
+}
+.step p { font-size: 0.85rem; color: var(--fg2); margin-top: 6px; }
+
+/* Footer */
+footer {
+  padding: 40px 0;
+  text-align: center;
+  color: var(--fg2);
+  font-size: 0.8rem;
+}
+footer a { color: var(--fg2); }
+</style>
+</head>
+<body>
+
+<!-- HERO -->
+<header class="hero">
+  <div class="container">
+    <h1><span>abyss</span></h1>
+    <p class="tagline">
+      Code intelligence + token compression for AI agents.
+      <br>One binary. One command. 70-99% fewer output tokens.
+    </p>
+    <div class="stats">
+      <div class="stat"><div class="num">~75%</div><div class="label">avg token savings</div></div>
+      <div class="stat"><div class="num">2ms</div><div class="label">hook latency</div></div>
+      <div class="stat"><div class="num">22</div><div class="label">command handlers</div></div>
+      <div class="stat"><div class="num">14</div><div class="label">languages</div></div>
+    </div>
+    <div class="cta-row">
+      <a href="https://github.com/telagod/abyss" class="btn btn-primary">GitHub</a>
+      <a href="docs/" class="btn btn-outline">Documentation</a>
+    </div>
+    <div class="terminal">
+      <span class="prompt">$</span> <span class="cmd">cargo install code-abyss && abyss setup</span><br>
+      <span class="out">indexing workspace...</span><br>
+      <span class="ok">&#10003; 312 files, 11,487 symbols, 23,961 refs in 4.8s</span><br>
+      <span class="ok">&#10003; hooks: pre-edit + post-edit + proxy rewrite</span><br>
+      <span class="out">All agent commands now route through abyss proxy.</span><br><br>
+      <span class="prompt">$</span> <span class="cmd">abyss gain</span><br>
+      <span class="hi">&#9484;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9488;</span><br>
+      <span class="hi">&#9474;  abyss proxy &mdash;   346K tokens saved (69%)  &#9474;</span><br>
+      <span class="hi">&#9492;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9496;</span><br>
+    </div>
+  </div>
+</header>
+
+<!-- FEATURES -->
+<section>
+  <div class="container">
+    <h2>Two layers, one binary</h2>
+    <p class="subtitle">abyss is a code intelligence engine AND a token compressor. They reinforce each other.</p>
+    <div class="features">
+      <div class="feature">
+        <div class="icon">&#128269;</div>
+        <h3>Code Intelligence</h3>
+        <p>Call graph, blast-radius analysis, hotspot scoring, change coupling &mdash; all from tree-sitter + git history. No language server needed.</p>
+      </div>
+      <div class="feature">
+        <div class="icon">&#9889;</div>
+        <h3>Proxy Compression</h3>
+        <p>Intercepts agent commands (git, cargo, grep, cat&hellip;), structurally compresses output, delivers 70-99% fewer tokens. Never-worse guard ensures zero information loss.</p>
+      </div>
+      <div class="feature">
+        <div class="icon">&#128200;</div>
+        <h3>Semantic Enrichment</h3>
+        <p>Compressed output is annotated with blast-radius warnings, hotspot scores, and change coupling &mdash; signals no pure compressor can provide.</p>
+      </div>
+      <div class="feature">
+        <div class="icon">&#127795;</div>
+        <h3>Tree-sitter Smart Read</h3>
+        <p>AST-level body stripping for 14 languages. <code>cat</code> on a 600-line file returns 98 lines of signatures. Brace-counting fallback for the rest.</p>
+      </div>
+      <div class="feature">
+        <div class="icon">&#128274;</div>
+        <h3>Pre-edit Safety Cards</h3>
+        <p>Before every edit, agents see who calls the function, blast radius, test coverage gaps, and change-coupled files. 2ms hook latency.</p>
+      </div>
+      <div class="feature">
+        <div class="icon">&#9881;</div>
+        <h3>One-command Setup</h3>
+        <p><code>abyss setup</code> &mdash; indexes, installs hooks into Claude/Codex/Gemini, enables proxy. Zero config files, zero dependencies.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- BENCHMARKS -->
+<section>
+  <div class="container">
+    <h2>Real-world compression</h2>
+    <p class="subtitle">Measured on a 193-file Rust codebase (this project). Release build, hot cache.</p>
+    <table class="bench-table">
+      <thead>
+        <tr><th>Command</th><th>Raw</th><th>Filtered</th><th>Savings</th><th class="bar-cell"></th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>cargo test (237 tests)</td>
+          <td>8,861</td><td>11</td>
+          <td><span class="pct pct-high">99.9%</span></td>
+          <td class="bar-cell"><span class="bar" style="width:99.9%"></span></td>
+        </tr>
+        <tr>
+          <td>cat context.rs (862 lines)</td>
+          <td>8,151</td><td>782</td>
+          <td><span class="pct pct-high">90.4%</span></td>
+          <td class="bar-cell"><span class="bar" style="width:90.4%"></span></td>
+        </tr>
+        <tr>
+          <td>rg 'fn ' src/ (~800 matches)</td>
+          <td>15,475</td><td>1,621</td>
+          <td><span class="pct pct-high">89.5%</span></td>
+          <td class="bar-cell"><span class="bar" style="width:89.5%"></span></td>
+        </tr>
+        <tr>
+          <td>git diff (current branch)</td>
+          <td>4,493</td><td>862</td>
+          <td><span class="pct pct-high">80.8%</span></td>
+          <td class="bar-cell"><span class="bar" style="width:80.8%"></span></td>
+        </tr>
+        <tr>
+          <td>cargo build (cached)</td>
+          <td>34</td><td>8</td>
+          <td><span class="pct pct-high">76.5%</span></td>
+          <td class="bar-cell"><span class="bar" style="width:76.5%"></span></td>
+        </tr>
+        <tr>
+          <td>git status (zh locale)</td>
+          <td>127</td><td>39</td>
+          <td><span class="pct pct-mid">69.3%</span></td>
+          <td class="bar-cell"><span class="bar" style="width:69.3%"></span></td>
+        </tr>
+        <tr>
+          <td>cat main.rs (2,200 lines)</td>
+          <td>22,247</td><td>7,167</td>
+          <td><span class="pct pct-mid">67.8%</span></td>
+          <td class="bar-cell"><span class="bar" style="width:67.8%"></span></td>
+        </tr>
+        <tr>
+          <td>rg 'ProxyHandler' (exact)</td>
+          <td>427</td><td>427</td>
+          <td><span class="pct pct-low">0%</span></td>
+          <td class="bar-cell"><span class="bar" style="width:0%"></span></td>
+        </tr>
+      </tbody>
+    </table>
+    <p style="margin-top:16px;color:var(--fg2);font-size:0.8rem;">
+      0% on small results is correct &mdash; the never-worse guard passes through output that can't be compressed without information loss.
+    </p>
+  </div>
+</section>
+
+<!-- VS RTK -->
+<section>
+  <div class="container">
+    <h2>vs. pure compressors</h2>
+    <p class="subtitle">abyss is not "another RTK" &mdash; it's a code-aware compression layer.</p>
+    <div class="compare">
+      <div class="compare-col">
+        <h3>Pure compressor (e.g. RTK)</h3>
+        <ul>
+          <li class="yes">Pattern-matching output filters</li>
+          <li class="yes">100+ command handlers</li>
+          <li class="yes">14 AI tool integrations</li>
+          <li class="no">No code understanding</li>
+          <li class="no">No blast-radius annotations</li>
+          <li class="no">Brace-counting smart read</li>
+          <li class="no">Requires separate install</li>
+        </ul>
+      </div>
+      <div class="compare-col highlight">
+        <h3>abyss proxy</h3>
+        <ul>
+          <li class="yes">Structural + semantic filters</li>
+          <li class="yes">22 handlers + TOML engine</li>
+          <li class="yes">Claude / Codex / Gemini hooks</li>
+          <li class="yes">Call graph + impact analysis</li>
+          <li class="yes">Blast-radius &amp; hotspot annotations</li>
+          <li class="yes">Tree-sitter AST body strip (14 langs)</li>
+          <li class="yes">Built into existing binary</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- SETUP -->
+<section>
+  <div class="container">
+    <h2>Get started in 60 seconds</h2>
+    <p class="subtitle">One install, one command. No config files, no API keys, no embedding models.</p>
+    <div class="setup-steps">
+      <div class="step">
+        <div class="num">1</div>
+        <code>cargo install code-abyss</code>
+        <p>Single static binary. ~20MB.</p>
+      </div>
+      <div class="step">
+        <div class="num">2</div>
+        <code>abyss setup</code>
+        <p>Index + hooks + proxy in one shot.</p>
+      </div>
+      <div class="step">
+        <div class="num">3</div>
+        <code>abyss gain</code>
+        <p>See your token savings after a session.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- CLI -->
+<section>
+  <div class="container">
+    <h2>Full CLI surface</h2>
+    <p class="subtitle">Everything is a subcommand. No plugins, no runtime dependencies.</p>
+    <div class="terminal" style="max-width:800px;">
+<span class="out"># Code intelligence</span><br>
+<span class="cmd">abyss index</span>            <span class="out">Build the structural index</span><br>
+<span class="cmd">abyss callers</span> Symbol   <span class="out">Who calls this?</span><br>
+<span class="cmd">abyss impact</span> Symbol    <span class="out">What breaks if I change it?</span><br>
+<span class="cmd">abyss context</span> file     <span class="out">Full pre-edit context</span><br>
+<span class="cmd">abyss map</span>              <span class="out">Hotspots, coupling, risk areas</span><br>
+<span class="cmd">abyss where</span> file       <span class="out">Architectural coordinates</span><br><br>
+<span class="out"># Proxy compression</span><br>
+<span class="cmd">abyss proxy</span> &lt;cmd&gt;      <span class="out">Run + compress + track</span><br>
+<span class="cmd">abyss proxy --explain</span>  <span class="out">Show which handler fired and why</span><br>
+<span class="cmd">abyss gain</span>             <span class="out">Token savings dashboard</span><br><br>
+<span class="out"># Integration</span><br>
+<span class="cmd">abyss setup</span>            <span class="out">One-command onboarding</span><br>
+<span class="cmd">abyss attach</span> claude    <span class="out">Install hooks (proxy on by default)</span><br>
+<span class="cmd">abyss mcp</span>              <span class="out">MCP server (stdio)</span><br>
+<span class="cmd">abyss watch</span>            <span class="out">Live reindex on file save</span><br>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="container">
+    <p>
+      <a href="https://github.com/telagod/abyss">GitHub</a> &middot;
+      <a href="docs/">Documentation</a> &middot;
+      Apache-2.0
+    </p>
+  </div>
+</footer>
+
+</body>
+</html>

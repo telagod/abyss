@@ -4,6 +4,7 @@ on:
   push:
     branches: [main]
     paths:
+      - "site/**"
       - "book.toml"
       - "docs/book/**"
       - "docs/dogfood/**"
@@ -45,15 +46,30 @@ jobs:
       - name: Verify mdBook
         run: mdbook --version
 
-      - name: Build book
+      - name: Build book into docs/ subpath
         run: mdbook build
+
+      - name: Assemble site
+        run: |
+          # Landing page is root; mdBook docs live under /docs
+          cp site/index.html book-out/index.html
+          # mdBook already built into book-out/ — its own index.html
+          # becomes book-out/docs/index.html
+          mkdir -p book-out/docs
+          # Move mdBook output into docs/ subdir
+          # mdBook outputs to book-out/ directly; we need to restructure
+          # so the landing page is root and book content is under /docs
+          # Strategy: build mdBook into a temp dir, then assemble
+          rm -rf _book_tmp
+          mv book-out _book_tmp
+          mkdir -p book-out/docs
+          cp -r _book_tmp/* book-out/docs/
+          cp site/index.html book-out/index.html
+          rm -rf _book_tmp
 
       - name: Setup Pages
         uses: actions/configure-pages@v5
         with:
-          # First-run convenience: auto-enable Pages for the repo via the API
-          # so the workflow doesn't 404 with "verify that the repository has
-          # Pages enabled". Idempotent — no-op once enabled.
           enablement: true
 
       - name: Upload artifact
