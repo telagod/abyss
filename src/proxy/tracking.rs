@@ -50,7 +50,14 @@ pub fn record(
     Ok(())
 }
 
-/// Summary stats for `abyss gain`.
+/// Returns true if the proxy_tracking table has any rows at all.
+pub fn has_any_data(conn: &Connection) -> bool {
+    ensure_table(conn).ok();
+    conn.query_row("SELECT COUNT(*) FROM proxy_tracking", [], |r| r.get::<_, u64>(0))
+        .unwrap_or(0)
+        > 0
+}
+
 #[derive(Debug, Default)]
 pub struct GainSummary {
     pub total_commands: u64,
@@ -59,6 +66,15 @@ pub struct GainSummary {
     pub total_saved_tokens: u64,
     pub avg_savings_pct: f64,
     pub top_commands: Vec<(String, u64, f64)>,
+    pub daily: Vec<DayStats>,
+}
+
+#[derive(Debug)]
+pub struct DayStats {
+    pub date: String,
+    pub commands: u64,
+    pub saved: u64,
+    pub raw: u64,
 }
 
 pub fn gain_summary(conn: &Connection, days: u32) -> Result<GainSummary> {
@@ -100,39 +116,184 @@ pub fn gain_summary(conn: &Connection, days: u32) -> Result<GainSummary> {
     })?;
     summary.top_commands = rows.flatten().collect();
 
+    // daily breakdown (last N days)
+    let mut daily_stmt = conn.prepare(
+        "SELECT DATE(timestamp) as day,
+                COUNT(*) as cmds,
+                SUM(raw_tokens - filtered_tokens) as saved,
+                SUM(raw_tokens) as raw
+         FROM proxy_tracking
+         WHERE timestamp >= datetime('now', ?1)
+         GROUP BY day
+         ORDER BY day DESC
+         LIMIT ?2",
+    )?;
+    let daily_rows = daily_stmt.query_map(
+        rusqlite::params![format!("-{days} days"), days.min(14)],
+        |r| {
+            Ok(DayStats {
+                date: r.get(0)?,
+                commands: r.get(1)?,
+                saved: r.get(2)?,
+                raw: r.get(3)?,
+            })
+        },
+    )?;
+    summary.daily = daily_rows.flatten().collect();
+
     Ok(summary)
 }
 
 pub fn render_gain(summary: &GainSummary) -> String {
     if summary.total_commands == 0 {
-        return "No proxy data yet. Run commands through `abyss proxy` to start tracking.".into();
+        return "No proxy data yet. Run commands through `abyss proxy` to start tracking.\n".into();
     }
 
     let mut out = String::new();
+
+    // Header
+    out.push_str("╭─────────────────────────────────────────────╮\n");
     out.push_str(&format!(
-        "Token savings ({} commands)\n",
-        summary.total_commands
+        "│  abyss proxy — {:>7} tokens saved ({:.0}%)  │\n",
+        fmt_num(summary.total_saved_tokens),
+        summary.avg_savings_pct
+    ));
+    out.push_str("╰─────────────────────────────────────────────╯\n\n");
+
+    out.push_str(&format!(
+        "  {} commands proxied\n",
+        fmt_num(summary.total_commands)
     ));
     out.push_str(&format!(
-        "  Raw:      {:>8} tokens\n",
-        summary.total_raw_tokens
-    ));
-    out.push_str(&format!(
-        "  Filtered: {:>8} tokens\n",
-        summary.total_filtered_tokens
-    ));
-    out.push_str(&format!(
-        "  Saved:    {:>8} tokens ({:.1}%)\n",
-        summary.total_saved_tokens, summary.avg_savings_pct
+        "  {} raw  →  {} delivered  ({} saved)\n\n",
+        fmt_num(summary.total_raw_tokens),
+        fmt_num(summary.total_filtered_tokens),
+        fmt_num(summary.total_saved_tokens),
     ));
 
+    // Top commands
     if !summary.top_commands.is_empty() {
-        out.push_str("\nTop commands by savings:\n");
+        out.push_str("  Top commands:\n");
+
+        let max_saved = summary
+            .top_commands
+            .first()
+            .map(|c| c.1)
+            .unwrap_or(1)
+            .max(1);
+
         for (cmd, saved, pct) in &summary.top_commands {
-            let bar_len = (*pct / 5.0).round() as usize;
-            let bar: String = "█".repeat(bar_len.min(20));
-            out.push_str(&format!("  {cmd:<30} {saved:>6} saved ({pct:.0}%) {bar}\n"));
+            let short = truncate_cmd(cmd, 28);
+            let bar_len = ((*saved as f64 / max_saved as f64) * 16.0).round() as usize;
+            let bar: String = "█".repeat(bar_len.min(16));
+            let bar_pad: String = "░".repeat(16 - bar_len.min(16));
+            out.push_str(&format!(
+                "    {short:<28} {bar}{bar_pad} {:>6} ({pct:.0}%)\n",
+                fmt_num(*saved),
+            ));
         }
     }
+
+    // Daily breakdown
+    if summary.daily.len() > 1 {
+        out.push_str("\n  Daily:\n");
+        let max_daily = summary.daily.iter().map(|d| d.saved).max().unwrap_or(1).max(1);
+
+        for day in &summary.daily {
+            let pct = if day.raw > 0 {
+                (day.saved as f64 / day.raw as f64) * 100.0
+            } else {
+                0.0
+            };
+            let bar_len = ((day.saved as f64 / max_daily as f64) * 12.0).round() as usize;
+            let bar: String = "▓".repeat(bar_len.min(12));
+            let bar_pad: String = "░".repeat(12 - bar_len.min(12));
+            out.push_str(&format!(
+                "    {} {:>3} cmds  {bar}{bar_pad} {:>6} saved ({pct:.0}%)\n",
+                day.date,
+                day.commands,
+                fmt_num(day.saved),
+            ));
+        }
+    }
+
     out
+}
+
+fn fmt_num(n: u64) -> String {
+    if n >= 1_000_000 {
+        format!("{:.1}M", n as f64 / 1_000_000.0)
+    } else if n >= 10_000 {
+        format!("{:.0}K", n as f64 / 1_000.0)
+    } else if n >= 1_000 {
+        format!("{:.1}K", n as f64 / 1_000.0)
+    } else {
+        n.to_string()
+    }
+}
+
+fn truncate_cmd(cmd: &str, max_len: usize) -> String {
+    if cmd.len() <= max_len {
+        return cmd.to_string();
+    }
+    // Try to keep the meaningful part: "cargo test -- ..." → "cargo test --..."
+    let mut s = cmd[..max_len - 3].to_string();
+    s.push_str("...");
+    s
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fmt_num_formats_correctly() {
+        assert_eq!(fmt_num(0), "0");
+        assert_eq!(fmt_num(999), "999");
+        assert_eq!(fmt_num(1_500), "1.5K");
+        assert_eq!(fmt_num(15_000), "15K");
+        assert_eq!(fmt_num(345_501), "346K");
+        assert_eq!(fmt_num(1_200_000), "1.2M");
+    }
+
+    #[test]
+    fn truncate_cmd_short_passthrough() {
+        assert_eq!(truncate_cmd("git status", 28), "git status");
+    }
+
+    #[test]
+    fn truncate_cmd_long_truncates() {
+        let long = "cat src/graph/languages/typescript.rs";
+        let t = truncate_cmd(long, 28);
+        assert!(t.len() <= 28);
+        assert!(t.ends_with("..."));
+    }
+
+    #[test]
+    fn render_gain_no_data() {
+        let s = GainSummary::default();
+        let out = render_gain(&s);
+        assert!(out.contains("No proxy data"));
+    }
+
+    #[test]
+    fn render_gain_with_data() {
+        let s = GainSummary {
+            total_commands: 70,
+            total_raw_tokens: 503504,
+            total_filtered_tokens: 158003,
+            total_saved_tokens: 345501,
+            avg_savings_pct: 68.6,
+            top_commands: vec![
+                ("cat src/main.rs".into(), 200254, 65.0),
+                ("cargo test".into(), 8850, 100.0),
+            ],
+            daily: vec![],
+        };
+        let out = render_gain(&s);
+        assert!(out.contains("346K"), "should format saved tokens: {out}");
+        assert!(out.contains("69%"), "should show pct: {out}");
+        assert!(out.contains("cat src/main.rs"), "should list top cmd: {out}");
+        assert!(out.contains("█"), "should have bar chart: {out}");
+    }
 }

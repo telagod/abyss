@@ -63,16 +63,63 @@ pub struct MatchOutputRule {
     pub unless: Option<String>,
 }
 
-/// Load filters from a TOML file. Returns empty map on missing/invalid file.
+/// Load filters from a TOML file with trust verification.
+///
+/// Project-local filters (`.code-abyss/filters.toml`) are untrusted by
+/// default. A `.code-abyss/filters.toml.sha256` sidecar containing the
+/// hex SHA-256 of the TOML content must exist and match, or the filters
+/// are silently skipped. Set `ABYSS_TRUST_FILTERS=1` to bypass (CI use).
+///
+/// Builtin filters (compiled into the binary) are always trusted.
 pub fn load_filters(path: &Path) -> std::collections::HashMap<String, FilterDef> {
     let raw = match std::fs::read_to_string(path) {
         Ok(s) => s,
         Err(_) => return Default::default(),
     };
+
+    // Trust gate: verify SHA-256 sidecar for project-local filters
+    if std::env::var("ABYSS_TRUST_FILTERS").as_deref() != Ok("1") {
+        let hash_path = path.with_extension("toml.sha256");
+        if !verify_sha256(&raw, &hash_path) {
+            eprintln!(
+                "[abyss proxy] untrusted filters at {} — skipped (run `abyss trust-filter` to approve)",
+                path.display()
+            );
+            return Default::default();
+        }
+    }
+
     match toml::from_str::<FilterFile>(&raw) {
         Ok(f) => f.filters,
         Err(_) => Default::default(),
     }
+}
+
+fn verify_sha256(content: &str, hash_path: &Path) -> bool {
+    let expected = match std::fs::read_to_string(hash_path) {
+        Ok(s) => s.trim().to_lowercase(),
+        Err(_) => return false,
+    };
+    let actual = {
+        use blake3::Hasher;
+        let mut h = Hasher::new();
+        h.update(content.as_bytes());
+        h.finalize().to_hex().to_string()
+    };
+    actual == expected
+}
+
+/// Write the trust sidecar for a filters.toml file.
+pub fn write_trust_hash(filter_path: &Path) -> std::io::Result<()> {
+    let content = std::fs::read_to_string(filter_path)?;
+    let hash = {
+        use blake3::Hasher;
+        let mut h = Hasher::new();
+        h.update(content.as_bytes());
+        h.finalize().to_hex().to_string()
+    };
+    let hash_path = filter_path.with_extension("toml.sha256");
+    std::fs::write(hash_path, &hash)
 }
 
 /// Find the first filter whose match_command regex matches the full command.

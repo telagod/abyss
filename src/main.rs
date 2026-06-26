@@ -2244,22 +2244,27 @@ fn cmd_proxy(config: Config, command: Vec<String>, force_tee: bool, json: bool) 
     }
 
     // Track token savings (best-effort)
-    if config.db_path.exists()
-        && let Ok(repo) = Repository::open(&config.db_path, config.model.dimensions) {
-            let conn = repo.conn();
-            let _ = proxy::tracking::ensure_table(conn);
-            let _ = proxy::tracking::record(
-                conn,
-                &full_cmd,
-                &raw_output,
-                output,
-                exec_ms,
-                config
-                    .workspace
-                    .file_name()
-                    .and_then(|n| n.to_str()),
-            );
-        }
+    let is_first_proxy = if config.db_path.exists()
+        && let Ok(repo) = Repository::open(&config.db_path, config.model.dimensions)
+    {
+        let conn = repo.conn();
+        let first = !proxy::tracking::has_any_data(conn);
+        let _ = proxy::tracking::ensure_table(conn);
+        let _ = proxy::tracking::record(
+            conn,
+            &full_cmd,
+            &raw_output,
+            output,
+            exec_ms,
+            config
+                .workspace
+                .file_name()
+                .and_then(|n| n.to_str()),
+        );
+        first
+    } else {
+        false
+    };
 
     if json {
         let raw_tokens = estimate_tokens(&raw_output);
@@ -2279,6 +2284,10 @@ fn cmd_proxy(config: Config, command: Vec<String>, force_tee: bool, json: bool) 
         );
     } else {
         print!("{output}");
+        // First-use hint (stderr, not visible to agent consuming stdout)
+        if is_first_proxy {
+            eprintln!("\n[abyss proxy] tracking token savings → run `abyss gain` to see report");
+        }
     }
 
     // Propagate exit code
