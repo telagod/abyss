@@ -715,6 +715,31 @@ impl IndexPipeline {
                 )\
              ))";
 
+        // Python built-in name guard — parallel to TS and Rust guards.
+        // Python builtins like `print`, `open`, `len`, `type`, `list`,
+        // `dict` etc. are ambient in every Python module. When a user
+        // defines a function or class with the same name somewhere in the
+        // workspace, L4/L4b/L5 will globally name-match and create false
+        // positives. The extractor already filters most builtin *calls*
+        // (is_builtin_py), but refs that slip through (e.g. via import
+        // rebinding, type annotations, or indirect paths) still need a
+        // resolver-level guard to avoid polluting the call graph.
+        const PYTHON_BUILTIN_GUARD: &str = "NOT (\
+             (SELECT lang_family FROM files WHERE id = refs.source_file_id) = 'python' \
+             AND refs.target_name IN (\
+                 'print', 'len', 'range', 'type', 'str', 'int', 'float', 'bool', \
+                 'list', 'dict', 'set', 'tuple', 'bytes', 'bytearray', \
+                 'open', 'input', 'repr', 'abs', 'min', 'max', 'sum', \
+                 'map', 'filter', 'zip', 'enumerate', 'sorted', 'reversed', \
+                 'isinstance', 'issubclass', 'hasattr', 'getattr', 'setattr', 'delattr', \
+                 'super', 'property', 'classmethod', 'staticmethod', \
+                 'id', 'hash', 'iter', 'next', 'callable', 'vars', 'dir', \
+                 'globals', 'locals', 'eval', 'exec', 'compile', \
+                 'Exception', 'ValueError', 'TypeError', 'KeyError', 'IndexError', \
+                 'AttributeError', 'RuntimeError', 'StopIteration', 'NotImplementedError', \
+                 'OSError', 'IOError', 'FileNotFoundError', 'ImportError'\
+             ))";
+
         // Level 0: Receiver-type match (confidence = 0.95).
         // The call site knows its receiver's static type (x.M() where x: T,
         // inferred lite from receivers/params/local literals) and exactly one
@@ -1016,6 +1041,7 @@ impl IndexPipeline {
                AND receiver_type IS NULL
                AND {TS_BUILTIN_GUARD}
                AND {RUST_BUILTIN_GUARD}
+               AND {PYTHON_BUILTIN_GUARD}
                AND (SELECT COUNT(DISTINCT s.file_id) FROM symbols s JOIN files f ON s.file_id = f.id
                    WHERE s.name = refs.target_name
                      AND f.lang_family = (SELECT lang_family FROM files WHERE id = refs.source_file_id)
@@ -1090,6 +1116,7 @@ impl IndexPipeline {
              WHERE confidence = 0.0 AND kind NOT IN ('import', 'import_binding')
                AND {TS_BUILTIN_GUARD}
                AND {RUST_BUILTIN_GUARD}
+               AND {PYTHON_BUILTIN_GUARD}
                AND EXISTS (SELECT 1 FROM symbols s JOIN files f ON s.file_id = f.id
                    WHERE s.name = refs.target_name
                      AND f.dir = (SELECT dir FROM files WHERE id = refs.source_file_id)
@@ -1133,6 +1160,7 @@ impl IndexPipeline {
              WHERE confidence = 0.0 AND kind NOT IN ('import', 'import_binding')
                AND {TS_BUILTIN_GUARD}
                AND {RUST_BUILTIN_GUARD}
+               AND {PYTHON_BUILTIN_GUARD}
                AND EXISTS (SELECT 1 FROM symbols s JOIN files f ON s.file_id = f.id
                    WHERE s.name = refs.target_name
                      AND f.lang_family = (SELECT lang_family FROM files WHERE id = refs.source_file_id)

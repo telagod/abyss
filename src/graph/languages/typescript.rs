@@ -34,16 +34,37 @@ impl LanguageRefExtractor for TypeScriptExtractor {
 
     fn resolve_import(&self, import_path: &str, workspace: &Path) -> Option<PathBuf> {
         let clean = import_path.trim_matches(|c| c == '\'' || c == '"');
-        if !clean.starts_with('.') {
+
+        // Relative imports: existing logic
+        if clean.starts_with('.') {
+            let candidate = workspace.join(clean);
+            return try_ts_extensions(&candidate);
+        }
+
+        // Skip bare Node.js builtins and scoped packages that are definitely external
+        if clean.starts_with("node:") || clean.starts_with("@types/") {
             return None;
         }
-        let candidate = workspace.join(clean);
-        for ext in &[".ts", ".tsx", ".js", ".jsx", "/index.ts", "/index.js"] {
-            let p = PathBuf::from(format!("{}{ext}", candidate.display()));
-            if p.exists() {
+
+        // Non-relative: try as workspace-relative path.
+        // e.g. 'hono/utils' → workspace/hono/utils.ts, workspace/src/hono/utils.ts, etc.
+        let bases = [workspace.to_path_buf(), workspace.join("src")];
+        for base in &bases {
+            let candidate = base.join(clean);
+            if let Some(p) = try_ts_extensions(&candidate) {
                 return Some(p);
             }
+            // Also try as a directory with index file
+            if candidate.is_dir() {
+                for idx in &["index.ts", "index.tsx", "index.js"] {
+                    let p = candidate.join(idx);
+                    if p.exists() {
+                        return Some(p);
+                    }
+                }
+            }
         }
+
         None
     }
 
@@ -469,6 +490,17 @@ fn base_ts_type_name(annotation: &Node, source: &str) -> Option<String> {
         }
         _ => None,
     }
+}
+
+/// Try common TypeScript/JavaScript extensions on a candidate path.
+fn try_ts_extensions(candidate: &Path) -> Option<PathBuf> {
+    for ext in &[".ts", ".tsx", ".js", ".jsx", "/index.ts", "/index.js"] {
+        let p = PathBuf::from(format!("{}{ext}", candidate.display()));
+        if p.exists() {
+            return Some(p);
+        }
+    }
+    None
 }
 
 fn text(node: &Node, source: &str) -> String {

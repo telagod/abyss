@@ -29,7 +29,23 @@ impl LanguageRefExtractor for PythonExtractor {
         name.starts_with("test_") || name.ends_with("_test.py") || path.contains("/tests/")
     }
 
-    fn resolve_import(&self, _import_path: &str, _workspace: &Path) -> Option<PathBuf> {
+    fn resolve_import(&self, import_path: &str, workspace: &Path) -> Option<PathBuf> {
+        // Python import paths use dots: "click.core" → "click/core.py" or "click/core/__init__.py"
+        let fs_path = import_path.replace('.', "/");
+        let candidate = workspace.join(&fs_path);
+
+        // Try direct module file
+        let py_file = candidate.with_extension("py");
+        if py_file.exists() {
+            return Some(py_file);
+        }
+
+        // Try package __init__.py
+        let init_file = candidate.join("__init__.py");
+        if init_file.exists() {
+            return Some(init_file);
+        }
+
         None
     }
     fn language_name(&self) -> &'static str {
