@@ -193,11 +193,19 @@ enum Commands {
         /// Write to <cwd>/.<host>/<settings file> instead of $HOME
         #[arg(long)]
         local: bool,
-        /// Also install the proxy-rewrite hook (Bash command interception).
-        /// Routes agent Bash commands through `abyss proxy` for token
-        /// compression. Currently supported for: claude.
+        /// Skip installing the proxy-rewrite hook (installed by default
+        /// for supported hosts)
         #[arg(long)]
-        proxy: bool,
+        no_proxy: bool,
+    },
+    /// One-command onboarding: index the workspace, install hooks into
+    /// all detected agent hosts, and enable proxy compression.
+    ///
+    /// Equivalent to: `abyss index && abyss attach all`
+    Setup {
+        /// Write hooks to <cwd>/.<host>/ instead of $HOME
+        #[arg(long)]
+        local: bool,
     },
     /// Run as MCP server (stdio transport).
     ///
@@ -478,7 +486,8 @@ fn main() -> Result<()> {
         Commands::Where { file } => cmd_where(config, &file, json),
         Commands::Stats => cmd_stats(config, json),
         Commands::Hook { action } => cmd_hook(config, action, json),
-        Commands::Attach { host, local, proxy } => cmd_attach(&host, local, proxy),
+        Commands::Attach { host, local, no_proxy } => cmd_attach(&host, local, !no_proxy),
+        Commands::Setup { local } => cmd_setup(config, local, json),
         Commands::Mcp { via_daemon } => {
             if via_daemon {
                 cmd_mcp_via_daemon(config)
@@ -1931,6 +1940,29 @@ fn cmd_attach(host: &str, local: bool, proxy: bool) -> Result<()> {
             attach::SUPPORTED_HOSTS.join(", ")
         );
     }
+}
+
+fn cmd_setup(config: Config, local: bool, json: bool) -> Result<()> {
+    eprintln!("abyss setup: indexing workspace...");
+    cmd_index(config.clone(), json, false, None, false, None)?;
+
+    eprintln!("\nabyss setup: installing hooks...");
+    cmd_attach("all", local, true)?;
+
+    let repo = Repository::open(&config.db_path, config.model.dimensions)?;
+    let stats = serde_json::json!({
+        "files": repo.file_count()?,
+        "symbols": repo.symbol_count()?,
+        "refs": repo.ref_count()?,
+    });
+
+    eprintln!("\n✓ abyss setup complete");
+    eprintln!("  indexed: {} files, {} symbols, {} refs",
+        stats["files"], stats["symbols"], stats["refs"]);
+    eprintln!("  hooks: pre-edit + post-edit + proxy rewrite");
+    eprintln!("\n  All agent commands now route through `abyss proxy`.");
+    eprintln!("  Run `abyss gain` after a session to see token savings.");
+    Ok(())
 }
 
 fn cmd_watch(config: Config, debounce_ms: u64) -> Result<()> {
