@@ -1,4 +1,6 @@
-use crate::graph::extractor::{LanguageRefExtractor, RawReference, RefKind};
+use crate::graph::extractor::{
+    LanguageRefExtractor, RawReference, RefKind, build_scope_map, default_scope_name,
+};
 use std::path::{Path, PathBuf};
 use tree_sitter::{Node, Tree};
 
@@ -7,7 +9,12 @@ pub struct JavaExtractor;
 impl LanguageRefExtractor for JavaExtractor {
     fn extract(&self, tree: &Tree, source: &str) -> Vec<RawReference> {
         let mut refs = Vec::new();
-        let scope_map = build_scope_map(&tree.root_node(), source);
+        let scope_map = build_scope_map(
+            &tree.root_node(),
+            source,
+            &["method_declaration", "constructor_declaration"],
+            default_scope_name,
+        );
         collect_refs(&tree.root_node(), source, &scope_map, &mut refs);
         refs
     }
@@ -27,43 +34,6 @@ impl LanguageRefExtractor for JavaExtractor {
     fn language_name(&self) -> &'static str {
         "java"
     }
-}
-
-/// Map each line to the enclosing method/constructor/class name.
-fn build_scope_map(root: &Node, source: &str) -> Vec<Option<String>> {
-    let line_count = source.lines().count();
-    let mut map: Vec<Option<String>> = vec![None; line_count + 1];
-
-    fn walk(node: &Node, source: &str, current: &Option<String>, map: &mut Vec<Option<String>>) {
-        let kind = node.kind();
-        // Only methods/constructors name a scope: including class_declaration
-        // would claim every line of the class body before methods are visited.
-        let name = if matches!(kind, "method_declaration" | "constructor_declaration") {
-            node.child_by_field_name("name")
-                .map(|n| source[n.start_byte()..n.end_byte()].to_string())
-        } else {
-            None
-        };
-        let active = name.as_ref().or(current.as_ref());
-        if let Some(n) = active {
-            for line in node.start_position().row..=node.end_position().row.min(map.len() - 1) {
-                if map[line].is_none() {
-                    map[line] = Some(n.clone());
-                }
-            }
-        }
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            walk(
-                &child,
-                source,
-                &name.clone().or_else(|| current.clone()),
-                map,
-            );
-        }
-    }
-    walk(root, source, &None, &mut map);
-    map
 }
 
 fn collect_refs(

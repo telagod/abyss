@@ -65,11 +65,9 @@ impl ProxyContext {
 
             // change coupling
             if let Ok(mut stmt) = conn.prepare(
-                "SELECT f2.path, cc.coupling_score
+                "SELECT cc.file_b, cc.coupling_score
                  FROM change_coupling cc
-                 JOIN files f1 ON f1.id = cc.file_id_a
-                 JOIN files f2 ON f2.id = cc.file_id_b
-                 WHERE f1.path = ?1 AND cc.coupling_score > 0.3
+                 WHERE cc.file_a = ?1 AND cc.coupling_score > 0.3
                  ORDER BY cc.coupling_score DESC LIMIT 3",
             ) && let Ok(rows) = stmt.query_map([file], |r| {
                 Ok((r.get::<_, String>(0)?, r.get::<_, f64>(1)?))

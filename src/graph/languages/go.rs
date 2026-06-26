@@ -1,14 +1,24 @@
 use std::path::{Path, PathBuf};
 use tree_sitter::{Node, Tree};
 
-use crate::graph::extractor::{LanguageRefExtractor, RawReference, RefKind};
+use crate::graph::extractor::{
+    LanguageRefExtractor, RawReference, RefKind, VarTypes, build_scope_map, default_scope_name,
+};
 
 pub struct GoExtractor;
 
 impl LanguageRefExtractor for GoExtractor {
     fn extract(&self, tree: &Tree, source: &str) -> Vec<RawReference> {
         let root = tree.root_node();
-        let scope_map = build_scope_map(&root, source);
+        let scope_map = build_scope_map(
+            &root,
+            source,
+            &["function_declaration", "method_declaration"],
+            |node, src| {
+                default_scope_name(node, src)
+                    .or_else(|| Some(format!("anon_L{}", node.start_position().row)))
+            },
+        );
         let mut refs = Vec::new();
         collect_refs(&root, source, &scope_map, &VarTypes::new(), &mut refs);
         refs
@@ -44,56 +54,6 @@ impl LanguageRefExtractor for GoExtractor {
         "go"
     }
 }
-
-/// Map each line to the enclosing function/method name
-fn build_scope_map(root: &Node, source: &str) -> Vec<Option<String>> {
-    let line_count = source.lines().count();
-    let mut map: Vec<Option<String>> = vec![None; line_count + 1];
-
-    fn walk(
-        node: &Node,
-        source: &str,
-        current_func: &Option<String>,
-        map: &mut Vec<Option<String>>,
-    ) {
-        let kind = node.kind();
-        let func_name = if kind == "function_declaration" || kind == "method_declaration" {
-            node.child_by_field_name("name")
-                .map(|n| text_of(&n, source))
-                .or_else(|| Some(format!("anon_L{}", node.start_position().row)))
-        } else {
-            None
-        };
-
-        let active = func_name.as_ref().or(current_func.as_ref());
-        if let Some(name) = active {
-            let start = node.start_position().row;
-            let end = node.end_position().row;
-            for line in start..=end.min(map.len() - 1) {
-                if map[line].is_none() {
-                    map[line] = Some(name.clone());
-                }
-            }
-        }
-
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            walk(
-                &child,
-                source,
-                &func_name.clone().or_else(|| current_func.clone()),
-                map,
-            );
-        }
-    }
-
-    walk(root, source, &None, &mut map);
-    map
-}
-
-/// Lite per-function variable → type map. No data-flow, no interfaces:
-/// receivers, parameters, and locals with literal/constructor initializers.
-type VarTypes = std::collections::HashMap<String, String>;
 
 fn collect_refs(
     node: &Node,

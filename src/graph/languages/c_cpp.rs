@@ -1,7 +1,9 @@
 use std::path::{Path, PathBuf};
 use tree_sitter::{Node, Tree};
 
-use crate::graph::extractor::{LanguageRefExtractor, RawReference, RefKind};
+use crate::graph::extractor::{
+    LanguageRefExtractor, RawReference, RefKind, VarTypes, build_scope_map,
+};
 
 pub struct CExtractor;
 pub struct CppExtractor;
@@ -44,7 +46,7 @@ impl LanguageRefExtractor for CppExtractor {
 
 fn extract_refs(tree: &Tree, source: &str, is_cpp: bool) -> Vec<RawReference> {
     let root = tree.root_node();
-    let scope_map = build_scope_map(&root, source, is_cpp);
+    let scope_map = build_scope_map(&root, source, &["function_definition"], fn_def_name);
     let mut refs = Vec::new();
     collect_refs(
         &root,
@@ -55,51 +57,6 @@ fn extract_refs(tree: &Tree, source: &str, is_cpp: bool) -> Vec<RawReference> {
         &mut refs,
     );
     refs
-}
-
-type VarTypes = std::collections::HashMap<String, String>;
-
-fn build_scope_map(root: &Node, source: &str, _is_cpp: bool) -> Vec<Option<String>> {
-    let line_count = source.lines().count();
-    let mut map: Vec<Option<String>> = vec![None; line_count + 1];
-
-    fn walk(
-        node: &Node,
-        source: &str,
-        current_func: &Option<String>,
-        map: &mut Vec<Option<String>>,
-    ) {
-        let kind = node.kind();
-        let func_name = if kind == "function_definition" {
-            fn_def_name(node, source)
-        } else {
-            None
-        };
-
-        let active = func_name.as_ref().or(current_func.as_ref());
-        if let Some(name) = active {
-            let start = node.start_position().row;
-            let end = node.end_position().row;
-            for line in start..=end.min(map.len() - 1) {
-                if map[line].is_none() {
-                    map[line] = Some(name.clone());
-                }
-            }
-        }
-
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            walk(
-                &child,
-                source,
-                &func_name.clone().or_else(|| current_func.clone()),
-                map,
-            );
-        }
-    }
-
-    walk(root, source, &None, &mut map);
-    map
 }
 
 fn collect_refs(

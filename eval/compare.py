@@ -173,8 +173,22 @@ def main():
             "recall": round(r, 4),
         }
 
+    def enforce_gate():
+        # Release-blocker gate: gated@0.7 precision must stay >= 98.5%.
+        # 0.985 in 0..1 space; matches CLAUDE.md eval contract.
+        GATE = 0.985
+        gated_prec = out["gated@0.7"]["precision"]
+        if gated_prec < GATE:
+            print(
+                f"FAIL: {out['repo']} gated precision {gated_prec:.1%} "
+                f"< {GATE:.1%} threshold — release-blocking regression.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
     if as_json:
         print(json.dumps(out, indent=2))
+        enforce_gate()
         return
 
     print(f"=== {out['repo']} — abyss vs SCIP ground truth ===")
@@ -191,6 +205,8 @@ def main():
             f"{label:>10}: precision {m['precision']:.1%}  recall {m['recall']:.1%}"
             f"  ({m['correct']}/{m['predicted']} predicted, {truth_pairs} truth)"
         )
+
+    enforce_gate()
 
 
 if __name__ == "__main__":

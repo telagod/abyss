@@ -19,7 +19,9 @@
 //!     / `.` and then filtered by the builtin list. Cross-file binding
 //!     between caller.sh and lib.sh stays at the L2 / L4 tiers.
 
-use crate::graph::extractor::{LanguageRefExtractor, RawReference, RefKind};
+use crate::graph::extractor::{
+    LanguageRefExtractor, RawReference, RefKind, build_scope_map, default_scope_name,
+};
 use std::path::{Path, PathBuf};
 use tree_sitter::{Node, Tree};
 
@@ -29,7 +31,8 @@ impl LanguageRefExtractor for BashExtractor {
     fn extract(&self, tree: &Tree, source: &str) -> Vec<RawReference> {
         let mut refs = Vec::new();
         let root = tree.root_node();
-        let scope_map = build_scope_map(&root, source);
+        let scope_map =
+            build_scope_map(&root, source, &["function_definition"], default_scope_name);
         collect_refs(&root, source, &scope_map, &mut refs);
         refs
     }
@@ -54,43 +57,6 @@ impl LanguageRefExtractor for BashExtractor {
     fn language_name(&self) -> &'static str {
         "bash"
     }
-}
-
-/// Map each source line to its enclosing `function foo() { ... }` or
-/// `foo() { ... }` block name. Nested function definitions inherit the
-/// outermost name first — matching how the other extractors compute
-/// `source_symbol` so caller-trace queries surface a stable origin.
-fn build_scope_map(root: &Node, source: &str) -> Vec<Option<String>> {
-    let line_count = source.lines().count();
-    let mut map: Vec<Option<String>> = vec![None; line_count + 1];
-
-    fn walk(node: &Node, source: &str, current: &Option<String>, map: &mut Vec<Option<String>>) {
-        let name = if node.kind() == "function_definition" {
-            node.child_by_field_name("name")
-                .map(|n| source[n.start_byte()..n.end_byte()].to_string())
-        } else {
-            None
-        };
-        let active = name.as_ref().or(current.as_ref());
-        if let Some(n) = active {
-            for line in node.start_position().row..=node.end_position().row.min(map.len() - 1) {
-                if map[line].is_none() {
-                    map[line] = Some(n.clone());
-                }
-            }
-        }
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            walk(
-                &child,
-                source,
-                &name.clone().or_else(|| current.clone()),
-                map,
-            );
-        }
-    }
-    walk(root, source, &None, &mut map);
-    map
 }
 
 fn collect_refs(

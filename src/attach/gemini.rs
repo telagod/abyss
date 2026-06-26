@@ -213,15 +213,20 @@ pub fn install_proxy_at(path: &std::path::Path) -> Result<()> {
     const PROXY_TIMEOUT: u32 = 5_000;
     const PROXY_DESC: &str = "Rewrite shell commands for token compression";
 
-    // Re-read the file (install_at just wrote it)
+    // Re-read the file (install_at just wrote it). A user could have edited
+    // it between the two steps, so re-validate rather than trusting the prior
+    // write — `as_object_mut` would otherwise panic on a non-object root.
     let raw = std::fs::read_to_string(path)?;
-    let mut root: Value = serde_json::from_str(&raw)?;
+    let mut root: Value = serde_json::from_str(&raw)
+        .with_context(|| format!("parsing {} as JSON", path.display()))?;
 
-    let hooks = root
+    let root_obj = root
         .as_object_mut()
-        .expect("just validated")
-        .entry("hooks")
-        .or_insert_with(|| json!({}));
+        .ok_or_else(|| anyhow!("{} is not a JSON object", path.display()))?;
+    let hooks = root_obj.entry("hooks").or_insert_with(|| json!({}));
+    if !hooks.is_object() {
+        anyhow::bail!("`hooks` field exists but is not an object");
+    }
 
     // Check if already present
     if let Some(arr) = hooks.get("BeforeTool").and_then(Value::as_array) {

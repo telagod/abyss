@@ -482,8 +482,9 @@ impl Repository {
         };
         // Build the IN list inline. Kinds come from a closed set of static
         // strings (CLI flag dispatch + MCP enum), so no untrusted input
-        // reaches the SQL builder — we can safely interpolate.
-        debug_assert!(
+        // reaches the SQL builder — we can safely interpolate. Hard assert
+        // (not debug_assert) so the guard holds in release builds too.
+        assert!(
             kinds
                 .iter()
                 .all(|k| k.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')),
@@ -555,7 +556,9 @@ impl Repository {
         } else {
             kinds.to_vec()
         };
-        debug_assert!(
+        // Hard assert (not debug_assert) so the SQL-safety guard holds in
+        // release builds too — these kinds are interpolated into the IN clause.
+        assert!(
             kinds
                 .iter()
                 .all(|k| k.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')),

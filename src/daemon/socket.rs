@@ -112,6 +112,16 @@ pub fn serve(socket_path: &Path, state: Arc<DaemonState>, stop: Arc<AtomicBool>)
 
     let listener = UnixListener::bind(socket_path)
         .with_context(|| format!("bind {}", socket_path.display()))?;
+
+    // Restrict socket to owner-only (0o700) so other local users cannot
+    // connect and issue reindex / MCP / subscribe commands.
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let perms = std::fs::Permissions::from_mode(0o700);
+        std::fs::set_permissions(socket_path, perms)
+            .with_context(|| format!("chmod 0700 {}", socket_path.display()))?;
+    }
+
     listener
         .set_nonblocking(true)
         .context("set_nonblocking on UnixListener")?;
