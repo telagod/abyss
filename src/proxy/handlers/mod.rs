@@ -5,9 +5,12 @@
 //! fall through to the TOML declarative filter engine.
 
 pub mod cargo;
+pub mod docker;
 pub mod git;
 pub mod go;
 pub mod js;
+pub mod kubectl;
+pub mod lint;
 pub mod python;
 pub mod system;
 
@@ -32,6 +35,13 @@ pub fn all_handlers() -> Vec<Box<dyn ProxyHandler>> {
         Box::new(go::GoBuildHandler),
         Box::new(js::NpmTestHandler),
         Box::new(python::PytestHandler),
+        Box::new(docker::DockerComposeHandler),
+        Box::new(docker::DockerPsHandler),
+        Box::new(kubectl::KubectlGetHandler),
+        Box::new(kubectl::KubectlLogsHandler),
+        Box::new(lint::EslintHandler),
+        Box::new(lint::RuffHandler),
+        Box::new(lint::TscHandler),
         Box::new(system::LsHandler),
         Box::new(system::FindHandler),
         Box::new(system::GrepHandler),

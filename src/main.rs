@@ -310,6 +310,9 @@ enum Commands {
         /// (default: only on failures)
         #[arg(long)]
         tee: bool,
+        /// Print which handler/filter was used and why on stderr
+        #[arg(long)]
+        explain: bool,
         /// The command and its arguments to proxy
         #[arg(trailing_var_arg = true, required = true)]
         command: Vec<String>,
@@ -506,7 +509,7 @@ fn main() -> Result<()> {
         } => cmd_reset(config, all, daemon, dry_run, json),
         Commands::Ingest { action } => cmd_ingest(action, json),
         Commands::SkillManifest { compact } => cmd_skill_manifest(compact),
-        Commands::Proxy { tee, command } => cmd_proxy(config, command, tee, json),
+        Commands::Proxy { tee, explain, command } => cmd_proxy(config, command, tee, explain, json),
         Commands::Gain { days } => cmd_gain(config, days, json),
         Commands::Rewrite { command } => cmd_rewrite(command),
     }
@@ -1926,11 +1929,9 @@ fn cmd_attach(host: &str, local: bool, proxy: bool) -> Result<()> {
         if proxy {
             match host {
                 "claude" => attach::claude::install_proxy(local)?,
-                other => {
-                    eprintln!(
-                        "note: --proxy not yet supported for {other}; only claude is wired"
-                    );
-                }
+                "codex" => attach::codex::install_proxy(local)?,
+                "gemini" => attach::gemini::install_proxy(local)?,
+                _ => {}
             }
         }
         Ok(())
@@ -2164,7 +2165,7 @@ fn cmd_mcp(config: Config) -> Result<()> {
 // Proxy commands
 // ---------------------------------------------------------------------------
 
-fn cmd_proxy(config: Config, command: Vec<String>, force_tee: bool, json: bool) -> Result<()> {
+fn cmd_proxy(config: Config, command: Vec<String>, force_tee: bool, explain: bool, json: bool) -> Result<()> {
     use code_abyss::proxy::{self, estimate_tokens, never_worse};
 
     if command.is_empty() {
@@ -2177,11 +2178,17 @@ fn cmd_proxy(config: Config, command: Vec<String>, force_tee: bool, json: bool) 
 
     let start = std::time::Instant::now();
 
-    // Run the command
     let result = proxy::runner::run_captured(program, &args)?;
     let exec_ms = start.elapsed().as_millis() as u64;
 
-    // Combine stdout + stderr for filtering (most build tools write to stderr)
+    if result.truncated {
+        let tee_dir = config.workspace.join(".code-abyss").join("tee");
+        let combined = format!("{}\n{}", result.stdout, result.stderr);
+        if let Ok(Some(path)) = proxy::tee::write_tee(&tee_dir, &full_cmd, &combined) {
+            eprintln!("[abyss proxy] output exceeded 10MiB, truncated. Full: {}", path.display());
+        }
+    }
+
     let raw_output = if result.stderr.is_empty() {
         result.stdout.clone()
     } else if result.stdout.is_empty() {
@@ -2190,30 +2197,31 @@ fn cmd_proxy(config: Config, command: Vec<String>, force_tee: bool, json: bool) 
         format!("{}\n{}", result.stdout, result.stderr)
     };
 
-    // Try Rust handlers first
+    // Route: Rust handler → TOML filter → passthrough
     let handlers = proxy::handlers::all_handlers();
+    let mut filter_reason = "passthrough (no matching handler or filter)";
+
     let filtered = if let Some(handler) = proxy::handlers::find_handler(&handlers, program, &args) {
-        // Extract files from diff/status output for semantic context
+        filter_reason = handler.name();
         let files_in_output = extract_file_paths_from_output(&result.stdout);
         let file_refs: Vec<&str> = files_in_output.iter().map(|s| s.as_str()).collect();
         let ctx = proxy::ProxyContext::from_index(&config, &file_refs);
         handler.filter(&result.stdout, &result.stderr, result.exit_code, &args, ctx.as_ref())
     } else {
-        // Try TOML filters
         let builtin = proxy::filter::builtin_filters();
         let project_filters = proxy::filter::load_filters(
             &config.workspace.join(".code-abyss").join("filters.toml"),
         );
-        // Project filters take priority over builtins
         let mut all_filters = builtin;
         all_filters.extend(project_filters);
 
         if let Some(def) = proxy::filter::find_filter(&all_filters, &full_cmd) {
+            filter_reason = "toml-filter";
             proxy::filter::apply_filter(def, &raw_output)
         } else {
-            // No handler, no filter — passthrough with head/tail cap
             let line_count = raw_output.lines().count();
             if line_count > 100 {
+                filter_reason = "passthrough (line-capped at 100)";
                 let lines: Vec<&str> = raw_output.lines().collect();
                 let head = 60;
                 let tail = 30;
@@ -2284,9 +2292,29 @@ fn cmd_proxy(config: Config, command: Vec<String>, force_tee: bool, json: bool) 
         );
     } else {
         print!("{output}");
-        // First-use hint (stderr, not visible to agent consuming stdout)
         if is_first_proxy {
             eprintln!("\n[abyss proxy] tracking token savings → run `abyss gain` to see report");
+        }
+    }
+
+    if explain {
+        let raw_tokens = estimate_tokens(&raw_output);
+        let filtered_tokens = estimate_tokens(output);
+        let saved = raw_tokens.saturating_sub(filtered_tokens);
+        let pct = if raw_tokens > 0 {
+            (saved as f64 / raw_tokens as f64) * 100.0
+        } else {
+            0.0
+        };
+        eprintln!("\n[explain] handler: {filter_reason}");
+        eprintln!("[explain] raw: {raw_tokens} tokens → filtered: {filtered_tokens} tokens ({pct:.0}% saved)");
+        eprintln!("[explain] exec: {exec_ms}ms | truncated: {}", result.truncated);
+        let explain_files = extract_file_paths_from_output(&result.stdout);
+        let explain_refs: Vec<&str> = explain_files.iter().map(|s| s.as_str()).collect();
+        if let Some(ctx) = proxy::ProxyContext::from_index(&config, &explain_refs)
+            && !ctx.impacted_callers.is_empty()
+        {
+            eprintln!("[explain] semantic: {} files with blast-radius data", ctx.impacted_callers.len());
         }
     }
 

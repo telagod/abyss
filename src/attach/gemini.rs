@@ -196,6 +196,69 @@ pub fn install_at(path: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Install the proxy-rewrite hook (BeforeTool, `run_shell_command` matcher)
+/// on top of the existing hooks. Idempotent.
+pub fn install_proxy(local: bool) -> Result<()> {
+    let path = settings_path(local)?;
+    install_proxy_at(&path)
+}
+
+pub fn install_proxy_at(path: &std::path::Path) -> Result<()> {
+    // Ensure the base hooks exist first.
+    install_at(path)?;
+
+    const PROXY_NAME: &str = "abyss-proxy";
+    const PROXY_CMD: &str = "abyss hook proxy-rewrite";
+    const PROXY_MATCHER: &str = "run_shell_command";
+    const PROXY_TIMEOUT: u32 = 5_000;
+    const PROXY_DESC: &str = "Rewrite shell commands for token compression";
+
+    // Re-read the file (install_at just wrote it)
+    let raw = std::fs::read_to_string(path)?;
+    let mut root: Value = serde_json::from_str(&raw)?;
+
+    let hooks = root
+        .as_object_mut()
+        .expect("just validated")
+        .entry("hooks")
+        .or_insert_with(|| json!({}));
+
+    // Check if already present
+    if let Some(arr) = hooks.get("BeforeTool").and_then(Value::as_array) {
+        let already = arr.iter().any(|entry| {
+            entry
+                .get("hooks")
+                .and_then(Value::as_array)
+                .map(|inner| {
+                    inner
+                        .iter()
+                        .any(|h| h.get("name").and_then(Value::as_str) == Some(PROXY_NAME))
+                })
+                .unwrap_or(false)
+        });
+        if already {
+            println!("  ProxyRewrite (already present): {PROXY_CMD}");
+            return Ok(());
+        }
+    }
+
+    upsert_named_hook(
+        hooks,
+        "BeforeTool",
+        PROXY_MATCHER,
+        PROXY_NAME,
+        PROXY_CMD,
+        PROXY_TIMEOUT,
+        PROXY_DESC,
+    )?;
+
+    let pretty = serde_json::to_string_pretty(&root)?;
+    std::fs::write(path, &pretty)?;
+
+    println!("  ProxyRewrite (added): {PROXY_CMD}");
+    Ok(())
+}
+
 /// Upsert a single named hook. Existing matcher-block is reused; an
 /// inner hook with the same `name` is replaced; otherwise we append.
 fn upsert_named_hook(

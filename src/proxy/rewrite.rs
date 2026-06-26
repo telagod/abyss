@@ -7,6 +7,7 @@
 const REWRITE_PREFIXES: &[&str] = &[
     "git", "cargo", "npm", "pnpm", "yarn", "npx", "pytest", "python", "python3",
     "go", "make", "docker", "kubectl", "pip", "pip3",
+    "eslint", "ruff", "tsc", "mypy", "flake8",
     "ls", "find", "grep", "rg", "ag", "cat", "head", "tail", "wc",
 ];
 

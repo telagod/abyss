@@ -123,6 +123,49 @@ pub fn install_at(path: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Install the proxy-rewrite hook (PreToolUse, `Bash|shell` matcher)
+/// on top of the existing pre-edit/post-edit hooks. Idempotent.
+pub fn install_proxy(local: bool) -> Result<()> {
+    let path = settings_path(local)?;
+    install_proxy_at(&path)
+}
+
+pub fn install_proxy_at(path: &Path) -> Result<()> {
+    // Ensure the base hooks exist first.
+    install_at(path)?;
+
+    let raw = std::fs::read_to_string(path)
+        .with_context(|| format!("reading {}", path.display()))?;
+
+    const PROXY_CMD: &str = "abyss hook proxy-rewrite";
+
+    if raw.contains(PROXY_CMD) {
+        println!("  ProxyRewrite (already present): {PROXY_CMD}");
+        return Ok(());
+    }
+
+    let eol = if raw.contains("\r\n") { "\r\n" } else { "\n" };
+    let proxy_block = format!(
+        "{eol}[[hooks.PreToolUse]]{eol}\
+         matcher = \"Bash|shell\"{eol}\
+         {eol}\
+         [[hooks.PreToolUse.hooks]]{eol}\
+         type = \"command\"{eol}\
+         command = \"{PROXY_CMD}\"{eol}\
+         timeout = 5{eol}"
+    );
+
+    let merged = format!(
+        "{}{ABYSS_MARKER} proxy{eol}{proxy_block}",
+        raw.trim_end_matches(['\n', '\r']),
+    );
+    std::fs::write(path, format!("{merged}{eol}"))
+        .with_context(|| format!("writing {}", path.display()))?;
+
+    println!("  ProxyRewrite (added): {PROXY_CMD}");
+    Ok(())
+}
+
 /// Strip any previously-installed abyss block and append a fresh one.
 /// User-authored hooks (no `ABYSS_MARKER` in the block) are preserved
 /// verbatim — including their position relative to other TOML sections.
