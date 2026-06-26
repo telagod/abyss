@@ -1,5 +1,30 @@
 # Changelog
 
+## v0.5.26 — 2026-06-27
+
+Proxy hardening: full test coverage, streaming fix, MCP integration, and long-tail handler expansion.
+
+### Added
+
+- **MCP `proxy_gain` tool** — agents can now query their own token savings via the MCP server (total, top commands, daily breakdown)
+- **7 new proxy handlers**: terraform plan/apply, helm, make, mvn, gradle, pip install — handler count 22 → 28
+- **Proxy integration tests** (`proxy_smoke.rs`) — 7 end-to-end tests covering `abyss proxy` and `abyss rewrite`
+- **Latency regression gate** (`proxy_latency.rs`) — asserts filter latency stays under threshold per handler
+- **Proxy smoke in CI** — `ci.yml` now runs `abyss proxy echo` + `abyss rewrite` alongside index+stats
+- **Release script** (`scripts/release.sh`) — automates version bump, CHANGELOG heading, build+test gate, commit+tag
+
+### Fixed
+
+- **Deadlock in proxy capture** — stdout and stderr are now read on separate threads. Previously, if a child filled the stderr pipe buffer (~64KB) before stdout finished, both sides would block indefinitely.
+- **Memory waste** — `cmd_proxy` no longer clones the raw output string. New `RawOutput` enum borrows when only one stream has data (>90% of commands), saving one full allocation per proxy call.
+
+### Changed
+
+- Handler test coverage: 7 previously untested handler files now have 48 tests (docker, go, js, kubectl, lint, python, handler router)
+- Total test count: 30 → 522
+- Rewrite prefix list expanded: +terraform, helm, mvn, gradle, gradlew, gmake, uv
+- Skill manifest and landing page updated to reflect 28 handlers and 9 MCP tools
+
 ## v0.5.25 — 2026-06-26
 
 The "windows build fix" patch — fixes a chronic build regression that
