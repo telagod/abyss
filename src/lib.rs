@@ -9,6 +9,7 @@ pub mod indexer;
 pub mod ingest;
 pub mod manifest;
 pub mod mcp;
+pub mod proxy;
 pub mod search;
 pub mod storage;
 pub mod temporal;

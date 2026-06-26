@@ -5,14 +5,19 @@
 //! ```json
 //! {
 //!   "hooks": {
-//!     "PreToolUse":  [{ "matcher": "Edit|Write",
-//!                       "hooks": [{ "type": "command", "command": "abyss hook pre-edit"  }] }],
+//!     "PreToolUse":  [
+//!       { "matcher": "Edit|Write",
+//!         "hooks": [{ "type": "command", "command": "abyss hook pre-edit" }] },
+//!       { "matcher": "Bash",
+//!         "hooks": [{ "type": "command", "command": "abyss hook proxy-rewrite" }] }
+//!     ],
 //!     "PostToolUse": [{ "matcher": "Edit|Write",
 //!                       "hooks": [{ "type": "command", "command": "abyss hook post-edit" }] }]
 //!   }
 //! }
 //! ```
 //!
+//! The proxy rewrite hook is only installed with `abyss attach --proxy claude`.
 //! Idempotent: a hook entry with the same `command` string is never duplicated.
 
 use std::path::PathBuf;
@@ -21,8 +26,10 @@ use anyhow::{Context, Result, anyhow};
 use serde_json::{Value, json};
 
 const MATCHER: &str = "Edit|Write";
+const PROXY_MATCHER: &str = "Bash";
 const PRE_CMD: &str = "abyss hook pre-edit";
 const POST_CMD: &str = "abyss hook post-edit";
+const PROXY_CMD: &str = "abyss hook proxy-rewrite";
 
 /// Resolve the target `settings.json` path.
 ///
@@ -106,6 +113,43 @@ pub fn install_at(path: &std::path::Path) -> Result<()> {
     println!(
         "  PostToolUse ({}): {POST_CMD}",
         if post_added {
+            "added"
+        } else {
+            "already present"
+        }
+    );
+    Ok(())
+}
+
+/// Install the proxy-rewrite hook (Bash matcher) on top of the existing
+/// pre-edit/post-edit hooks. Idempotent: re-running is a no-op.
+pub fn install_proxy(local: bool) -> Result<()> {
+    let path = settings_path(local)?;
+    install_proxy_at(&path)
+}
+
+pub fn install_proxy_at(path: &std::path::Path) -> Result<()> {
+    // First ensure the base hooks exist
+    install_at(path)?;
+
+    // Re-read the file (install_at just wrote it)
+    let raw = std::fs::read_to_string(path)?;
+    let mut root: Value = serde_json::from_str(&raw)?;
+
+    let hooks = root
+        .as_object_mut()
+        .expect("just validated")
+        .entry("hooks")
+        .or_insert_with(|| json!({}));
+
+    let (proxy_added, _) = upsert_hook(hooks, "PreToolUse", PROXY_MATCHER, PROXY_CMD)?;
+
+    let pretty = serde_json::to_string_pretty(&root)?;
+    std::fs::write(path, &pretty)?;
+
+    println!(
+        "  ProxyRewrite ({}): {PROXY_CMD}",
+        if proxy_added {
             "added"
         } else {
             "already present"

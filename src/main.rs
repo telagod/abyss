@@ -193,6 +193,11 @@ enum Commands {
         /// Write to <cwd>/.<host>/<settings file> instead of $HOME
         #[arg(long)]
         local: bool,
+        /// Also install the proxy-rewrite hook (Bash command interception).
+        /// Routes agent Bash commands through `abyss proxy` for token
+        /// compression. Currently supported for: claude.
+        #[arg(long)]
+        proxy: bool,
     },
     /// Run as MCP server (stdio transport).
     ///
@@ -285,6 +290,41 @@ enum Commands {
         #[arg(long)]
         compact: bool,
     },
+    /// Proxy a command: run it, compress its output, and print the
+    /// compressed version. Token savings are tracked in the index DB.
+    ///
+    /// Examples:
+    ///   abyss proxy git status
+    ///   abyss proxy cargo test
+    ///   abyss proxy --tee ls -la src/
+    Proxy {
+        /// Preserve full unfiltered output to `.code-abyss/tee/`
+        /// (default: only on failures)
+        #[arg(long)]
+        tee: bool,
+        /// The command and its arguments to proxy
+        #[arg(trailing_var_arg = true, required = true)]
+        command: Vec<String>,
+    },
+    /// Show token savings report from proxied commands.
+    ///
+    /// Reads the tracking table in the index DB and renders a summary
+    /// of total tokens saved, avg compression ratio, and top commands.
+    Gain {
+        /// Number of days to look back (default: 30)
+        #[arg(long, default_value_t = 30)]
+        days: u32,
+    },
+    /// Rewrite a shell command for proxy interception. Used by hook
+    /// scripts — not typically called directly.
+    ///
+    /// Exit codes: 0 = rewritten (stdout has the new command),
+    /// 1 = no rewrite available (pass through as-is).
+    Rewrite {
+        /// The command string to rewrite
+        #[arg(trailing_var_arg = true, required = true)]
+        command: Vec<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -360,6 +400,10 @@ enum HookAction {
     PreEdit,
     /// Post-edit: incrementally refresh the index
     PostEdit,
+    /// Proxy rewrite: intercept a Bash tool call, rewrite the command to
+    /// route through `abyss proxy`, and return the hook response JSON.
+    /// Used by `abyss attach --proxy` hooks.
+    ProxyRewrite,
 }
 
 fn main() -> Result<()> {
@@ -434,7 +478,7 @@ fn main() -> Result<()> {
         Commands::Where { file } => cmd_where(config, &file, json),
         Commands::Stats => cmd_stats(config, json),
         Commands::Hook { action } => cmd_hook(config, action, json),
-        Commands::Attach { host, local } => cmd_attach(&host, local),
+        Commands::Attach { host, local, proxy } => cmd_attach(&host, local, proxy),
         Commands::Mcp { via_daemon } => {
             if via_daemon {
                 cmd_mcp_via_daemon(config)
@@ -453,6 +497,9 @@ fn main() -> Result<()> {
         } => cmd_reset(config, all, daemon, dry_run, json),
         Commands::Ingest { action } => cmd_ingest(action, json),
         Commands::SkillManifest { compact } => cmd_skill_manifest(compact),
+        Commands::Proxy { tee, command } => cmd_proxy(config, command, tee, json),
+        Commands::Gain { days } => cmd_gain(config, days, json),
+        Commands::Rewrite { command } => cmd_rewrite(command),
     }
 }
 
@@ -1503,6 +1550,7 @@ fn cmd_hook(config: Config, action: HookAction, json: bool) -> Result<()> {
     match action {
         HookAction::PreEdit => hook_pre_edit(config, json),
         HookAction::PostEdit => hook_post_edit(config),
+        HookAction::ProxyRewrite => hook_proxy_rewrite(),
     }
 }
 
@@ -1511,6 +1559,63 @@ fn read_stdin_json() -> Option<serde_json::Value> {
     let mut buf = String::new();
     std::io::stdin().read_to_string(&mut buf).ok()?;
     serde_json::from_str(buf.trim()).ok()
+}
+
+/// Proxy rewrite hook: intercept Bash tool calls, rewrite commands to route
+/// through `abyss proxy`. Reads JSON from stdin (Claude Code PreToolUse
+/// payload), outputs hook response JSON to stdout.
+///
+/// Protocol (Claude Code PreToolUse):
+/// - stdout JSON with `permissionDecision: "allow"` + `updatedInput` → rewritten
+/// - empty stdout (exit 0) → passthrough unchanged
+fn hook_proxy_rewrite() -> Result<()> {
+    use code_abyss::proxy::rewrite;
+
+    let Some(payload) = read_stdin_json() else {
+        return Ok(());
+    };
+
+    // Extract the command string from tool_input.command
+    let cmd = payload
+        .get("tool_input")
+        .and_then(|ti| ti.get("command"))
+        .and_then(|c| c.as_str())
+        .unwrap_or("");
+
+    if cmd.is_empty() {
+        return Ok(());
+    }
+
+    // Try to rewrite
+    let Some(rewritten) = rewrite::rewrite_command(cmd) else {
+        return Ok(()); // No rewrite available → passthrough
+    };
+
+    // Build the updatedInput with the rewritten command
+    let tool_input = payload
+        .get("tool_input")
+        .cloned()
+        .unwrap_or(serde_json::json!({}));
+
+    let mut updated_input = tool_input;
+    if let Some(obj) = updated_input.as_object_mut() {
+        obj.insert(
+            "command".into(),
+            serde_json::Value::String(rewritten),
+        );
+    }
+
+    let response = serde_json::json!({
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "allow",
+            "permissionDecisionReason": "abyss proxy rewrite",
+            "updatedInput": updated_input
+        }
+    });
+
+    println!("{}", serde_json::to_string(&response)?);
+    Ok(())
 }
 
 fn hook_pre_edit(config: Config, json: bool) -> Result<()> {
@@ -1775,7 +1880,7 @@ fn live_daemon_pid(config: &Config) -> Option<u32> {
     }
 }
 
-fn cmd_attach(host: &str, local: bool) -> Result<()> {
+fn cmd_attach(host: &str, local: bool, proxy: bool) -> Result<()> {
     use code_abyss::attach;
 
     if host == "all" {
@@ -1789,11 +1894,16 @@ fn cmd_attach(host: &str, local: bool) -> Result<()> {
                 }
                 Err(msg) => {
                     println!("  {:<9} {msg}", r.host);
-                    // "skipped" entries are not failures — only real install errors are.
                     if !msg.starts_with("skipped:") {
                         any_failed = true;
                     }
                 }
+            }
+        }
+        if proxy {
+            println!();
+            if let Err(e) = attach::claude::install_proxy(local) {
+                eprintln!("  proxy hook (claude): {e}");
             }
         }
         if any_failed {
@@ -1803,7 +1913,18 @@ fn cmd_attach(host: &str, local: bool) -> Result<()> {
     }
 
     if attach::SUPPORTED_HOSTS.contains(&host) {
-        attach::install_host(host, local).map(|_| ())
+        attach::install_host(host, local)?;
+        if proxy {
+            match host {
+                "claude" => attach::claude::install_proxy(local)?,
+                other => {
+                    eprintln!(
+                        "note: --proxy not yet supported for {other}; only claude is wired"
+                    );
+                }
+            }
+        }
+        Ok(())
     } else {
         anyhow::bail!(
             "unknown host: {host}; supported: {} (or `all`)",
@@ -2005,6 +2126,210 @@ fn cmd_mcp(config: Config) -> Result<()> {
     })?;
 
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Proxy commands
+// ---------------------------------------------------------------------------
+
+fn cmd_proxy(config: Config, command: Vec<String>, force_tee: bool, json: bool) -> Result<()> {
+    use code_abyss::proxy::{self, estimate_tokens, never_worse};
+
+    if command.is_empty() {
+        anyhow::bail!("abyss proxy: no command given");
+    }
+
+    let program = &command[0];
+    let args: Vec<String> = command[1..].to_vec();
+    let full_cmd = command.join(" ");
+
+    let start = std::time::Instant::now();
+
+    // Run the command
+    let result = proxy::runner::run_captured(program, &args)?;
+    let exec_ms = start.elapsed().as_millis() as u64;
+
+    // Combine stdout + stderr for filtering (most build tools write to stderr)
+    let raw_output = if result.stderr.is_empty() {
+        result.stdout.clone()
+    } else if result.stdout.is_empty() {
+        result.stderr.clone()
+    } else {
+        format!("{}\n{}", result.stdout, result.stderr)
+    };
+
+    // Try Rust handlers first
+    let handlers = proxy::handlers::all_handlers();
+    let filtered = if let Some(handler) = proxy::handlers::find_handler(&handlers, program, &args) {
+        // Extract files from diff/status output for semantic context
+        let files_in_output = extract_file_paths_from_output(&result.stdout);
+        let file_refs: Vec<&str> = files_in_output.iter().map(|s| s.as_str()).collect();
+        let ctx = proxy::ProxyContext::from_index(&config, &file_refs);
+        handler.filter(&result.stdout, &result.stderr, result.exit_code, &args, ctx.as_ref())
+    } else {
+        // Try TOML filters
+        let builtin = proxy::filter::builtin_filters();
+        let project_filters = proxy::filter::load_filters(
+            &config.workspace.join(".code-abyss").join("filters.toml"),
+        );
+        // Project filters take priority over builtins
+        let mut all_filters = builtin;
+        all_filters.extend(project_filters);
+
+        if let Some(def) = proxy::filter::find_filter(&all_filters, &full_cmd) {
+            proxy::filter::apply_filter(def, &raw_output)
+        } else {
+            // No handler, no filter — passthrough with head/tail cap
+            let line_count = raw_output.lines().count();
+            if line_count > 100 {
+                let lines: Vec<&str> = raw_output.lines().collect();
+                let head = 60;
+                let tail = 30;
+                let mut out: String = lines[..head].join("\n");
+                out.push_str(&format!("\n... ({} lines skipped)\n", line_count - head - tail));
+                out.push_str(&lines[line_count - tail..].join("\n"));
+                out
+            } else {
+                raw_output.clone()
+            }
+        }
+    };
+
+    // Never-worse guard
+    let output = never_worse(&raw_output, &filtered);
+
+    // Tee: save full output if needed
+    let tee_mode = if force_tee {
+        proxy::tee::TeeMode::Always
+    } else {
+        proxy::tee::TeeMode::Failures
+    };
+    if proxy::tee::should_tee(tee_mode, result.exit_code, raw_output.len()) {
+        let tee_dir = config.workspace.join(".code-abyss").join("tee");
+        if let Ok(Some(path)) = proxy::tee::write_tee(&tee_dir, &full_cmd, &raw_output) {
+            eprintln!("{}", proxy::tee::tee_hint(&path));
+        }
+    }
+
+    // Track token savings (best-effort)
+    if config.db_path.exists()
+        && let Ok(repo) = Repository::open(&config.db_path, config.model.dimensions) {
+            let conn = repo.conn();
+            let _ = proxy::tracking::ensure_table(conn);
+            let _ = proxy::tracking::record(
+                conn,
+                &full_cmd,
+                &raw_output,
+                output,
+                exec_ms,
+                config
+                    .workspace
+                    .file_name()
+                    .and_then(|n| n.to_str()),
+            );
+        }
+
+    if json {
+        let raw_tokens = estimate_tokens(&raw_output);
+        let filtered_tokens = estimate_tokens(output);
+        println!(
+            "{}",
+            serde_json::json!({
+                "command": full_cmd,
+                "exit_code": result.exit_code,
+                "raw_tokens": raw_tokens,
+                "filtered_tokens": filtered_tokens,
+                "savings_pct": if raw_tokens > 0 {
+                    ((raw_tokens - filtered_tokens) as f64 / raw_tokens as f64) * 100.0
+                } else { 0.0 },
+                "output": output,
+            })
+        );
+    } else {
+        print!("{output}");
+    }
+
+    // Propagate exit code
+    if result.exit_code != 0 {
+        std::process::exit(result.exit_code);
+    }
+    Ok(())
+}
+
+fn extract_file_paths_from_output(output: &str) -> Vec<String> {
+    let mut files = Vec::new();
+    for line in output.lines() {
+        let trimmed = line.trim();
+        // git diff: "diff --git a/path b/path"
+        if trimmed.starts_with("diff --git")
+            && let Some(path) = trimmed.split(" b/").nth(1) {
+            files.push(path.to_string());
+        }
+        // git status: "modified: path" / "new file: path"
+        if let Some(rest) = trimmed.strip_prefix("modified:") {
+            files.push(rest.trim().to_string());
+        }
+        if let Some(rest) = trimmed.strip_prefix("new file:") {
+            files.push(rest.trim().to_string());
+        }
+        if let Some(rest) = trimmed.strip_prefix("deleted:") {
+            files.push(rest.trim().to_string());
+        }
+    }
+    files
+}
+
+fn cmd_gain(config: Config, days: u32, json: bool) -> Result<()> {
+    use code_abyss::proxy::tracking;
+
+    if !config.db_path.exists() {
+        anyhow::bail!(
+            "no index found at {} — run `abyss index` first",
+            config.db_path.display()
+        );
+    }
+
+    let repo = Repository::open(&config.db_path, config.model.dimensions)?;
+    let conn = repo.conn();
+
+    let summary = tracking::gain_summary(conn, days)?;
+
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "total_commands": summary.total_commands,
+                "total_raw_tokens": summary.total_raw_tokens,
+                "total_filtered_tokens": summary.total_filtered_tokens,
+                "total_saved_tokens": summary.total_saved_tokens,
+                "avg_savings_pct": summary.avg_savings_pct,
+                "top_commands": summary.top_commands.iter()
+                    .map(|(cmd, saved, pct)| serde_json::json!({
+                        "command": cmd, "saved_tokens": saved, "savings_pct": pct
+                    }))
+                    .collect::<Vec<_>>(),
+            })
+        );
+    } else {
+        print!("{}", tracking::render_gain(&summary));
+    }
+    Ok(())
+}
+
+fn cmd_rewrite(command: Vec<String>) -> Result<()> {
+    use code_abyss::proxy::rewrite;
+
+    let cmd_str = command.join(" ");
+    match rewrite::rewrite_command(&cmd_str) {
+        Some(rewritten) => {
+            println!("{rewritten}");
+            Ok(())
+        }
+        None => {
+            // Exit code 1 = no rewrite available
+            std::process::exit(1);
+        }
+    }
 }
 
 #[cfg(test)]
