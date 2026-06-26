@@ -53,8 +53,10 @@ pub fn record(
 /// Returns true if the proxy_tracking table has any rows at all.
 pub fn has_any_data(conn: &Connection) -> bool {
     ensure_table(conn).ok();
-    conn.query_row("SELECT COUNT(*) FROM proxy_tracking", [], |r| r.get::<_, u64>(0))
-        .unwrap_or(0)
+    conn.query_row("SELECT COUNT(*) FROM proxy_tracking", [], |r| {
+        r.get::<_, u64>(0)
+    })
+    .unwrap_or(0)
         > 0
 }
 
@@ -87,7 +89,13 @@ pub fn gain_summary(conn: &Connection, days: u32) -> Result<GainSummary> {
          FROM proxy_tracking
          WHERE timestamp >= datetime('now', ?1)",
         [format!("-{days} days")],
-        |r| Ok((r.get::<_, u64>(0)?, r.get::<_, u64>(1)?, r.get::<_, u64>(2)?)),
+        |r| {
+            Ok((
+                r.get::<_, u64>(0)?,
+                r.get::<_, u64>(1)?,
+                r.get::<_, u64>(2)?,
+            ))
+        },
     )?;
 
     summary.total_commands = row.0;
@@ -112,7 +120,11 @@ pub fn gain_summary(conn: &Connection, days: u32) -> Result<GainSummary> {
          LIMIT 10",
     )?;
     let rows = stmt.query_map([format!("-{days} days")], |r| {
-        Ok((r.get::<_, String>(0)?, r.get::<_, u64>(1)?, r.get::<_, f64>(2)?))
+        Ok((
+            r.get::<_, String>(0)?,
+            r.get::<_, u64>(1)?,
+            r.get::<_, f64>(2)?,
+        ))
     })?;
     summary.top_commands = rows.flatten().collect();
 
@@ -197,7 +209,13 @@ pub fn render_gain(summary: &GainSummary) -> String {
     // Daily breakdown
     if summary.daily.len() > 1 {
         out.push_str("\n  Daily:\n");
-        let max_daily = summary.daily.iter().map(|d| d.saved).max().unwrap_or(1).max(1);
+        let max_daily = summary
+            .daily
+            .iter()
+            .map(|d| d.saved)
+            .max()
+            .unwrap_or(1)
+            .max(1);
 
         for day in &summary.daily {
             let pct = if day.raw > 0 {
@@ -293,7 +311,10 @@ mod tests {
         let out = render_gain(&s);
         assert!(out.contains("346K"), "should format saved tokens: {out}");
         assert!(out.contains("69%"), "should show pct: {out}");
-        assert!(out.contains("cat src/main.rs"), "should list top cmd: {out}");
+        assert!(
+            out.contains("cat src/main.rs"),
+            "should list top cmd: {out}"
+        );
         assert!(out.contains("█"), "should have bar chart: {out}");
     }
 }

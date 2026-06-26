@@ -85,7 +85,9 @@ pub fn run_captured(program: &str, args: &[String]) -> Result<CapturedRun> {
         .join()
         .unwrap_or_else(|_| (String::new(), false));
 
-    let status = child.wait().with_context(|| format!("waiting for: {program}"))?;
+    let status = child
+        .wait()
+        .with_context(|| format!("waiting for: {program}"))?;
     let exit_code = status.code().unwrap_or(1);
     let truncated = stdout_truncated || stderr_truncated;
 

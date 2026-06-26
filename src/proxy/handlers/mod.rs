@@ -21,7 +21,14 @@ use super::ProxyContext;
 pub trait ProxyHandler: Send + Sync {
     fn name(&self) -> &'static str;
     fn matches(&self, program: &str, args: &[String]) -> bool;
-    fn filter(&self, stdout: &str, stderr: &str, exit_code: i32, args: &[String], ctx: Option<&ProxyContext>) -> String;
+    fn filter(
+        &self,
+        stdout: &str,
+        stderr: &str,
+        exit_code: i32,
+        args: &[String],
+        ctx: Option<&ProxyContext>,
+    ) -> String;
 }
 
 /// Registry of all built-in handlers, checked in order.
@@ -77,7 +84,11 @@ mod tests {
     #[test]
     fn all_handlers_returns_nonempty() {
         let handlers = all_handlers();
-        assert!(handlers.len() >= 28, "expected ≥28 handlers, got {}", handlers.len());
+        assert!(
+            handlers.len() >= 28,
+            "expected ≥28 handlers, got {}",
+            handlers.len()
+        );
     }
 
     #[test]
@@ -118,11 +129,14 @@ mod tests {
             let handler = find_handler(&handlers, program, &args_owned);
             assert!(
                 handler.is_some(),
-                "no handler matched for `{program} {}`", args.join(" ")
+                "no handler matched for `{program} {}`",
+                args.join(" ")
             );
             assert_eq!(
-                handler.unwrap().name(), *expected_name,
-                "wrong handler for `{program} {}`", args.join(" ")
+                handler.unwrap().name(),
+                *expected_name,
+                "wrong handler for `{program} {}`",
+                args.join(" ")
             );
         }
     }

@@ -5,19 +5,30 @@ use super::{ProxyContext, ProxyHandler};
 pub struct NpmTestHandler;
 
 impl ProxyHandler for NpmTestHandler {
-    fn name(&self) -> &'static str { "npm-test" }
+    fn name(&self) -> &'static str {
+        "npm-test"
+    }
 
     fn matches(&self, program: &str, args: &[String]) -> bool {
         (program == "npm" || program == "pnpm" || program == "yarn" || program == "npx")
             && args.first().map(|s| s.as_str()) == Some("test")
     }
 
-    fn filter(&self, stdout: &str, stderr: &str, exit_code: i32, _args: &[String], _ctx: Option<&ProxyContext>) -> String {
+    fn filter(
+        &self,
+        stdout: &str,
+        stderr: &str,
+        exit_code: i32,
+        _args: &[String],
+        _ctx: Option<&ProxyContext>,
+    ) -> String {
         let combined = format!("{stdout}\n{stderr}");
         let lines: Vec<&str> = combined.lines().collect();
 
         // Try to detect the test runner
-        let is_jest = lines.iter().any(|l| l.contains("Tests:") || l.contains("Test Suites:"));
+        let is_jest = lines
+            .iter()
+            .any(|l| l.contains("Tests:") || l.contains("Test Suites:"));
         let is_vitest = lines.iter().any(|l| l.contains("✓") && l.contains("ms)"));
 
         if is_jest {
@@ -109,7 +120,9 @@ fn filter_vitest(lines: &[&str], exit_code: i32) -> String {
 
     let status = if exit_code == 0 { "ok" } else { "FAILED" };
     if out.is_empty() {
-        out.push_str(&format!("vitest {status}: {passed} passed, {failed} failed\n"));
+        out.push_str(&format!(
+            "vitest {status}: {passed} passed, {failed} failed\n"
+        ));
     }
     out
 }

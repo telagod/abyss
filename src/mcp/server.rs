@@ -775,10 +775,7 @@ impl McpServer {
         name = "proxy_gain",
         description = "Show token savings from proxied commands. Returns total tokens saved, average compression ratio, top commands by savings, and daily breakdown. Use to measure how much context budget the proxy is recovering."
     )]
-    fn proxy_gain(
-        &self,
-        Parameters(input): Parameters<ProxyGainInput>,
-    ) -> Json<ProxyGainOutput> {
+    fn proxy_gain(&self, Parameters(input): Parameters<ProxyGainInput>) -> Json<ProxyGainOutput> {
         let repo = self.repo.lock().unwrap();
         let conn = repo.conn();
         let days = if input.days == 0 { 30 } else { input.days };

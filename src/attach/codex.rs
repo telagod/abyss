@@ -134,8 +134,8 @@ pub fn install_proxy_at(path: &Path) -> Result<()> {
     // Ensure the base hooks exist first.
     install_at(path)?;
 
-    let raw = std::fs::read_to_string(path)
-        .with_context(|| format!("reading {}", path.display()))?;
+    let raw =
+        std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
 
     const PROXY_CMD: &str = "abyss hook proxy-rewrite";
 

@@ -5,13 +5,22 @@ use super::{ProxyContext, ProxyHandler};
 pub struct GoTestHandler;
 
 impl ProxyHandler for GoTestHandler {
-    fn name(&self) -> &'static str { "go-test" }
+    fn name(&self) -> &'static str {
+        "go-test"
+    }
 
     fn matches(&self, program: &str, args: &[String]) -> bool {
         program == "go" && args.first().map(|s| s.as_str()) == Some("test")
     }
 
-    fn filter(&self, stdout: &str, stderr: &str, exit_code: i32, _args: &[String], _ctx: Option<&ProxyContext>) -> String {
+    fn filter(
+        &self,
+        stdout: &str,
+        stderr: &str,
+        exit_code: i32,
+        _args: &[String],
+        _ctx: Option<&ProxyContext>,
+    ) -> String {
         let combined = format!("{stdout}\n{stderr}");
         let lines: Vec<&str> = combined.lines().collect();
 
@@ -91,13 +100,22 @@ impl ProxyHandler for GoTestHandler {
 pub struct GoBuildHandler;
 
 impl ProxyHandler for GoBuildHandler {
-    fn name(&self) -> &'static str { "go-build" }
+    fn name(&self) -> &'static str {
+        "go-build"
+    }
 
     fn matches(&self, program: &str, args: &[String]) -> bool {
         program == "go" && args.first().map(|s| s.as_str()) == Some("build")
     }
 
-    fn filter(&self, stdout: &str, stderr: &str, exit_code: i32, _args: &[String], _ctx: Option<&ProxyContext>) -> String {
+    fn filter(
+        &self,
+        stdout: &str,
+        stderr: &str,
+        exit_code: i32,
+        _args: &[String],
+        _ctx: Option<&ProxyContext>,
+    ) -> String {
         let combined = format!("{stdout}\n{stderr}");
         let lines: Vec<&str> = combined.lines().collect();
 
@@ -140,7 +158,13 @@ mod tests {
 ok  \tgithub.com/user/repo/pkg1\t0.042s
 ok  \tgithub.com/user/repo/pkg2\t0.108s
 ok  \tgithub.com/user/repo/pkg3\t1.203s";
-        let out = h.filter(stdout, "", 0, &[String::from("test"), String::from("./...")], None);
+        let out = h.filter(
+            stdout,
+            "",
+            0,
+            &[String::from("test"), String::from("./...")],
+            None,
+        );
         assert!(out.contains("3 passed"), "pass count: {out}");
         assert!(out.contains("0 failed"), "fail count: {out}");
         assert!(out.contains("✓"), "checkmark: {out}");

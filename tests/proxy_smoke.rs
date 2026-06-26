@@ -26,10 +26,7 @@ fn proxy_echo_passthrough() {
 
 #[test]
 fn proxy_false_exits_nonzero() {
-    let out = abyss()
-        .args(["proxy", "false"])
-        .output()
-        .expect("spawn");
+    let out = abyss().args(["proxy", "false"]).output().expect("spawn");
     assert!(!out.status.success(), "false should fail");
 }
 
@@ -53,8 +50,8 @@ fn proxy_json_mode() {
         .expect("spawn");
     assert!(out.status.success());
     let stdout = String::from_utf8_lossy(&out.stdout);
-    let parsed: serde_json::Value = serde_json::from_str(&stdout)
-        .unwrap_or_else(|e| panic!("invalid JSON: {e}\n{stdout}"));
+    let parsed: serde_json::Value =
+        serde_json::from_str(&stdout).unwrap_or_else(|e| panic!("invalid JSON: {e}\n{stdout}"));
     assert!(parsed.get("command").is_some(), "has command field");
     assert!(parsed.get("exit_code").is_some(), "has exit_code field");
     assert!(parsed.get("raw_tokens").is_some(), "has raw_tokens field");
@@ -62,10 +59,7 @@ fn proxy_json_mode() {
 
 #[test]
 fn proxy_no_command_errors() {
-    let out = abyss()
-        .args(["proxy"])
-        .output()
-        .expect("spawn");
+    let out = abyss().args(["proxy"]).output().expect("spawn");
     assert!(!out.status.success(), "empty proxy should fail");
 }
 
@@ -75,9 +69,15 @@ fn rewrite_basic_command() {
         .args(["rewrite", "git", "status"])
         .output()
         .expect("spawn");
-    assert!(out.status.success(), "rewrite should succeed for git status");
+    assert!(
+        out.status.success(),
+        "rewrite should succeed for git status"
+    );
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("abyss proxy"), "should rewrite to proxy: {stdout}");
+    assert!(
+        stdout.contains("abyss proxy"),
+        "should rewrite to proxy: {stdout}"
+    );
 }
 
 #[test]

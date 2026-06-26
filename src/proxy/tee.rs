@@ -51,7 +51,13 @@ pub fn write_tee(tee_dir: &Path, command_slug: &str, content: &str) -> Result<Op
 
     let slug: String = command_slug
         .chars()
-        .map(|c| if c.is_alphanumeric() || c == '-' { c } else { '_' })
+        .map(|c| {
+            if c.is_alphanumeric() || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
         .take(60)
         .collect();
 

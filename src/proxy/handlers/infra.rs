@@ -5,13 +5,22 @@ use super::{ProxyContext, ProxyHandler};
 pub struct TerraformPlanHandler;
 
 impl ProxyHandler for TerraformPlanHandler {
-    fn name(&self) -> &'static str { "terraform-plan" }
+    fn name(&self) -> &'static str {
+        "terraform-plan"
+    }
 
     fn matches(&self, program: &str, args: &[String]) -> bool {
         program == "terraform" && args.first().map(|s| s.as_str()) == Some("plan")
     }
 
-    fn filter(&self, stdout: &str, stderr: &str, exit_code: i32, _args: &[String], _ctx: Option<&ProxyContext>) -> String {
+    fn filter(
+        &self,
+        stdout: &str,
+        stderr: &str,
+        exit_code: i32,
+        _args: &[String],
+        _ctx: Option<&ProxyContext>,
+    ) -> String {
         let combined = format!("{stdout}\n{stderr}");
         let lines: Vec<&str> = combined.lines().collect();
 
@@ -22,16 +31,24 @@ impl ProxyHandler for TerraformPlanHandler {
 
         for line in &lines {
             let trimmed = line.trim();
-            if trimmed.starts_with("# ") && (trimmed.contains("will be") || trimmed.contains("must be")) {
+            if trimmed.starts_with("# ")
+                && (trimmed.contains("will be") || trimmed.contains("must be"))
+            {
                 resource_actions.push(trimmed.to_string());
             }
             if trimmed.contains("Plan:") {
                 for word in trimmed.split_whitespace() {
                     if let Ok(n) = word.parse::<u32>() {
                         let rest = &trimmed[trimmed.find(word).unwrap_or(0)..];
-                        if rest.contains("to add") { adds = n; }
-                        if rest.contains("to change") { changes = n; }
-                        if rest.contains("to destroy") { destroys = n; }
+                        if rest.contains("to add") {
+                            adds = n;
+                        }
+                        if rest.contains("to change") {
+                            changes = n;
+                        }
+                        if rest.contains("to destroy") {
+                            destroys = n;
+                        }
                     }
                 }
             }
@@ -47,7 +64,10 @@ impl ProxyHandler for TerraformPlanHandler {
             out.push_str(&format!("  {action}\n"));
         }
         if resource_actions.len() > 20 {
-            out.push_str(&format!("  ... {} more resources\n", resource_actions.len() - 20));
+            out.push_str(&format!(
+                "  ... {} more resources\n",
+                resource_actions.len() - 20
+            ));
         }
         out
     }
@@ -56,13 +76,22 @@ impl ProxyHandler for TerraformPlanHandler {
 pub struct TerraformApplyHandler;
 
 impl ProxyHandler for TerraformApplyHandler {
-    fn name(&self) -> &'static str { "terraform-apply" }
+    fn name(&self) -> &'static str {
+        "terraform-apply"
+    }
 
     fn matches(&self, program: &str, args: &[String]) -> bool {
         program == "terraform" && args.first().map(|s| s.as_str()) == Some("apply")
     }
 
-    fn filter(&self, stdout: &str, stderr: &str, exit_code: i32, _args: &[String], _ctx: Option<&ProxyContext>) -> String {
+    fn filter(
+        &self,
+        stdout: &str,
+        stderr: &str,
+        exit_code: i32,
+        _args: &[String],
+        _ctx: Option<&ProxyContext>,
+    ) -> String {
         let combined = format!("{stdout}\n{stderr}");
         let lines: Vec<&str> = combined.lines().collect();
 
@@ -71,7 +100,9 @@ impl ProxyHandler for TerraformApplyHandler {
             let trimmed = line.trim();
             if trimmed.starts_with("Apply complete!")
                 || trimmed.starts_with("Error:")
-                || (trimmed.contains("created") || trimmed.contains("destroyed") || trimmed.contains("modified"))
+                || (trimmed.contains("created")
+                    || trimmed.contains("destroyed")
+                    || trimmed.contains("modified"))
                     && !trimmed.is_empty()
             {
                 out.push_str(trimmed);
@@ -90,16 +121,26 @@ impl ProxyHandler for TerraformApplyHandler {
 pub struct HelmHandler;
 
 impl ProxyHandler for HelmHandler {
-    fn name(&self) -> &'static str { "helm" }
+    fn name(&self) -> &'static str {
+        "helm"
+    }
 
     fn matches(&self, program: &str, args: &[String]) -> bool {
         program == "helm"
-            && args.first().map(|s| s.as_str()).is_some_and(|a| {
-                matches!(a, "install" | "upgrade" | "list" | "status")
-            })
+            && args
+                .first()
+                .map(|s| s.as_str())
+                .is_some_and(|a| matches!(a, "install" | "upgrade" | "list" | "status"))
     }
 
-    fn filter(&self, stdout: &str, stderr: &str, exit_code: i32, args: &[String], _ctx: Option<&ProxyContext>) -> String {
+    fn filter(
+        &self,
+        stdout: &str,
+        stderr: &str,
+        exit_code: i32,
+        args: &[String],
+        _ctx: Option<&ProxyContext>,
+    ) -> String {
         let combined = format!("{stdout}\n{stderr}");
         let lines: Vec<&str> = combined.lines().collect();
         let subcommand = args.first().map(|s| s.as_str()).unwrap_or("?");

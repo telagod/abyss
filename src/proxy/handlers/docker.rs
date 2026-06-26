@@ -5,13 +5,22 @@ use super::{ProxyContext, ProxyHandler};
 pub struct DockerComposeHandler;
 
 impl ProxyHandler for DockerComposeHandler {
-    fn name(&self) -> &'static str { "docker-compose" }
+    fn name(&self) -> &'static str {
+        "docker-compose"
+    }
 
     fn matches(&self, program: &str, args: &[String]) -> bool {
         program == "docker" && args.first().map(|s| s.as_str()) == Some("compose")
     }
 
-    fn filter(&self, stdout: &str, stderr: &str, exit_code: i32, _args: &[String], _ctx: Option<&ProxyContext>) -> String {
+    fn filter(
+        &self,
+        stdout: &str,
+        stderr: &str,
+        exit_code: i32,
+        _args: &[String],
+        _ctx: Option<&ProxyContext>,
+    ) -> String {
         let combined = format!("{stdout}\n{stderr}");
         let lines: Vec<&str> = combined.lines().collect();
 
@@ -37,9 +46,12 @@ impl ProxyHandler for DockerComposeHandler {
                 continue;
             }
             // Capture container status lines
-            if trimmed.contains("Started") || trimmed.contains("Running")
-                || trimmed.contains("Stopped") || trimmed.contains("Created")
-                || trimmed.contains("Healthy") || trimmed.contains("Exited")
+            if trimmed.contains("Started")
+                || trimmed.contains("Running")
+                || trimmed.contains("Stopped")
+                || trimmed.contains("Created")
+                || trimmed.contains("Healthy")
+                || trimmed.contains("Exited")
             {
                 containers.push(trimmed);
                 continue;
@@ -66,13 +78,22 @@ impl ProxyHandler for DockerComposeHandler {
 pub struct DockerPsHandler;
 
 impl ProxyHandler for DockerPsHandler {
-    fn name(&self) -> &'static str { "docker-ps" }
+    fn name(&self) -> &'static str {
+        "docker-ps"
+    }
 
     fn matches(&self, program: &str, args: &[String]) -> bool {
         program == "docker" && args.first().map(|s| s.as_str()) == Some("ps")
     }
 
-    fn filter(&self, stdout: &str, _stderr: &str, _exit_code: i32, _args: &[String], _ctx: Option<&ProxyContext>) -> String {
+    fn filter(
+        &self,
+        stdout: &str,
+        _stderr: &str,
+        _exit_code: i32,
+        _args: &[String],
+        _ctx: Option<&ProxyContext>,
+    ) -> String {
         let lines: Vec<&str> = stdout.lines().collect();
         if lines.len() <= 20 {
             return stdout.to_string();
@@ -144,8 +165,13 @@ db-1   | Running";
         let header = "CONTAINER ID   IMAGE   COMMAND   CREATED   STATUS   PORTS   NAMES\n";
         let mut stdout = header.to_string();
         for i in 0..25 {
-            let wide = format!("abc{i:03}   nginx   \"nginx -g 'daemon off;'\"   2 hours ago   Up 2 hours   0.0.0.0:{}->{}/tcp, :::{}->{}   web-server-{i}\n",
-                8080 + i, 80 + i, 8080 + i, 80 + i);
+            let wide = format!(
+                "abc{i:03}   nginx   \"nginx -g 'daemon off;'\"   2 hours ago   Up 2 hours   0.0.0.0:{}->{}/tcp, :::{}->{}   web-server-{i}\n",
+                8080 + i,
+                80 + i,
+                8080 + i,
+                80 + i
+            );
             stdout.push_str(&wide);
         }
         let out = h.filter(&stdout, "", 0, &[], None);

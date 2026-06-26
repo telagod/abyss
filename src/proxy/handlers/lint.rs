@@ -5,14 +5,23 @@ use super::{ProxyContext, ProxyHandler};
 pub struct EslintHandler;
 
 impl ProxyHandler for EslintHandler {
-    fn name(&self) -> &'static str { "eslint" }
+    fn name(&self) -> &'static str {
+        "eslint"
+    }
 
     fn matches(&self, program: &str, args: &[String]) -> bool {
         program == "eslint"
             || program == "npx" && args.first().map(|s| s.as_str()) == Some("eslint")
     }
 
-    fn filter(&self, stdout: &str, stderr: &str, exit_code: i32, _args: &[String], _ctx: Option<&ProxyContext>) -> String {
+    fn filter(
+        &self,
+        stdout: &str,
+        stderr: &str,
+        exit_code: i32,
+        _args: &[String],
+        _ctx: Option<&ProxyContext>,
+    ) -> String {
         let combined = format!("{stdout}\n{stderr}");
         let lines: Vec<&str> = combined.lines().collect();
 
@@ -28,9 +37,12 @@ impl ProxyHandler for EslintHandler {
                 continue;
             }
             // File path lines (no leading whitespace, ends with extension)
-            if !line.starts_with(' ') && !line.starts_with('\t')
-                && (trimmed.contains(".js") || trimmed.contains(".ts")
-                    || trimmed.contains(".jsx") || trimmed.contains(".tsx")
+            if !line.starts_with(' ')
+                && !line.starts_with('\t')
+                && (trimmed.contains(".js")
+                    || trimmed.contains(".ts")
+                    || trimmed.contains(".jsx")
+                    || trimmed.contains(".tsx")
                     || trimmed.contains(".vue"))
             {
                 if let Some(ref file) = current_file {
@@ -44,7 +56,9 @@ impl ProxyHandler for EslintHandler {
             if (line.starts_with(' ') || line.starts_with('\t')) && trimmed.contains("error") {
                 errors += 1;
                 file_issues.push(trimmed.to_string());
-            } else if (line.starts_with(' ') || line.starts_with('\t')) && trimmed.contains("warning") {
+            } else if (line.starts_with(' ') || line.starts_with('\t'))
+                && trimmed.contains("warning")
+            {
                 warnings += 1;
                 file_issues.push(trimmed.to_string());
             }
@@ -55,8 +69,14 @@ impl ProxyHandler for EslintHandler {
         }
 
         let mut out = String::new();
-        let status = if exit_code == 0 { "clean" } else { "issues found" };
-        out.push_str(&format!("eslint {status}: {errors} error(s), {warnings} warning(s)\n"));
+        let status = if exit_code == 0 {
+            "clean"
+        } else {
+            "issues found"
+        };
+        out.push_str(&format!(
+            "eslint {status}: {errors} error(s), {warnings} warning(s)\n"
+        ));
 
         if files_with_issues.len() <= 15 {
             for f in &files_with_issues {
@@ -66,7 +86,10 @@ impl ProxyHandler for EslintHandler {
             for f in files_with_issues.iter().take(10) {
                 out.push_str(&format!("  {f}\n"));
             }
-            out.push_str(&format!("  ... {} more files\n", files_with_issues.len() - 10));
+            out.push_str(&format!(
+                "  ... {} more files\n",
+                files_with_issues.len() - 10
+            ));
         }
         out
     }
@@ -75,14 +98,26 @@ impl ProxyHandler for EslintHandler {
 pub struct RuffHandler;
 
 impl ProxyHandler for RuffHandler {
-    fn name(&self) -> &'static str { "ruff" }
+    fn name(&self) -> &'static str {
+        "ruff"
+    }
 
     fn matches(&self, program: &str, args: &[String]) -> bool {
         program == "ruff"
-            && args.first().map(|s| s.as_str()).is_some_and(|a| a == "check" || a == "format")
+            && args
+                .first()
+                .map(|s| s.as_str())
+                .is_some_and(|a| a == "check" || a == "format")
     }
 
-    fn filter(&self, stdout: &str, stderr: &str, exit_code: i32, _args: &[String], _ctx: Option<&ProxyContext>) -> String {
+    fn filter(
+        &self,
+        stdout: &str,
+        stderr: &str,
+        exit_code: i32,
+        _args: &[String],
+        _ctx: Option<&ProxyContext>,
+    ) -> String {
         let combined = format!("{stdout}\n{stderr}");
         let lines: Vec<&str> = combined.lines().collect();
 
@@ -90,7 +125,8 @@ impl ProxyHandler for RuffHandler {
             return combined;
         }
 
-        let mut issues_by_rule: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
+        let mut issues_by_rule: std::collections::HashMap<String, u32> =
+            std::collections::HashMap::new();
         let mut total = 0u32;
 
         for line in &lines {
@@ -107,7 +143,11 @@ impl ProxyHandler for RuffHandler {
         }
 
         let mut out = String::new();
-        let status = if exit_code == 0 { "clean" } else { "issues found" };
+        let status = if exit_code == 0 {
+            "clean"
+        } else {
+            "issues found"
+        };
         out.push_str(&format!("ruff {status}: {total} issue(s)\n"));
 
         if !issues_by_rule.is_empty() {
@@ -128,14 +168,22 @@ impl ProxyHandler for RuffHandler {
 pub struct TscHandler;
 
 impl ProxyHandler for TscHandler {
-    fn name(&self) -> &'static str { "tsc" }
-
-    fn matches(&self, program: &str, args: &[String]) -> bool {
-        program == "tsc"
-            || program == "npx" && args.first().map(|s| s.as_str()) == Some("tsc")
+    fn name(&self) -> &'static str {
+        "tsc"
     }
 
-    fn filter(&self, stdout: &str, stderr: &str, exit_code: i32, _args: &[String], _ctx: Option<&ProxyContext>) -> String {
+    fn matches(&self, program: &str, args: &[String]) -> bool {
+        program == "tsc" || program == "npx" && args.first().map(|s| s.as_str()) == Some("tsc")
+    }
+
+    fn filter(
+        &self,
+        stdout: &str,
+        stderr: &str,
+        exit_code: i32,
+        _args: &[String],
+        _ctx: Option<&ProxyContext>,
+    ) -> String {
         let combined = format!("{stdout}\n{stderr}");
         let lines: Vec<&str> = combined.lines().collect();
 
@@ -185,8 +233,14 @@ src/utils.ts
         let out = h.filter(stdout, "", 1, &[], None);
         assert!(out.contains("2 error(s)"), "error count: {out}");
         assert!(out.contains("1 warning(s)"), "warning count: {out}");
-        assert!(out.contains("src/app.tsx (2 issues)"), "file grouping: {out}");
-        assert!(out.contains("src/utils.ts (1 issues)"), "file grouping: {out}");
+        assert!(
+            out.contains("src/app.tsx (2 issues)"),
+            "file grouping: {out}"
+        );
+        assert!(
+            out.contains("src/utils.ts (1 issues)"),
+            "file grouping: {out}"
+        );
     }
 
     #[test]
@@ -233,7 +287,10 @@ src/utils.ts
         let h = TscHandler;
         let mut stdout = String::new();
         for i in 0..40 {
-            stdout.push_str(&format!("src/file{i}.ts({i},1): error TS{}: some message\n", 2300 + i));
+            stdout.push_str(&format!(
+                "src/file{i}.ts({i},1): error TS{}: some message\n",
+                2300 + i
+            ));
             stdout.push_str(&format!("  {i} | const x = bad;\n"));
         }
         let out = h.filter(&stdout, "", 1, &[], None);

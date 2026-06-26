@@ -128,7 +128,9 @@ pub fn find_filter<'a>(
     full_command: &str,
 ) -> Option<&'a FilterDef> {
     for def in filters.values() {
-        if let Ok(re) = Regex::new(&def.match_command) && re.is_match(full_command) {
+        if let Ok(re) = Regex::new(&def.match_command)
+            && re.is_match(full_command)
+        {
             return Some(def);
         }
     }
@@ -147,13 +149,17 @@ pub fn apply_filter(def: &FilterDef, raw: &str) -> String {
     // Stage 2: chained regex replace
     for rule in &def.replace {
         if let Ok(re) = Regex::new(&rule.pattern) {
-            text = re.replace_all(&text, rule.replacement.as_str()).into_owned();
+            text = re
+                .replace_all(&text, rule.replacement.as_str())
+                .into_owned();
         }
     }
 
     // Stage 3: match_output short-circuit
     for rule in &def.match_output {
-        if let Ok(re) = Regex::new(&rule.pattern) && re.is_match(&text) {
+        if let Ok(re) = Regex::new(&rule.pattern)
+            && re.is_match(&text)
+        {
             let blocked = rule.unless.as_ref().and_then(|u| Regex::new(u).ok());
             if blocked.is_none_or(|b| !b.is_match(&text)) {
                 return rule.message.clone();
@@ -207,14 +213,18 @@ pub fn apply_filter(def: &FilterDef, raw: &str) -> String {
             lines.truncate(head);
             lines.push(format!("... ({} more lines)", total - head));
         }
-    } else if let Some(tail) = def.tail_lines && lines.len() > tail {
+    } else if let Some(tail) = def.tail_lines
+        && lines.len() > tail
+    {
         let skipped = lines.len() - tail;
         lines = lines[lines.len() - tail..].to_vec();
         lines.insert(0, format!("... ({skipped} lines before)"));
     }
 
     // Stage 7: absolute max
-    if let Some(max) = def.max_lines && lines.len() > max {
+    if let Some(max) = def.max_lines
+        && lines.len() > max
+    {
         let total = lines.len();
         lines.truncate(max);
         lines.push(format!("... ({} more lines)", total - max));
@@ -222,7 +232,9 @@ pub fn apply_filter(def: &FilterDef, raw: &str) -> String {
 
     // Stage 8: on_empty fallback
     let result = lines.join("\n");
-    if result.trim().is_empty() && let Some(ref fallback) = def.on_empty {
+    if result.trim().is_empty()
+        && let Some(ref fallback) = def.on_empty
+    {
         return fallback.clone();
     }
 
@@ -328,9 +340,7 @@ pub fn builtin_filters() -> std::collections::HashMap<String, FilterDef> {
         FilterDef {
             match_command: r"^go test\b".into(),
             strip_ansi: false,
-            strip_lines_matching: vec![
-                r"^\s*$".into(),
-            ],
+            strip_lines_matching: vec![r"^\s*$".into()],
             max_lines: Some(60),
             on_empty: Some("go test: ok".into()),
             ..default_def()
@@ -393,7 +403,8 @@ mod tests {
             on_empty: Some("clean".into()),
             ..default_def()
         };
-        let raw = "DEBUG: skip\nline 1\nline 2\nDEBUG: skip\nline 3\nline 4\nline 5\nline 6\nline 7";
+        let raw =
+            "DEBUG: skip\nline 1\nline 2\nDEBUG: skip\nline 3\nline 4\nline 5\nline 6\nline 7";
         let out = apply_filter(&def, raw);
         assert!(!out.contains("DEBUG"));
         // max_lines = 5, after stripping we have 5 lines exactly

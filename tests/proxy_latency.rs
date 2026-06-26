@@ -71,7 +71,11 @@ fn grep_filter_under_5ms() {
 
     let mut raw = String::new();
     for i in 0..2000 {
-        raw.push_str(&format!("src/file{}.rs:{}:    let x = pattern();\n", i % 50, i));
+        raw.push_str(&format!(
+            "src/file{}.rs:{}:    let x = pattern();\n",
+            i % 50,
+            i
+        ));
     }
 
     let start = std::time::Instant::now();

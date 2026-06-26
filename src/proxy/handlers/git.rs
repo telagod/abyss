@@ -9,13 +9,22 @@ use super::{ProxyContext, ProxyHandler};
 pub struct GitStatusHandler;
 
 impl ProxyHandler for GitStatusHandler {
-    fn name(&self) -> &'static str { "git-status" }
+    fn name(&self) -> &'static str {
+        "git-status"
+    }
 
     fn matches(&self, program: &str, args: &[String]) -> bool {
         program == "git" && args.first().map(|s| s.as_str()) == Some("status")
     }
 
-    fn filter(&self, stdout: &str, _stderr: &str, _exit_code: i32, _args: &[String], ctx: Option<&ProxyContext>) -> String {
+    fn filter(
+        &self,
+        stdout: &str,
+        _stderr: &str,
+        _exit_code: i32,
+        _args: &[String],
+        ctx: Option<&ProxyContext>,
+    ) -> String {
         let lines: Vec<&str> = stdout.lines().collect();
         if lines.is_empty() {
             return "working tree clean".into();
@@ -60,7 +69,9 @@ impl ProxyHandler for GitStatusHandler {
         let mut out = String::new();
 
         // Branch line (multi-locale)
-        if let Some(first) = lines.first() && is_branch_line(first.trim()) {
+        if let Some(first) = lines.first()
+            && is_branch_line(first.trim())
+        {
             out.push_str(first.trim());
             out.push('\n');
         }
@@ -112,7 +123,7 @@ fn is_branch_line(s: &str) -> bool {
         || s.starts_with("Auf Branch")    // de
         || s.starts_with("Sur la branche") // fr
         || s.starts_with("En la rama")    // es
-        || s.starts_with("No ramo")       // pt
+        || s.starts_with("No ramo") // pt
 }
 
 fn is_staged_header(s: &str) -> bool {
@@ -173,13 +184,22 @@ enum Section {
 pub struct GitDiffHandler;
 
 impl ProxyHandler for GitDiffHandler {
-    fn name(&self) -> &'static str { "git-diff" }
+    fn name(&self) -> &'static str {
+        "git-diff"
+    }
 
     fn matches(&self, program: &str, args: &[String]) -> bool {
         program == "git" && args.first().map(|s| s.as_str()) == Some("diff")
     }
 
-    fn filter(&self, stdout: &str, _stderr: &str, _exit_code: i32, _args: &[String], ctx: Option<&ProxyContext>) -> String {
+    fn filter(
+        &self,
+        stdout: &str,
+        _stderr: &str,
+        _exit_code: i32,
+        _args: &[String],
+        ctx: Option<&ProxyContext>,
+    ) -> String {
         let lines: Vec<&str> = stdout.lines().collect();
         if lines.is_empty() {
             return "no diff".into();
@@ -207,11 +227,7 @@ impl ProxyHandler for GitDiffHandler {
                 if let Some(ref file) = current_file {
                     flush_diff_file(&mut out, file, &file_lines, ctx, context_budget);
                 }
-                let fname = line
-                    .split(" b/")
-                    .nth(1)
-                    .unwrap_or("unknown")
-                    .to_string();
+                let fname = line.split(" b/").nth(1).unwrap_or("unknown").to_string();
                 current_file = Some(fname);
                 file_lines.clear();
                 continue;
@@ -320,13 +336,22 @@ fn flush_diff_file(
 pub struct GitLogHandler;
 
 impl ProxyHandler for GitLogHandler {
-    fn name(&self) -> &'static str { "git-log" }
+    fn name(&self) -> &'static str {
+        "git-log"
+    }
 
     fn matches(&self, program: &str, args: &[String]) -> bool {
         program == "git" && args.first().map(|s| s.as_str()) == Some("log")
     }
 
-    fn filter(&self, stdout: &str, _stderr: &str, _exit_code: i32, _args: &[String], _ctx: Option<&ProxyContext>) -> String {
+    fn filter(
+        &self,
+        stdout: &str,
+        _stderr: &str,
+        _exit_code: i32,
+        _args: &[String],
+        _ctx: Option<&ProxyContext>,
+    ) -> String {
         let lines: Vec<&str> = stdout.lines().collect();
         if lines.len() <= 40 {
             return stdout.to_string();
@@ -344,10 +369,7 @@ impl ProxyHandler for GitLogHandler {
             if trimmed.starts_with("commit ") {
                 commit_count += 1;
                 if commit_count > 20 {
-                    out.push_str(&format!(
-                        "... ({} more commits)\n",
-                        total_commits - 20
-                    ));
+                    out.push_str(&format!("... ({} more commits)\n", total_commits - 20));
                     break;
                 }
                 // Short hash only
@@ -358,11 +380,7 @@ impl ProxyHandler for GitLogHandler {
                     .unwrap_or("");
                 out.push_str(&format!("commit {hash}\n"));
             } else if trimmed.starts_with("Author:") {
-                let short = trimmed
-                    .split('<')
-                    .next()
-                    .unwrap_or(trimmed)
-                    .trim_end();
+                let short = trimmed.split('<').next().unwrap_or(trimmed).trim_end();
                 out.push_str(short);
                 out.push('\n');
             } else if !trimmed.is_empty()
@@ -434,11 +452,23 @@ Changes not staged for commit:
 ";
         let h = GitStatusHandler;
         let out = h.filter(raw, "", 0, &[], None);
-        assert!(out.contains("位于分支 main"), "should keep branch line: {out}");
-        assert!(out.contains("unstaged (2):"), "should detect unstaged: {out}");
-        assert!(out.contains("untracked (2):"), "should detect untracked: {out}");
+        assert!(
+            out.contains("位于分支 main"),
+            "should keep branch line: {out}"
+        );
+        assert!(
+            out.contains("unstaged (2):"),
+            "should detect unstaged: {out}"
+        );
+        assert!(
+            out.contains("untracked (2):"),
+            "should detect untracked: {out}"
+        );
         assert!(!out.contains("使用"), "should strip hint lines: {out}");
-        assert!(!out.contains("修改尚未加入提交"), "should strip footer hint: {out}");
+        assert!(
+            !out.contains("修改尚未加入提交"),
+            "should strip footer hint: {out}"
+        );
     }
 
     #[test]
@@ -462,7 +492,9 @@ index abc..def 100644
     #[test]
     fn git_diff_adaptive_context() {
         // Build a medium-sized diff (>50 changes) to trigger context=1
-        let mut raw = String::from("diff --git a/big.rs b/big.rs\nindex abc..def 100644\n--- a/big.rs\n+++ b/big.rs\n@@ -1,100 +1,100 @@\n");
+        let mut raw = String::from(
+            "diff --git a/big.rs b/big.rs\nindex abc..def 100644\n--- a/big.rs\n+++ b/big.rs\n@@ -1,100 +1,100 @@\n",
+        );
         for i in 0..60 {
             raw.push_str(&format!("+line {i}\n"));
             raw.push_str(&format!("-old line {i}\n"));

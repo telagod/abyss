@@ -5,17 +5,48 @@
 
 /// Known commands that have proxy handlers or TOML filters.
 const REWRITE_PREFIXES: &[&str] = &[
-    "git", "cargo", "npm", "pnpm", "yarn", "npx", "pytest", "python", "python3",
-    "go", "make", "gmake", "docker", "kubectl", "pip", "pip3", "uv",
-    "terraform", "helm", "mvn", "gradle", "gradlew",
-    "eslint", "ruff", "tsc", "mypy", "flake8",
-    "ls", "find", "grep", "rg", "ag", "cat", "head", "tail", "wc",
+    "git",
+    "cargo",
+    "npm",
+    "pnpm",
+    "yarn",
+    "npx",
+    "pytest",
+    "python",
+    "python3",
+    "go",
+    "make",
+    "gmake",
+    "docker",
+    "kubectl",
+    "pip",
+    "pip3",
+    "uv",
+    "terraform",
+    "helm",
+    "mvn",
+    "gradle",
+    "gradlew",
+    "eslint",
+    "ruff",
+    "tsc",
+    "mypy",
+    "flake8",
+    "ls",
+    "find",
+    "grep",
+    "rg",
+    "ag",
+    "cat",
+    "head",
+    "tail",
+    "wc",
 ];
 
 /// Commands that should never be rewritten (interactive, destructive, etc.).
 const IGNORED_EXACT: &[&str] = &[
-    "cd", "exit", "vim", "vi", "nano", "emacs", "htop", "top", "less",
-    "more", "man", "ssh", "scp", "rsync", "abyss",
+    "cd", "exit", "vim", "vi", "nano", "emacs", "htop", "top", "less", "more", "man", "ssh", "scp",
+    "rsync", "abyss",
 ];
 
 /// Rewrite a shell command string for proxy interception.
@@ -107,7 +138,10 @@ fn rewrite_compound(cmd: &str) -> Option<String> {
 pub fn hook_response_claude(original_input: &serde_json::Value, rewritten_cmd: &str) -> String {
     let mut updated_input = original_input.clone();
     if let Some(obj) = updated_input.as_object_mut() {
-        obj.insert("command".into(), serde_json::Value::String(rewritten_cmd.into()));
+        obj.insert(
+            "command".into(),
+            serde_json::Value::String(rewritten_cmd.into()),
+        );
     }
 
     serde_json::json!({

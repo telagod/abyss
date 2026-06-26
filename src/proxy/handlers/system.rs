@@ -9,13 +9,22 @@ use super::{ProxyContext, ProxyHandler};
 pub struct LsHandler;
 
 impl ProxyHandler for LsHandler {
-    fn name(&self) -> &'static str { "ls" }
+    fn name(&self) -> &'static str {
+        "ls"
+    }
 
     fn matches(&self, program: &str, _args: &[String]) -> bool {
         program == "ls"
     }
 
-    fn filter(&self, stdout: &str, _stderr: &str, _exit_code: i32, _args: &[String], ctx: Option<&ProxyContext>) -> String {
+    fn filter(
+        &self,
+        stdout: &str,
+        _stderr: &str,
+        _exit_code: i32,
+        _args: &[String],
+        ctx: Option<&ProxyContext>,
+    ) -> String {
         let lines: Vec<&str> = stdout.lines().collect();
         if lines.len() <= 30 {
             let mut out = stdout.to_string();
@@ -30,7 +39,8 @@ impl ProxyHandler for LsHandler {
         }
 
         // Group by extension
-        let mut by_ext: std::collections::HashMap<String, Vec<&str>> = std::collections::HashMap::new();
+        let mut by_ext: std::collections::HashMap<String, Vec<&str>> =
+            std::collections::HashMap::new();
         let mut dirs = Vec::new();
 
         for line in &lines {
@@ -84,13 +94,22 @@ impl ProxyHandler for LsHandler {
 pub struct FindHandler;
 
 impl ProxyHandler for FindHandler {
-    fn name(&self) -> &'static str { "find" }
+    fn name(&self) -> &'static str {
+        "find"
+    }
 
     fn matches(&self, program: &str, _args: &[String]) -> bool {
         program == "find"
     }
 
-    fn filter(&self, stdout: &str, _stderr: &str, _exit_code: i32, _args: &[String], _ctx: Option<&ProxyContext>) -> String {
+    fn filter(
+        &self,
+        stdout: &str,
+        _stderr: &str,
+        _exit_code: i32,
+        _args: &[String],
+        _ctx: Option<&ProxyContext>,
+    ) -> String {
         let lines: Vec<&str> = stdout.lines().collect();
         if lines.len() <= 50 {
             return stdout.to_string();
@@ -114,7 +133,10 @@ impl ProxyHandler for FindHandler {
         }
 
         let mut out = String::new();
-        out.push_str(&format!("{} results found. Summary by directory:\n", lines.len()));
+        out.push_str(&format!(
+            "{} results found. Summary by directory:\n",
+            lines.len()
+        ));
 
         let mut dirs: Vec<_> = by_dir.iter().collect();
         dirs.sort_by(|a, b| b.1.cmp(a.1));
@@ -148,24 +170,36 @@ const GREP_MAX_PER_FILE: usize = 10;
 const GREP_MAX_FILES_DETAIL: usize = 15;
 
 impl ProxyHandler for GrepHandler {
-    fn name(&self) -> &'static str { "grep" }
+    fn name(&self) -> &'static str {
+        "grep"
+    }
 
     fn matches(&self, program: &str, _args: &[String]) -> bool {
         program == "grep" || program == "rg" || program == "ag"
     }
 
-    fn filter(&self, stdout: &str, _stderr: &str, _exit_code: i32, _args: &[String], _ctx: Option<&ProxyContext>) -> String {
+    fn filter(
+        &self,
+        stdout: &str,
+        _stderr: &str,
+        _exit_code: i32,
+        _args: &[String],
+        _ctx: Option<&ProxyContext>,
+    ) -> String {
         let lines: Vec<&str> = stdout.lines().collect();
         if lines.len() <= GREP_MAX_RESULTS {
             return stdout.to_string();
         }
 
         // Group by file
-        let mut by_file: std::collections::HashMap<String, Vec<&str>> = std::collections::HashMap::new();
+        let mut by_file: std::collections::HashMap<String, Vec<&str>> =
+            std::collections::HashMap::new();
         let mut no_file_lines = Vec::new();
 
         for line in &lines {
-            if let Some((file, _rest)) = line.split_once(':') && (file.contains('/') || file.contains('.')) {
+            if let Some((file, _rest)) = line.split_once(':')
+                && (file.contains('/') || file.contains('.'))
+            {
                 by_file.entry(file.to_string()).or_default().push(line);
                 continue;
             }
@@ -225,13 +259,22 @@ impl ProxyHandler for GrepHandler {
 pub struct CatHandler;
 
 impl ProxyHandler for CatHandler {
-    fn name(&self) -> &'static str { "cat" }
+    fn name(&self) -> &'static str {
+        "cat"
+    }
 
     fn matches(&self, program: &str, _args: &[String]) -> bool {
         program == "cat"
     }
 
-    fn filter(&self, stdout: &str, _stderr: &str, _exit_code: i32, args: &[String], _ctx: Option<&ProxyContext>) -> String {
+    fn filter(
+        &self,
+        stdout: &str,
+        _stderr: &str,
+        _exit_code: i32,
+        args: &[String],
+        _ctx: Option<&ProxyContext>,
+    ) -> String {
         let lines: Vec<&str> = stdout.lines().collect();
         if lines.len() <= 100 {
             return stdout.to_string();
@@ -297,7 +340,9 @@ fn treesitter_strip(source: &str, file_path: &str) -> Option<String> {
     }
 
     // Copy remaining
-    if cursor < bytes.len() && let Ok(rest) = std::str::from_utf8(&bytes[cursor..]) {
+    if cursor < bytes.len()
+        && let Ok(rest) = std::str::from_utf8(&bytes[cursor..])
+    {
         out.push_str(rest);
     }
 

@@ -5,13 +5,22 @@ use super::{ProxyContext, ProxyHandler};
 pub struct MakeHandler;
 
 impl ProxyHandler for MakeHandler {
-    fn name(&self) -> &'static str { "make" }
+    fn name(&self) -> &'static str {
+        "make"
+    }
 
     fn matches(&self, program: &str, _args: &[String]) -> bool {
         program == "make" || program == "gmake"
     }
 
-    fn filter(&self, stdout: &str, stderr: &str, exit_code: i32, _args: &[String], _ctx: Option<&ProxyContext>) -> String {
+    fn filter(
+        &self,
+        stdout: &str,
+        stderr: &str,
+        exit_code: i32,
+        _args: &[String],
+        _ctx: Option<&ProxyContext>,
+    ) -> String {
         let combined = format!("{stdout}\n{stderr}");
         let lines: Vec<&str> = combined.lines().collect();
 
@@ -24,7 +33,9 @@ impl ProxyHandler for MakeHandler {
 
         for line in &lines {
             let trimmed = line.trim();
-            if trimmed.contains(": error:") || trimmed.starts_with("make:") && trimmed.contains("Error") {
+            if trimmed.contains(": error:")
+                || trimmed.starts_with("make:") && trimmed.contains("Error")
+            {
                 errors.push(trimmed);
             } else if trimmed.contains(": warning:") {
                 warnings += 1;
@@ -35,7 +46,11 @@ impl ProxyHandler for MakeHandler {
         if exit_code == 0 {
             out.push_str(&format!("make ok ({} warnings)\n", warnings));
         } else {
-            out.push_str(&format!("make FAILED: {} error(s), {} warning(s)\n", errors.len(), warnings));
+            out.push_str(&format!(
+                "make FAILED: {} error(s), {} warning(s)\n",
+                errors.len(),
+                warnings
+            ));
             for e in errors.iter().take(15) {
                 out.push_str(&format!("  {e}\n"));
             }
@@ -50,13 +65,22 @@ impl ProxyHandler for MakeHandler {
 pub struct MvnHandler;
 
 impl ProxyHandler for MvnHandler {
-    fn name(&self) -> &'static str { "mvn" }
+    fn name(&self) -> &'static str {
+        "mvn"
+    }
 
     fn matches(&self, program: &str, _args: &[String]) -> bool {
         program == "mvn"
     }
 
-    fn filter(&self, stdout: &str, stderr: &str, exit_code: i32, _args: &[String], _ctx: Option<&ProxyContext>) -> String {
+    fn filter(
+        &self,
+        stdout: &str,
+        stderr: &str,
+        exit_code: i32,
+        _args: &[String],
+        _ctx: Option<&ProxyContext>,
+    ) -> String {
         let combined = format!("{stdout}\n{stderr}");
         let lines: Vec<&str> = combined.lines().collect();
 
@@ -98,13 +122,22 @@ impl ProxyHandler for MvnHandler {
 pub struct GradleHandler;
 
 impl ProxyHandler for GradleHandler {
-    fn name(&self) -> &'static str { "gradle" }
+    fn name(&self) -> &'static str {
+        "gradle"
+    }
 
     fn matches(&self, program: &str, _args: &[String]) -> bool {
         program == "gradle" || program == "gradlew" || program == "./gradlew"
     }
 
-    fn filter(&self, stdout: &str, stderr: &str, exit_code: i32, _args: &[String], _ctx: Option<&ProxyContext>) -> String {
+    fn filter(
+        &self,
+        stdout: &str,
+        stderr: &str,
+        exit_code: i32,
+        _args: &[String],
+        _ctx: Option<&ProxyContext>,
+    ) -> String {
         let combined = format!("{stdout}\n{stderr}");
         let lines: Vec<&str> = combined.lines().collect();
 
@@ -137,14 +170,23 @@ impl ProxyHandler for GradleHandler {
 pub struct PipInstallHandler;
 
 impl ProxyHandler for PipInstallHandler {
-    fn name(&self) -> &'static str { "pip-install" }
+    fn name(&self) -> &'static str {
+        "pip-install"
+    }
 
     fn matches(&self, program: &str, args: &[String]) -> bool {
         (program == "pip" || program == "pip3" || program == "uv")
             && args.first().map(|s| s.as_str()) == Some("install")
     }
 
-    fn filter(&self, stdout: &str, stderr: &str, exit_code: i32, _args: &[String], _ctx: Option<&ProxyContext>) -> String {
+    fn filter(
+        &self,
+        stdout: &str,
+        stderr: &str,
+        exit_code: i32,
+        _args: &[String],
+        _ctx: Option<&ProxyContext>,
+    ) -> String {
         let combined = format!("{stdout}\n{stderr}");
         let lines: Vec<&str> = combined.lines().collect();
 

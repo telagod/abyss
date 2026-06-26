@@ -489,7 +489,11 @@ fn main() -> Result<()> {
         Commands::Where { file } => cmd_where(config, &file, json),
         Commands::Stats => cmd_stats(config, json),
         Commands::Hook { action } => cmd_hook(config, action, json),
-        Commands::Attach { host, local, no_proxy } => cmd_attach(&host, local, !no_proxy),
+        Commands::Attach {
+            host,
+            local,
+            no_proxy,
+        } => cmd_attach(&host, local, !no_proxy),
         Commands::Setup { local } => cmd_setup(config, local, json),
         Commands::Mcp { via_daemon } => {
             if via_daemon {
@@ -509,7 +513,11 @@ fn main() -> Result<()> {
         } => cmd_reset(config, all, daemon, dry_run, json),
         Commands::Ingest { action } => cmd_ingest(action, json),
         Commands::SkillManifest { compact } => cmd_skill_manifest(compact),
-        Commands::Proxy { tee, explain, command } => cmd_proxy(config, command, tee, explain, json),
+        Commands::Proxy {
+            tee,
+            explain,
+            command,
+        } => cmd_proxy(config, command, tee, explain, json),
         Commands::Gain { days } => cmd_gain(config, days, json),
         Commands::Rewrite { command } => cmd_rewrite(command),
     }
@@ -1611,10 +1619,7 @@ fn hook_proxy_rewrite() -> Result<()> {
 
     let mut updated_input = tool_input;
     if let Some(obj) = updated_input.as_object_mut() {
-        obj.insert(
-            "command".into(),
-            serde_json::Value::String(rewritten),
-        );
+        obj.insert("command".into(), serde_json::Value::String(rewritten));
     }
 
     let response = serde_json::json!({
@@ -1958,8 +1963,10 @@ fn cmd_setup(config: Config, local: bool, json: bool) -> Result<()> {
     });
 
     eprintln!("\n✓ abyss setup complete");
-    eprintln!("  indexed: {} files, {} symbols, {} refs",
-        stats["files"], stats["symbols"], stats["refs"]);
+    eprintln!(
+        "  indexed: {} files, {} symbols, {} refs",
+        stats["files"], stats["symbols"], stats["refs"]
+    );
     eprintln!("  hooks: pre-edit + post-edit + proxy rewrite");
     eprintln!("\n  All agent commands now route through `abyss proxy`.");
     eprintln!("  Run `abyss gain` after a session to see token savings.");
@@ -2165,7 +2172,13 @@ fn cmd_mcp(config: Config) -> Result<()> {
 // Proxy commands
 // ---------------------------------------------------------------------------
 
-fn cmd_proxy(config: Config, command: Vec<String>, force_tee: bool, explain: bool, json: bool) -> Result<()> {
+fn cmd_proxy(
+    config: Config,
+    command: Vec<String>,
+    force_tee: bool,
+    explain: bool,
+    json: bool,
+) -> Result<()> {
     use code_abyss::proxy::{self, estimate_tokens, never_worse};
 
     if command.is_empty() {
@@ -2189,7 +2202,10 @@ fn cmd_proxy(config: Config, command: Vec<String>, force_tee: bool, explain: boo
     if result.truncated {
         let tee_dir = config.workspace.join(".code-abyss").join("tee");
         if let Ok(Some(path)) = proxy::tee::write_tee(&tee_dir, &full_cmd, raw_output) {
-            eprintln!("[abyss proxy] output exceeded 10MiB, truncated. Full: {}", path.display());
+            eprintln!(
+                "[abyss proxy] output exceeded 10MiB, truncated. Full: {}",
+                path.display()
+            );
         }
     }
 
@@ -2202,12 +2218,17 @@ fn cmd_proxy(config: Config, command: Vec<String>, force_tee: bool, explain: boo
         let files_in_output = extract_file_paths_from_output(&result.stdout);
         let file_refs: Vec<&str> = files_in_output.iter().map(|s| s.as_str()).collect();
         let ctx = proxy::ProxyContext::from_index(&config, &file_refs);
-        handler.filter(&result.stdout, &result.stderr, result.exit_code, &args, ctx.as_ref())
+        handler.filter(
+            &result.stdout,
+            &result.stderr,
+            result.exit_code,
+            &args,
+            ctx.as_ref(),
+        )
     } else {
         let builtin = proxy::filter::builtin_filters();
-        let project_filters = proxy::filter::load_filters(
-            &config.workspace.join(".code-abyss").join("filters.toml"),
-        );
+        let project_filters =
+            proxy::filter::load_filters(&config.workspace.join(".code-abyss").join("filters.toml"));
         let mut all_filters = builtin;
         all_filters.extend(project_filters);
 
@@ -2222,7 +2243,10 @@ fn cmd_proxy(config: Config, command: Vec<String>, force_tee: bool, explain: boo
                 let head = 60;
                 let tail = 30;
                 let mut out: String = lines[..head].join("\n");
-                out.push_str(&format!("\n... ({} lines skipped)\n", line_count - head - tail));
+                out.push_str(&format!(
+                    "\n... ({} lines skipped)\n",
+                    line_count - head - tail
+                ));
                 out.push_str(&lines[line_count - tail..].join("\n"));
                 out
             } else {
@@ -2260,10 +2284,7 @@ fn cmd_proxy(config: Config, command: Vec<String>, force_tee: bool, explain: boo
             raw_output,
             output,
             exec_ms,
-            config
-                .workspace
-                .file_name()
-                .and_then(|n| n.to_str()),
+            config.workspace.file_name().and_then(|n| n.to_str()),
         );
         first
     } else {
@@ -2303,14 +2324,22 @@ fn cmd_proxy(config: Config, command: Vec<String>, force_tee: bool, explain: boo
             0.0
         };
         eprintln!("\n[explain] handler: {filter_reason}");
-        eprintln!("[explain] raw: {raw_tokens} tokens → filtered: {filtered_tokens} tokens ({pct:.0}% saved)");
-        eprintln!("[explain] exec: {exec_ms}ms | truncated: {}", result.truncated);
+        eprintln!(
+            "[explain] raw: {raw_tokens} tokens → filtered: {filtered_tokens} tokens ({pct:.0}% saved)"
+        );
+        eprintln!(
+            "[explain] exec: {exec_ms}ms | truncated: {}",
+            result.truncated
+        );
         let explain_files = extract_file_paths_from_output(&result.stdout);
         let explain_refs: Vec<&str> = explain_files.iter().map(|s| s.as_str()).collect();
         if let Some(ctx) = proxy::ProxyContext::from_index(&config, &explain_refs)
             && !ctx.impacted_callers.is_empty()
         {
-            eprintln!("[explain] semantic: {} files with blast-radius data", ctx.impacted_callers.len());
+            eprintln!(
+                "[explain] semantic: {} files with blast-radius data",
+                ctx.impacted_callers.len()
+            );
         }
     }
 
@@ -2327,7 +2356,8 @@ fn extract_file_paths_from_output(output: &str) -> Vec<String> {
         let trimmed = line.trim();
         // git diff: "diff --git a/path b/path"
         if trimmed.starts_with("diff --git")
-            && let Some(path) = trimmed.split(" b/").nth(1) {
+            && let Some(path) = trimmed.split(" b/").nth(1)
+        {
             files.push(path.to_string());
         }
         // git status: "modified: path" / "new file: path"

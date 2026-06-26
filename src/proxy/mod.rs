@@ -45,7 +45,8 @@ impl ProxyContext {
                  WHERE f.path = ?1",
                 [file],
                 |r| r.get::<_, f64>(0),
-            ) && score > 0.0 {
+            ) && score > 0.0
+            {
                 ctx.hotspots.push((file.to_string(), score));
             }
 
@@ -57,7 +58,8 @@ impl ProxyContext {
                  WHERE f.path = ?1 AND r.confidence >= 0.7",
                 [file],
                 |r| r.get::<_, u32>(0),
-            ) && count > 0 {
+            ) && count > 0
+            {
                 ctx.impacted_callers.push((file.to_string(), count));
             }
 
@@ -78,7 +80,9 @@ impl ProxyContext {
             }
         }
 
-        if ctx.hotspots.is_empty() && ctx.impacted_callers.is_empty() && ctx.coupled_files.is_empty()
+        if ctx.hotspots.is_empty()
+            && ctx.impacted_callers.is_empty()
+            && ctx.coupled_files.is_empty()
         {
             return None;
         }

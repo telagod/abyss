@@ -5,15 +5,26 @@ use super::{ProxyContext, ProxyHandler};
 pub struct PytestHandler;
 
 impl ProxyHandler for PytestHandler {
-    fn name(&self) -> &'static str { "pytest" }
+    fn name(&self) -> &'static str {
+        "pytest"
+    }
 
     fn matches(&self, program: &str, _args: &[String]) -> bool {
         program == "pytest" || program == "python" || program == "python3"
     }
 
-    fn filter(&self, stdout: &str, stderr: &str, exit_code: i32, args: &[String], _ctx: Option<&ProxyContext>) -> String {
+    fn filter(
+        &self,
+        stdout: &str,
+        stderr: &str,
+        exit_code: i32,
+        args: &[String],
+        _ctx: Option<&ProxyContext>,
+    ) -> String {
         // Only intercept when running tests
-        let is_test = args.iter().any(|a| a == "-m" || a == "pytest" || a.contains("test"));
+        let is_test = args
+            .iter()
+            .any(|a| a == "-m" || a == "pytest" || a.contains("test"));
         if !is_test && self.matches_only_pytest(args) {
             // Fall through for non-test python invocations
         }
@@ -40,10 +51,10 @@ impl ProxyHandler for PytestHandler {
                 for word in trimmed.split_whitespace() {
                     if let Ok(n) = word.parse::<u32>() {
                         let next_words: Vec<&str> = trimmed.split_whitespace().collect();
-                        let idx = next_words
-                            .iter()
-                            .position(|&w| w == word);
-                        if let Some(i) = idx && let Some(&label) = next_words.get(i + 1) {
+                        let idx = next_words.iter().position(|&w| w == word);
+                        if let Some(i) = idx
+                            && let Some(&label) = next_words.get(i + 1)
+                        {
                             match label.trim_end_matches(',') {
                                 "passed" => passed = n,
                                 "failed" => failed = n,
@@ -116,7 +127,13 @@ mod tests {
 collected 42 items
 test_foo.py ..........................................                     [100%]
 ============================== 42 passed in 1.23s ==============================";
-        let out = h.filter(stdout, "", 0, &[String::from("-m"), String::from("pytest")], None);
+        let out = h.filter(
+            stdout,
+            "",
+            0,
+            &[String::from("-m"), String::from("pytest")],
+            None,
+        );
         assert!(out.contains("42 passed"), "pass count: {out}");
         assert!(out.contains("0 failed"), "fail count: {out}");
         assert!(out.contains("pytest ok"), "status: {out}");

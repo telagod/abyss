@@ -9,13 +9,22 @@ use super::{ProxyContext, ProxyHandler};
 pub struct CargoBuildHandler;
 
 impl ProxyHandler for CargoBuildHandler {
-    fn name(&self) -> &'static str { "cargo-build" }
+    fn name(&self) -> &'static str {
+        "cargo-build"
+    }
 
     fn matches(&self, program: &str, args: &[String]) -> bool {
         program == "cargo" && args.first().map(|s| s.as_str()) == Some("build")
     }
 
-    fn filter(&self, stdout: &str, stderr: &str, exit_code: i32, _args: &[String], _ctx: Option<&ProxyContext>) -> String {
+    fn filter(
+        &self,
+        stdout: &str,
+        stderr: &str,
+        exit_code: i32,
+        _args: &[String],
+        _ctx: Option<&ProxyContext>,
+    ) -> String {
         let combined = if stdout.is_empty() { stderr } else { stdout };
         let lines: Vec<&str> = combined.lines().collect();
 
@@ -53,7 +62,10 @@ impl ProxyHandler for CargoBuildHandler {
                 out.push_str(&format!("  ... and {} more\n", warnings - 5));
             }
         } else {
-            out.push_str(&format!("build FAILED ({} error(s), {warnings} warning(s))\n", errors.len()));
+            out.push_str(&format!(
+                "build FAILED ({} error(s), {warnings} warning(s))\n",
+                errors.len()
+            ));
             for e in &errors {
                 out.push_str(&format!("  {e}\n"));
             }
@@ -69,13 +81,22 @@ impl ProxyHandler for CargoBuildHandler {
 pub struct CargoTestHandler;
 
 impl ProxyHandler for CargoTestHandler {
-    fn name(&self) -> &'static str { "cargo-test" }
+    fn name(&self) -> &'static str {
+        "cargo-test"
+    }
 
     fn matches(&self, program: &str, args: &[String]) -> bool {
         program == "cargo" && args.first().map(|s| s.as_str()) == Some("test")
     }
 
-    fn filter(&self, stdout: &str, stderr: &str, exit_code: i32, _args: &[String], _ctx: Option<&ProxyContext>) -> String {
+    fn filter(
+        &self,
+        stdout: &str,
+        stderr: &str,
+        exit_code: i32,
+        _args: &[String],
+        _ctx: Option<&ProxyContext>,
+    ) -> String {
         let combined = format!("{stderr}\n{stdout}");
         let lines: Vec<&str> = combined.lines().collect();
 
@@ -105,7 +126,8 @@ impl ProxyHandler for CargoTestHandler {
                 in_failure_block = false;
             } else if trimmed == "failures:" || trimmed == "---- failures ----" {
                 in_failure_block = true;
-            } else if in_failure_block && trimmed.starts_with("---- ") && trimmed.ends_with(" ----") {
+            } else if in_failure_block && trimmed.starts_with("---- ") && trimmed.ends_with(" ----")
+            {
                 let name = trimmed
                     .trim_start_matches("---- ")
                     .trim_end_matches(" ----")
@@ -116,7 +138,9 @@ impl ProxyHandler for CargoTestHandler {
 
         let mut out = String::new();
         let status = if exit_code == 0 { "ok" } else { "FAILED" };
-        out.push_str(&format!("test {status}: {passed} passed, {failed} failed, {ignored} ignored\n"));
+        out.push_str(&format!(
+            "test {status}: {passed} passed, {failed} failed, {ignored} ignored\n"
+        ));
 
         if !failures.is_empty() {
             out.push_str("failures:\n");
@@ -149,8 +173,7 @@ fn extract_count(part: &str, label: &str) -> Option<u32> {
     if !part.contains(label) {
         return None;
     }
-    part.split_whitespace()
-        .find_map(|w| w.parse::<u32>().ok())
+    part.split_whitespace().find_map(|w| w.parse::<u32>().ok())
 }
 
 // ---------------------------------------------------------------------------
@@ -160,13 +183,22 @@ fn extract_count(part: &str, label: &str) -> Option<u32> {
 pub struct CargoClippyHandler;
 
 impl ProxyHandler for CargoClippyHandler {
-    fn name(&self) -> &'static str { "cargo-clippy" }
+    fn name(&self) -> &'static str {
+        "cargo-clippy"
+    }
 
     fn matches(&self, program: &str, args: &[String]) -> bool {
         program == "cargo" && args.first().map(|s| s.as_str()) == Some("clippy")
     }
 
-    fn filter(&self, stdout: &str, stderr: &str, exit_code: i32, _args: &[String], _ctx: Option<&ProxyContext>) -> String {
+    fn filter(
+        &self,
+        stdout: &str,
+        stderr: &str,
+        exit_code: i32,
+        _args: &[String],
+        _ctx: Option<&ProxyContext>,
+    ) -> String {
         let combined = if stdout.is_empty() { stderr } else { stdout };
         let lines: Vec<&str> = combined.lines().collect();
 
