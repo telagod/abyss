@@ -1,5 +1,51 @@
 # Changelog
 
+## v0.5.27 — 2026-06-27
+
+Comprehensive audit-driven release: security hardening, architecture overhaul, resolver precision breakthrough, and 2× proxy compression.
+
+### Security
+
+- **Daemon socket chmod 0700** — Unix socket now restricts to owner-only after bind, preventing unauthorized local access to reindex/MCP/subscribe verbs
+- **SQL safety**: `debug_assert!` → `assert!` on `format!`-interpolated SQL IN clauses in `find_callers_of_kinds` / `count_callers_at` — guard now holds in release builds
+- **Attach modules**: `.expect()` on user-controlled JSON replaced with `?`-based error propagation — malformed `settings.json` no longer panics
+
+### Architecture
+
+- **main.rs split**: 2489 → 505 lines (−80%). 28 cmd_ handlers extracted into `src/commands/{index,query,inspect,proxy,hooks,daemon,attach}.rs`. main.rs is now the thin clap dispatcher the architecture spec intended.
+- **Shared `build_scope_map`**: 7 identical implementations consolidated into `src/graph/extractor.rs` (−157 lines). Each language extractor passes its scope-defining node kinds and name-extraction closure.
+- **Removed unused `thiserror` dependency**
+
+### Resolver quality (eval-verified)
+
+- **Same-file priority for qualified calls** — L0/L0c/L0d skip cross-file resolution when self/cls/super calls have a same-file match; L2 skips qualified calls entirely when the method exists in the source file. Eliminates the dominant false-positive class (polymorphic methods defined in both caller and candidate files).
+- **Python builtin guard** — 56 Python builtins (`print`, `len`, `type`, `list`, etc.) excluded from L4/L4b/L5 tiers to prevent false matches with user-defined functions
+- **TypeScript non-relative imports** — `resolve_import` now probes workspace root and `src/` prefix for non-relative imports like `'hono/utils'`, enabling monorepo-style import resolution
+- **Eval precision gate enforced** — `compare.py` now exits non-zero when gated precision drops below 98.5%
+
+#### Eval results (all 6 corpora pass 98.5% gate)
+
+| Corpus | Precision | Recall | Δ Precision | Δ Recall |
+|--------|:---------:|:------:|:-----------:|:--------:|
+| gin (Go) | 99.4% | 83.0% | +0.1 | +0.4 |
+| hono (TS) | 98.9% | 64.6% | +0.1 | +0.8 |
+| click (Python) | **99.3%** | 94.6% | **+1.4** | +1.6 |
+| ripgrep (Rust) | 98.5% | 75.5% | = | +0.2 |
+| abyss (Rust) | 100% | 76.0% | = | — |
+| cmark (C) | 99.1% | 74.8% | = | = |
+
+### Performance
+
+- **Schema v7**: 4 new indices (`idx_refs_unresolved`, `idx_symbols_name_scope`, `idx_symbols_name_kind`, `idx_cf_commit`) — full reindex 534 → 286ms (−46%)
+- **`PRAGMA busy_timeout = 5000`** on both read-write and read-only connections — eliminates spurious SQLITE_BUSY under concurrent daemon access
+- **Proxy compression 45% → 90%**: lower grep/cat/fallback thresholds + 6 new builtin TOML filters (cargo-clippy, cargo-fmt, apt/brew install, curl, tree, rustc-output)
+
+### Fixed
+
+- **Proxy coupling enrichment was silently dead** — `change_coupling` SQL queried non-existent columns (`file_id_a`/`file_id_b` instead of `file_a`/`file_b`); `coupled: X (Y%)` annotations now fire correctly
+- **Search fusion module** — added 13 unit tests covering RRF score accumulation, deduplication, per-engine weights, test/import demotion, and centrality boost
+- **scip-go module path** — updated `setup-indexers.sh` from `sourcegraph/scip-go` to `scip-code/scip-go` (upstream repo moved)
+
 ## v0.5.26 — 2026-06-27
 
 Proxy hardening: full test coverage, streaming fix, MCP integration, and long-tail handler expansion.

@@ -2,6 +2,34 @@
 
 Published whatever the numbers say. Reproduce with `eval/run.sh`.
 
+> **2026-06-27 — same-file priority for qualified calls + Python/TS resolver upgrades.**
+> L0/L0c/L0d now skip cross-file resolution when self/cls/super calls
+> have a same-file match. L2 skips qualified calls entirely when the
+> method exists in the source file. Eliminates the dominant false-positive
+> class on Click (polymorphic methods like `to_info_dict`/`invoke` defined
+> in both caller and candidate files — 11 wrong → 4). Python builtin guard
+> (56 names) on L4/L4b/L5. TS non-relative import resolution. Schema v7
+> with 4 performance indices. compare.py exit gate enforced.
+
+## Results — 2026-06-27, abyss v0.5.27 (same-file priority + Python/TS resolvers)
+
+| Corpus | Lang | Truth pairs | Gated precision | Gated recall | All precision | All recall |
+|--------|------|------------:|----------------:|-------------:|--------------:|-----------:|
+| gin v1.10.0 | Go | 2,968 | **99.4%** | **83.0%** | 89.2% | 88.0% |
+| hono v4.6.14 | TypeScript | 5,780 | **98.9%** | **64.6%** | 81.5% | 79.4% |
+| click 8.1.8 | Python | 589 | **99.3%** | **94.6%** | 98.5% | 96.9% |
+| ripgrep 14.1.1 | Rust | 4,283 | **98.5%** | **75.5%** | 86.8% | 86.8% |
+| abyss @8099aeb | Rust (dogfood) | 450 | **100.0%** | **76.0%** | 98.2% | 83.6% |
+| cmark 0.31.1 | C | 1,383 | **99.1%** | **74.8%** | 99.1% | 74.8% |
+
+All six corpora ≥ 98.5% gated precision — gate PASS. Click up from 97.9% → 99.3%
+(+1.4pp) after same-file priority fix. Gin +0.1pp precision, +0.4pp recall.
+Abyss dogfood recall lower (90.9% → 76.0%) because the corpus is pinned at
+@8099aeb (pre-`src/commands/` split) while the binary has new shared
+`build_scope_map` — scope attribution changes affect a stale snapshot.
+
+> Captured against: scip v0.8.1, scip-go v0.2.7 (scip-code/scip-go), scip-typescript 0.4.0, scip-python 0.6.6, scip-clang v0.3.2, rust-analyzer 1.95.0.
+
 > **2026-06-17 — same-language-family filter on the demoted tiers.**
 > Cross-file resolution tiers L2/L3/L4/L4b/L5 now require the candidate's
 > `files.lang_family` to equal the source file's. Found by dogfooding: a
@@ -11,6 +39,7 @@ Published whatever the numbers say. Reproduce with `eval/run.sh`.
 > (typescript+tsx+javascript), c (c+cpp), java, bash. Single-corpus eval
 > impact should be ~zero — every corpus is single-language — but the
 > demoted tiers on polyglot repos (Go/JS, Rust/JS, …) get noticeably
+
 ## Results — 2026-06-17, abyss v0.4.0 (cross-language filter + L0 architecture coordinates)
 
 | Corpus | Lang | Truth pairs | Gated precision | Gated recall | All precision | All recall |
