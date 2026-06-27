@@ -18,7 +18,7 @@ mkdir -p "$LOCAL_BIN"
 # and updating RESULTS.md in the same commit. See eval/README.md "Reproducibility".
 SCIP_VERSION="v0.8.1"               # sourcegraph/scip CLI
 SCIP_CLANG_VERSION="v0.3.2"         # sourcegraph/scip-clang
-SCIP_GO_VERSION="v0.2.7"            # sourcegraph/scip-go (go install @vX.Y.Z)
+SCIP_GO_VERSION="v0.2.7"            # scip-code/scip-go (go install @vX.Y.Z) — upstream moved from sourcegraph/
 SCIP_TS_VERSION="0.4.0"             # @sourcegraph/scip-typescript (npm @X.Y.Z)
 SCIP_PYTHON_VERSION="0.6.6"         # @sourcegraph/scip-python (npm @X.Y.Z)
 # rust-analyzer: pinned via rustup toolchain — leave as rustup component.
@@ -140,7 +140,7 @@ install_scip_go() {
     return 0
   fi
   note "go install scip-go ${SCIP_GO_VERSION}"
-  if go install "github.com/sourcegraph/scip-go/cmd/scip-go@${SCIP_GO_VERSION}"; then
+  if go install "github.com/scip-code/scip-go/cmd/scip-go@${SCIP_GO_VERSION}"; then
     STATUS[scip-go]="ok"
   else
     warn "scip-go: go install failed"
