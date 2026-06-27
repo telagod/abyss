@@ -3,427 +3,634 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>abyss — code intelligence + token compression for AI agents</title>
-<meta name="description" content="abyss indexes your codebase into a call graph with blast-radius analysis, then compresses agent command output by 70-99%. One binary, zero setup.">
+<title>abyss — your agent wastes 85% of tokens. we fix that.</title>
+<meta name="description" content="abyss gives AI coding agents a code graph + output compression layer. One binary, zero config. 85% fewer tokens, 2ms hook latency, 14 languages.">
+<meta name="theme-color" content="#0a0a0f">
+<meta property="og:title" content="abyss — your agent wastes 85% of tokens. we fix that.">
+<meta property="og:description" content="Code graph + token compression for AI coding agents. One binary. 85% savings. 14 languages.">
+<meta property="og:type" content="website">
 <style>
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600;700&display=swap');
+
 :root {
-  --bg: #0a0a0f;
-  --bg2: #12121a;
-  --bg3: #1a1a28;
-  --fg: #e0dfe6;
-  --fg2: #9896a8;
+  --bg: #06060b;
+  --bg2: #0c0c14;
+  --bg3: #13131f;
+  --bg-card: #0f0f1a;
+  --fg: #e8e6f0;
+  --fg2: #8a87a0;
+  --fg3: #5c5972;
   --accent: #7c6fef;
   --accent2: #a78bfa;
+  --accent-glow: rgba(124, 111, 239, 0.15);
   --green: #34d399;
+  --green-dim: rgba(52, 211, 153, 0.12);
   --red: #f87171;
   --yellow: #fbbf24;
   --cyan: #22d3ee;
-  --border: #2a2a3a;
-  --font: 'SF Mono', 'Cascadia Code', 'JetBrains Mono', 'Fira Code', Consolas, monospace;
+  --orange: #fb923c;
+  --border: #1e1e30;
+  --border2: #2a2a40;
+  --font: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --mono: 'JetBrains Mono', 'SF Mono', 'Cascadia Code', 'Fira Code', Consolas, monospace;
+  --radius: 12px;
+  --radius-lg: 16px;
 }
+
 * { margin: 0; padding: 0; box-sizing: border-box; }
 html { scroll-behavior: smooth; }
-body { font-family: var(--font); background: var(--bg); color: var(--fg); line-height: 1.6; }
-a { color: var(--accent2); text-decoration: none; }
-a:hover { text-decoration: underline; }
+body { font-family: var(--font); background: var(--bg); color: var(--fg); line-height: 1.6; -webkit-font-smoothing: antialiased; }
+a { color: var(--accent2); text-decoration: none; transition: color 0.2s; }
+a:hover { color: var(--fg); }
+code { font-family: var(--mono); }
 
-.container { max-width: 960px; margin: 0 auto; padding: 0 24px; }
+.container { max-width: 1080px; margin: 0 auto; padding: 0 24px; }
 
-/* Hero */
-.hero {
-  padding: 80px 0 60px;
-  text-align: center;
-  background: linear-gradient(180deg, var(--bg) 0%, var(--bg2) 100%);
+/* ---- NAV ---- */
+nav {
+  position: fixed; top: 0; left: 0; right: 0; z-index: 100;
+  background: rgba(6, 6, 11, 0.85);
+  backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px);
   border-bottom: 1px solid var(--border);
+  padding: 0 24px; height: 56px;
+  display: flex; align-items: center; justify-content: center;
 }
-.hero h1 {
-  font-size: 3.2rem;
-  font-weight: 800;
-  letter-spacing: -0.03em;
-  margin-bottom: 8px;
+.nav-inner {
+  max-width: 1080px; width: 100%;
+  display: flex; align-items: center; justify-content: space-between;
 }
-.hero h1 span { color: var(--accent); }
-.hero .tagline {
-  font-size: 1.15rem;
-  color: var(--fg2);
-  max-width: 600px;
-  margin: 0 auto 32px;
+.nav-brand { font-family: var(--mono); font-weight: 800; font-size: 1.15rem; color: var(--accent); }
+.nav-links { display: flex; gap: 24px; align-items: center; }
+.nav-links a { color: var(--fg2); font-size: 0.85rem; font-weight: 500; }
+.nav-links a:hover { color: var(--fg); }
+.lang-toggle {
+  background: var(--bg3); border: 1px solid var(--border);
+  border-radius: 6px; padding: 4px 10px; font-size: 0.75rem;
+  color: var(--fg2); cursor: pointer; font-family: var(--font);
+  transition: all 0.2s;
 }
-.hero .stats {
-  display: flex;
-  justify-content: center;
-  gap: 40px;
-  margin-bottom: 36px;
-  flex-wrap: wrap;
-}
-.hero .stat {
+.lang-toggle:hover { border-color: var(--accent); color: var(--fg); }
+
+/* ---- HERO ---- */
+.hero {
+  padding: 140px 0 80px;
   text-align: center;
+  position: relative;
+  overflow: hidden;
 }
-.hero .stat .num {
-  font-size: 2rem;
-  font-weight: 700;
-  color: var(--green);
+.hero::before {
+  content: '';
+  position: absolute; top: 0; left: 50%; transform: translateX(-50%);
+  width: 800px; height: 600px;
+  background: radial-gradient(ellipse at center, var(--accent-glow) 0%, transparent 70%);
+  pointer-events: none;
 }
-.hero .stat .label {
-  font-size: 0.8rem;
-  color: var(--fg2);
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
+.hero-badge {
+  display: inline-flex; align-items: center; gap: 8px;
+  background: var(--green-dim); border: 1px solid rgba(52, 211, 153, 0.2);
+  border-radius: 20px; padding: 6px 16px; margin-bottom: 28px;
+  font-size: 0.8rem; color: var(--green); font-weight: 500;
 }
-.cta-row {
-  display: flex;
-  gap: 12px;
-  justify-content: center;
-  flex-wrap: wrap;
+.hero-badge .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--green); animation: pulse 2s infinite; }
+@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+.hero h1 {
+  font-size: clamp(2.5rem, 6vw, 4.2rem);
+  font-weight: 900; letter-spacing: -0.04em;
+  line-height: 1.1; margin-bottom: 20px;
+  max-width: 800px; margin-left: auto; margin-right: auto;
 }
+.hero h1 .gradient {
+  background: linear-gradient(135deg, var(--accent) 0%, var(--cyan) 50%, var(--green) 100%);
+  -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+.hero .sub {
+  font-size: 1.15rem; color: var(--fg2); max-width: 580px;
+  margin: 0 auto 40px; line-height: 1.7; font-weight: 400;
+}
+.hero-metrics {
+  display: flex; justify-content: center; gap: 48px;
+  margin-bottom: 40px; flex-wrap: wrap;
+}
+.metric { text-align: center; }
+.metric .num {
+  font-size: 2.4rem; font-weight: 800; font-family: var(--mono);
+  background: linear-gradient(135deg, var(--green), var(--cyan));
+  -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+.metric .label {
+  font-size: 0.75rem; color: var(--fg3); text-transform: uppercase;
+  letter-spacing: 0.1em; margin-top: 2px;
+}
+.cta-row { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; }
 .btn {
-  display: inline-block;
-  padding: 12px 28px;
-  border-radius: 8px;
-  font-size: 0.95rem;
-  font-weight: 600;
-  transition: all 0.15s;
-  border: 1px solid transparent;
+  display: inline-flex; align-items: center; gap: 8px;
+  padding: 14px 32px; border-radius: 10px; font-size: 0.9rem;
+  font-weight: 600; transition: all 0.2s; border: 1px solid transparent;
+  font-family: var(--font); cursor: pointer;
 }
 .btn-primary {
-  background: var(--accent);
-  color: #fff;
+  background: var(--accent); color: #fff;
+  box-shadow: 0 0 24px rgba(124, 111, 239, 0.25);
 }
-.btn-primary:hover { background: var(--accent2); text-decoration: none; }
-.btn-outline {
-  border-color: var(--border);
-  color: var(--fg2);
-}
-.btn-outline:hover { border-color: var(--accent); color: var(--fg); text-decoration: none; }
+.btn-primary:hover { background: var(--accent2); text-decoration: none; transform: translateY(-1px); box-shadow: 0 0 32px rgba(124, 111, 239, 0.35); }
+.btn-ghost { border-color: var(--border2); color: var(--fg2); background: transparent; }
+.btn-ghost:hover { border-color: var(--accent); color: var(--fg); text-decoration: none; }
 
-/* Terminal */
+/* ---- TERMINAL ---- */
+.terminal-wrap {
+  max-width: 680px; margin: 48px auto 0;
+  position: relative;
+}
 .terminal {
-  background: var(--bg3);
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 20px 24px;
-  margin: 40px auto;
-  max-width: 720px;
-  overflow-x: auto;
-  font-size: 0.85rem;
-  line-height: 1.7;
-  text-align: left;
-}
-.terminal .prompt { color: var(--accent2); }
-.terminal .cmd { color: var(--fg); font-weight: 600; }
-.terminal .out { color: var(--fg2); }
-.terminal .ok { color: var(--green); }
-.terminal .warn { color: var(--yellow); }
-.terminal .hi { color: var(--cyan); }
-
-/* Sections */
-section {
-  padding: 64px 0;
-  border-bottom: 1px solid var(--border);
-}
-section:last-of-type { border-bottom: none; }
-section h2 {
-  font-size: 1.8rem;
-  font-weight: 700;
-  margin-bottom: 12px;
-  letter-spacing: -0.02em;
-}
-section .subtitle {
-  color: var(--fg2);
-  margin-bottom: 36px;
-  font-size: 0.95rem;
-}
-
-/* Feature grid */
-.features {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-  gap: 20px;
-}
-.feature {
   background: var(--bg2);
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 24px;
+  border: 1px solid var(--border2);
+  border-radius: var(--radius-lg);
+  padding: 20px 24px;
+  font-family: var(--mono); font-size: 0.82rem;
+  line-height: 1.8; text-align: left;
+  overflow-x: auto;
 }
-.feature .icon { font-size: 1.5rem; margin-bottom: 8px; }
-.feature h3 { font-size: 1.05rem; margin-bottom: 6px; }
-.feature p { color: var(--fg2); font-size: 0.85rem; }
+.terminal .dots {
+  display: flex; gap: 6px; margin-bottom: 16px;
+}
+.terminal .dots span { width: 10px; height: 10px; border-radius: 50%; }
+.terminal .dots .r { background: #ff5f57; }
+.terminal .dots .y { background: #febc2e; }
+.terminal .dots .g { background: #28c840; }
+.t-prompt { color: var(--accent2); }
+.t-cmd { color: var(--fg); font-weight: 600; }
+.t-out { color: var(--fg2); }
+.t-ok { color: var(--green); }
+.t-hi { color: var(--cyan); }
+.t-warn { color: var(--yellow); }
+.t-bar { color: var(--accent); }
+.t-dim { color: var(--fg3); }
 
-/* Benchmark table */
-.bench-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 0.85rem;
+/* ---- SECTIONS ---- */
+section { padding: 100px 0; position: relative; }
+.section-label {
+  font-size: 0.75rem; font-weight: 600; text-transform: uppercase;
+  letter-spacing: 0.12em; color: var(--accent); margin-bottom: 12px;
 }
+section h2 {
+  font-size: clamp(1.8rem, 4vw, 2.6rem); font-weight: 800;
+  letter-spacing: -0.03em; margin-bottom: 12px; line-height: 1.2;
+}
+section .sub { color: var(--fg2); font-size: 1rem; margin-bottom: 48px; max-width: 600px; }
+
+/* ---- PROBLEM ---- */
+.problem-grid {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 24px;
+}
+@media (max-width: 768px) { .problem-grid { grid-template-columns: 1fr; } }
+.problem-card {
+  background: var(--bg-card); border: 1px solid var(--border);
+  border-radius: var(--radius-lg); padding: 32px;
+  position: relative; overflow: hidden;
+}
+.problem-card.bad { border-color: rgba(248, 113, 113, 0.2); }
+.problem-card.good { border-color: rgba(52, 211, 153, 0.2); }
+.problem-card .tag {
+  display: inline-block; font-size: 0.7rem; font-weight: 600;
+  text-transform: uppercase; letter-spacing: 0.08em;
+  padding: 4px 10px; border-radius: 4px; margin-bottom: 16px;
+}
+.problem-card.bad .tag { background: rgba(248, 113, 113, 0.1); color: var(--red); }
+.problem-card.good .tag { background: var(--green-dim); color: var(--green); }
+.problem-card h3 { font-size: 1.15rem; margin-bottom: 8px; font-weight: 700; }
+.problem-card p { color: var(--fg2); font-size: 0.88rem; line-height: 1.6; }
+.problem-card .number {
+  font-family: var(--mono); font-size: 3rem; font-weight: 800;
+  position: absolute; top: 20px; right: 24px; opacity: 0.08;
+}
+
+/* ---- COMPRESSION TABLE ---- */
+.compression-section { background: var(--bg2); border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
+.bench-table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
 .bench-table th {
-  text-align: left;
-  padding: 10px 12px;
-  border-bottom: 2px solid var(--border);
-  color: var(--fg2);
-  font-weight: 600;
-  text-transform: uppercase;
-  font-size: 0.75rem;
-  letter-spacing: 0.06em;
+  text-align: left; padding: 14px 16px;
+  border-bottom: 2px solid var(--border2);
+  color: var(--fg3); font-weight: 600;
+  text-transform: uppercase; font-size: 0.7rem;
+  letter-spacing: 0.08em;
 }
-.bench-table td {
-  padding: 10px 12px;
-  border-bottom: 1px solid var(--border);
-}
+.bench-table td { padding: 14px 16px; border-bottom: 1px solid var(--border); }
 .bench-table tr:last-child td { border-bottom: none; }
-.bench-table .bar-cell { width: 200px; }
-.bar {
-  height: 18px;
-  border-radius: 3px;
-  background: var(--accent);
-  display: inline-block;
-  vertical-align: middle;
-  opacity: 0.85;
-}
-.pct { font-weight: 700; }
+.bench-table tr:hover { background: rgba(124, 111, 239, 0.03); }
+.bar-cell { width: 180px; }
+.bar-bg { background: var(--bg3); border-radius: 4px; height: 20px; overflow: hidden; }
+.bar-fill { height: 100%; border-radius: 4px; background: linear-gradient(90deg, var(--accent), var(--cyan)); transition: width 1s ease; }
+.pct { font-family: var(--mono); font-weight: 700; font-size: 0.85rem; }
 .pct-high { color: var(--green); }
 .pct-mid { color: var(--yellow); }
-.pct-low { color: var(--fg2); }
+.pct-low { color: var(--fg3); }
 
-/* Comparison */
-.compare {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 20px;
+/* ---- FEATURES ---- */
+.features-grid {
+  display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px;
 }
-@media (max-width: 640px) { .compare { grid-template-columns: 1fr; } }
+@media (max-width: 900px) { .features-grid { grid-template-columns: repeat(2, 1fr); } }
+@media (max-width: 560px) { .features-grid { grid-template-columns: 1fr; } }
+.feature-card {
+  background: var(--bg-card); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 28px;
+  transition: all 0.25s;
+}
+.feature-card:hover { border-color: var(--accent); transform: translateY(-2px); }
+.feature-card .icon {
+  width: 40px; height: 40px; border-radius: 10px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 1.2rem; margin-bottom: 16px;
+  background: var(--accent-glow); border: 1px solid rgba(124, 111, 239, 0.15);
+}
+.feature-card h3 { font-size: 0.95rem; margin-bottom: 6px; font-weight: 700; }
+.feature-card p { color: var(--fg2); font-size: 0.82rem; line-height: 1.55; }
+
+/* ---- DOGFOOD ---- */
+.dogfood-grid {
+  display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px;
+}
+@media (max-width: 900px) { .dogfood-grid { grid-template-columns: repeat(2, 1fr); } }
+@media (max-width: 560px) { .dogfood-grid { grid-template-columns: 1fr; } }
+.dogfood-card {
+  background: var(--bg-card); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 24px;
+  transition: all 0.25s;
+}
+.dogfood-card:hover { border-color: var(--accent); }
+.dogfood-card .project { font-weight: 700; font-size: 0.95rem; margin-bottom: 4px; }
+.dogfood-card .lang { font-size: 0.75rem; color: var(--fg3); margin-bottom: 12px; }
+.dogfood-card .score-row { display: flex; align-items: baseline; gap: 8px; margin-bottom: 8px; }
+.dogfood-card .score {
+  font-family: var(--mono); font-size: 1.6rem; font-weight: 800; color: var(--green);
+}
+.dogfood-card .score-label { font-size: 0.75rem; color: var(--fg3); }
+.dogfood-card .detail { font-size: 0.78rem; color: var(--fg2); }
+
+/* ---- COMPARE ---- */
+.compare-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+@media (max-width: 640px) { .compare-grid { grid-template-columns: 1fr; } }
 .compare-col {
-  background: var(--bg2);
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 24px;
+  background: var(--bg-card); border: 1px solid var(--border);
+  border-radius: var(--radius-lg); padding: 28px;
 }
-.compare-col h3 { margin-bottom: 12px; font-size: 1.05rem; }
-.compare-col.highlight { border-color: var(--accent); }
+.compare-col.highlight { border-color: var(--accent); box-shadow: 0 0 32px rgba(124, 111, 239, 0.08); }
+.compare-col h3 { font-size: 1.05rem; margin-bottom: 16px; font-weight: 700; }
 .compare-col ul { list-style: none; }
-.compare-col li {
-  padding: 4px 0;
-  font-size: 0.85rem;
-  color: var(--fg2);
-}
-.compare-col li::before { content: ""; display: inline-block; width: 16px; }
-.compare-col li.yes::before { content: "\2713 "; color: var(--green); }
-.compare-col li.no::before { content: "\2717 "; color: var(--red); }
-.compare-col li.partial::before { content: "\25CB "; color: var(--yellow); }
+.compare-col li { padding: 5px 0; font-size: 0.85rem; color: var(--fg2); display: flex; align-items: center; gap: 8px; }
+.compare-col li .ci { width: 18px; text-align: center; flex-shrink: 0; }
+.ci-yes { color: var(--green); }
+.ci-no { color: var(--red); }
+.ci-partial { color: var(--yellow); }
 
-/* Setup */
-.setup-steps {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-  gap: 16px;
+/* ---- SETUP ---- */
+.setup-grid {
+  display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px;
 }
-.step {
-  background: var(--bg2);
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 20px;
-  text-align: center;
+@media (max-width: 640px) { .setup-grid { grid-template-columns: 1fr; } }
+.setup-step {
+  background: var(--bg-card); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 28px; text-align: center;
+  transition: all 0.25s;
 }
-.step .num {
-  display: inline-block;
-  width: 28px; height: 28px;
-  line-height: 28px;
-  border-radius: 50%;
-  background: var(--accent);
-  color: #fff;
-  font-weight: 700;
-  font-size: 0.85rem;
-  margin-bottom: 10px;
+.setup-step:hover { border-color: var(--accent); }
+.setup-step .num {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 32px; height: 32px; border-radius: 8px;
+  background: var(--accent); color: #fff; font-weight: 700;
+  font-size: 0.85rem; margin-bottom: 14px;
 }
-.step code {
-  display: block;
-  background: var(--bg3);
-  padding: 8px;
-  border-radius: 6px;
-  margin-top: 8px;
-  font-size: 0.8rem;
-  color: var(--cyan);
+.setup-step code {
+  display: block; background: var(--bg3); padding: 10px 12px;
+  border-radius: 8px; margin-top: 10px; font-size: 0.78rem;
+  color: var(--cyan); border: 1px solid var(--border);
 }
-.step p { font-size: 0.85rem; color: var(--fg2); margin-top: 6px; }
+.setup-step p { font-size: 0.82rem; color: var(--fg2); margin-top: 8px; }
 
-/* Footer */
+/* ---- CLI ---- */
+.cli-grid {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 20px;
+}
+@media (max-width: 640px) { .cli-grid { grid-template-columns: 1fr; } }
+.cli-group {
+  background: var(--bg-card); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 24px;
+}
+.cli-group h3 {
+  font-size: 0.8rem; color: var(--accent); text-transform: uppercase;
+  letter-spacing: 0.08em; margin-bottom: 14px; font-weight: 600;
+}
+.cli-group .cli-row {
+  display: flex; justify-content: space-between; align-items: baseline;
+  padding: 5px 0; font-size: 0.82rem;
+}
+.cli-group .cli-cmd { font-family: var(--mono); color: var(--fg); font-weight: 500; }
+.cli-group .cli-desc { color: var(--fg3); font-size: 0.78rem; }
+
+/* ---- FOOTER ---- */
 footer {
-  padding: 40px 0;
-  text-align: center;
-  color: var(--fg2);
-  font-size: 0.8rem;
+  padding: 48px 0; text-align: center;
+  border-top: 1px solid var(--border);
 }
-footer a { color: var(--fg2); }
+footer p { color: var(--fg3); font-size: 0.8rem; }
+footer a { color: var(--fg3); }
+footer a:hover { color: var(--accent2); }
+footer .footer-links { display: flex; gap: 24px; justify-content: center; margin-bottom: 12px; flex-wrap: wrap; }
+
+/* ---- UTILS ---- */
+.hidden { display: none !important; }
+.fade-in { animation: fadeIn 0.6s ease both; }
+@keyframes fadeIn { from { opacity: 0; transform: translateY(16px); } to { opacity: 1; transform: translateY(0); } }
+
+/* ---- SCROLL ANIMATIONS ---- */
+.reveal { opacity: 0; transform: translateY(24px); transition: all 0.7s cubic-bezier(0.22, 1, 0.36, 1); }
+.reveal.visible { opacity: 1; transform: translateY(0); }
 </style>
 </head>
 <body>
 
+<!-- NAV -->
+<nav>
+  <div class="nav-inner">
+    <a href="#" class="nav-brand">abyss</a>
+    <div class="nav-links">
+      <a href="#features" data-en="Features" data-zh="特性">Features</a>
+      <a href="#benchmarks" data-en="Benchmarks" data-zh="性能">Benchmarks</a>
+      <a href="#setup" data-en="Setup" data-zh="安装">Setup</a>
+      <a href="docs/" data-en="Docs" data-zh="文档">Docs</a>
+      <a href="https://github.com/telagod/abyss">GitHub</a>
+      <button class="lang-toggle" onclick="toggleLang()" id="langBtn">中文</button>
+    </div>
+  </div>
+</nav>
+
 <!-- HERO -->
 <header class="hero">
   <div class="container">
-    <h1><span>abyss</span></h1>
-    <p class="tagline">
-      Code intelligence + token compression for AI agents.
-      <br>One binary. One command. 70-99% fewer output tokens.
+    <div class="hero-badge">
+      <span class="dot"></span>
+      <span data-en="96K tokens saved today" data-zh="今日已节省 96K tokens">96K tokens saved today</span>
+    </div>
+
+    <h1>
+      <span data-en="Your agent wastes" data-zh="你的 Agent 浪费了">Your agent wastes</span>
+      <span class="gradient" data-en="85% of tokens." data-zh="85% 的 tokens。">85% of tokens.</span><br>
+      <span data-en="We fix that." data-zh="吾来修。">We fix that.</span>
+    </h1>
+
+    <p class="sub" data-en="abyss gives AI coding agents a call graph, blast-radius analysis, and output compression — so they read less, know more, and break less. One binary. Zero config." data-zh="abyss 为 AI 编程 Agent 提供调用图、爆炸半径分析与输出压缩——让 Agent 读得更少、知得更多、改得更稳。单二进制，零配置。">
+      abyss gives AI coding agents a call graph, blast-radius analysis, and output compression — so they read less, know more, and break less. One binary. Zero config.
     </p>
-    <div class="stats">
-      <div class="stat"><div class="num">~75%</div><div class="label">avg token savings</div></div>
-      <div class="stat"><div class="num">2ms</div><div class="label">hook latency</div></div>
-      <div class="stat"><div class="num">28</div><div class="label">command handlers</div></div>
-      <div class="stat"><div class="num">14</div><div class="label">languages</div></div>
+
+    <div class="hero-metrics">
+      <div class="metric">
+        <div class="num">85%</div>
+        <div class="label" data-en="Token savings" data-zh="Token 节省率">Token savings</div>
+      </div>
+      <div class="metric">
+        <div class="num">2ms</div>
+        <div class="label" data-en="Hook latency" data-zh="Hook 延迟">Hook latency</div>
+      </div>
+      <div class="metric">
+        <div class="num">14</div>
+        <div class="label" data-en="Languages" data-zh="编程语言">Languages</div>
+      </div>
+      <div class="metric">
+        <div class="num">99%+</div>
+        <div class="label" data-en="Resolver precision" data-zh="解析精度">Resolver precision</div>
+      </div>
     </div>
+
     <div class="cta-row">
-      <a href="https://github.com/telagod/abyss" class="btn btn-primary">GitHub</a>
-      <a href="docs/" class="btn btn-outline">Documentation</a>
+      <a href="https://github.com/telagod/abyss" class="btn btn-primary">
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+        <span data-en="Get Started" data-zh="开始使用">Get Started</span>
+      </a>
+      <a href="docs/" class="btn btn-ghost">
+        <span data-en="Read the Docs" data-zh="阅读文档">Read the Docs</span>
+      </a>
     </div>
-    <div class="terminal">
-      <span class="prompt">$</span> <span class="cmd">cargo install code-abyss && abyss setup</span><br>
-      <span class="out">indexing workspace...</span><br>
-      <span class="ok">&#10003; 312 files, 11,487 symbols, 23,961 refs in 4.8s</span><br>
-      <span class="ok">&#10003; hooks: pre-edit + post-edit + proxy rewrite</span><br>
-      <span class="out">All agent commands now route through abyss proxy.</span><br><br>
-      <span class="prompt">$</span> <span class="cmd">abyss gain</span><br>
-      <span class="hi">&#9484;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9488;</span><br>
-      <span class="hi">&#9474;  abyss proxy &mdash;   346K tokens saved (69%)  &#9474;</span><br>
-      <span class="hi">&#9492;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9496;</span><br>
+
+    <!-- TERMINAL DEMO -->
+    <div class="terminal-wrap">
+      <div class="terminal">
+        <div class="dots"><span class="r"></span><span class="y"></span><span class="g"></span></div>
+<span class="t-prompt">$</span> <span class="t-cmd">abyss setup</span>
+<span class="t-out">indexing workspace...</span>
+<span class="t-ok">&#10003; 210 files, 1545 symbols, 12216 refs in 165ms</span>
+<span class="t-ok">&#10003; hooks installed: pre-edit + post-edit + proxy</span>
+<span class="t-dim">agent commands now route through abyss proxy.</span>
+
+<span class="t-prompt">$</span> <span class="t-cmd">abyss gain</span>
+<span class="t-hi">&#9484;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9488;</span>
+<span class="t-hi">&#9474;</span>  <span class="t-ok">abyss proxy &mdash;   96K tokens saved (85%)</span>  <span class="t-hi">&#9474;</span>
+<span class="t-hi">&#9492;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9496;</span>
+  <span class="t-out">148 commands proxied</span>
+  <span class="t-out">113K raw &rarr; 17K delivered</span>
+
+  <span class="t-dim">Top commands:</span>
+  <span class="t-out">  cargo test</span>                   <span class="t-bar">&#9608;&#9608;&#9608;&#9608;&#9608;&#9608;&#9608;&#9608;&#9608;&#9608;&#9608;&#9608;&#9608;&#9608;&#9608;&#9608;</span>    <span class="t-ok">51K (100%)</span>
+  <span class="t-out">  python3 eval/compare.py</span>       <span class="t-bar">&#9608;&#9608;&#9608;&#9608;&#9608;&#9608;&#9608;&#9608;&#9608;</span>         <span class="t-ok">30K (100%)</span>
+  <span class="t-out">  cat setup-indexers.sh</span>         <span class="t-bar">&#9608;</span>                     <span class="t-warn">978 (37%)</span>
+      </div>
     </div>
   </div>
 </header>
 
-<!-- FEATURES -->
-<section>
+<!-- PROBLEM -->
+<section class="reveal">
   <div class="container">
-    <h2>Two layers, one binary</h2>
-    <p class="subtitle">abyss is a code intelligence engine AND a token compressor. They reinforce each other.</p>
-    <div class="features">
-      <div class="feature">
-        <div class="icon">&#128269;</div>
-        <h3>Code Intelligence</h3>
-        <p>Call graph, blast-radius analysis, hotspot scoring, change coupling &mdash; all from tree-sitter + git history. No language server needed.</p>
+    <div class="section-label" data-en="The problem" data-zh="问题">The problem</div>
+    <h2 data-en="Agents read entire files to change one line." data-zh="Agent 读完整个文件，只为改一行。">Agents read entire files to change one line.</h2>
+    <p class="sub" data-en="Without a code graph, every edit is blind. Without compression, every command wastes context window." data-zh="没有代码图谱，每次编辑都是盲人摸象。没有压缩，每条命令都在浪费上下文窗口。">Without a code graph, every edit is blind. Without compression, every command wastes context window.</p>
+
+    <div class="problem-grid">
+      <div class="problem-card bad">
+        <div class="number">36&times;</div>
+        <div class="tag" data-en="Without abyss" data-zh="没有 abyss">Without abyss</div>
+        <h3 data-en="&ldquo;Who calls this function?&rdquo;" data-zh="「谁调用了这个函数？」">&ldquo;Who calls this function?&rdquo;</h3>
+        <p data-en="Agent reads 6 files (221KB) with grep. Most content is irrelevant. 220,910 bytes consumed for a question with a 6KB answer." data-zh="Agent 用 grep 读 6 个文件（221KB）。大部分内容无关紧要。220,910 字节上下文，只为一个 6KB 就能回答的问题。">Agent reads 6 files (221KB) with grep. Most content is irrelevant. 220,910 bytes consumed for a question with a 6KB answer.</p>
       </div>
-      <div class="feature">
-        <div class="icon">&#9889;</div>
-        <h3>Proxy Compression</h3>
-        <p>Intercepts agent commands (git, cargo, grep, cat&hellip;), structurally compresses output, delivers 70-99% fewer tokens. Never-worse guard ensures zero information loss.</p>
-      </div>
-      <div class="feature">
-        <div class="icon">&#128200;</div>
-        <h3>Semantic Enrichment</h3>
-        <p>Compressed output is annotated with blast-radius warnings, hotspot scores, and change coupling &mdash; signals no pure compressor can provide.</p>
-      </div>
-      <div class="feature">
-        <div class="icon">&#127795;</div>
-        <h3>Tree-sitter Smart Read</h3>
-        <p>AST-level body stripping for 14 languages. <code>cat</code> on a 600-line file returns 98 lines of signatures. Brace-counting fallback for the rest.</p>
-      </div>
-      <div class="feature">
-        <div class="icon">&#128274;</div>
-        <h3>Pre-edit Safety Cards</h3>
-        <p>Before every edit, agents see who calls the function, blast radius, test coverage gaps, and change-coupled files. 2ms hook latency.</p>
-      </div>
-      <div class="feature">
-        <div class="icon">&#9881;</div>
-        <h3>One-command Setup</h3>
-        <p><code>abyss setup</code> &mdash; indexes, installs hooks into Claude/Codex/Gemini, enables proxy. Zero config files, zero dependencies.</p>
+      <div class="problem-card good">
+        <div class="number">6K</div>
+        <div class="tag" data-en="With abyss" data-zh="使用 abyss">With abyss</div>
+        <h3 data-en="Precise caller graph, instantly." data-zh="精准调用图，瞬间返回。">Precise caller graph, instantly.</h3>
+        <p data-en="abyss context returns callers, blast radius, hotspot scores, and coupled files — 6,119 bytes. Same answer, 36&times; less context." data-zh="abyss context 返回调用者、爆炸半径、热点评分、耦合文件——6,119 字节。同样的答案，36 倍压缩。">abyss context returns callers, blast radius, hotspot scores, and coupled files — 6,119 bytes. Same answer, 36&times; less context.</p>
       </div>
     </div>
   </div>
 </section>
 
 <!-- BENCHMARKS -->
-<section>
+<section class="compression-section reveal" id="benchmarks">
   <div class="container">
-    <h2>Real-world compression</h2>
-    <p class="subtitle">Measured on a 193-file Rust codebase (this project). Release build, hot cache.</p>
+    <div class="section-label" data-en="Real numbers" data-zh="真实数据">Real numbers</div>
+    <h2 data-en="Measured, not promised." data-zh="实测数据，不吹不黑。">Measured, not promised.</h2>
+    <p class="sub" data-en="Proxy compression on 148 commands during a real coding session. Zero information loss." data-zh="真实编程会话中 148 条命令的 proxy 压缩数据，零信息损失。">Proxy compression on 148 commands during a real coding session. Zero information loss.</p>
+
     <table class="bench-table">
       <thead>
-        <tr><th>Command</th><th>Raw</th><th>Filtered</th><th>Savings</th><th class="bar-cell"></th></tr>
+        <tr>
+          <th data-en="Command" data-zh="命令">Command</th>
+          <th data-en="Raw" data-zh="原始">Raw</th>
+          <th data-en="Delivered" data-zh="交付">Delivered</th>
+          <th data-en="Saved" data-zh="节省">Saved</th>
+          <th class="bar-cell"></th>
+        </tr>
       </thead>
       <tbody>
         <tr>
-          <td>cargo test (237 tests)</td>
-          <td>8,861</td><td>11</td>
+          <td><code>cargo test</code></td>
+          <td>51,085</td><td>55</td>
           <td><span class="pct pct-high">99.9%</span></td>
-          <td class="bar-cell"><span class="bar" style="width:99.9%"></span></td>
+          <td class="bar-cell"><div class="bar-bg"><div class="bar-fill" style="width:99.9%"></div></div></td>
         </tr>
         <tr>
-          <td>cat context.rs (862 lines)</td>
-          <td>8,151</td><td>782</td>
-          <td><span class="pct pct-high">90.4%</span></td>
-          <td class="bar-cell"><span class="bar" style="width:90.4%"></span></td>
+          <td><code>eval/compare.py</code></td>
+          <td>29,844</td><td>56</td>
+          <td><span class="pct pct-high">99.8%</span></td>
+          <td class="bar-cell"><div class="bar-bg"><div class="bar-fill" style="width:99.8%"></div></div></td>
         </tr>
         <tr>
-          <td>rg 'fn ' src/ (~800 matches)</td>
-          <td>15,475</td><td>1,621</td>
-          <td><span class="pct pct-high">89.5%</span></td>
-          <td class="bar-cell"><span class="bar" style="width:89.5%"></span></td>
-        </tr>
-        <tr>
-          <td>git diff (current branch)</td>
-          <td>4,493</td><td>862</td>
-          <td><span class="pct pct-high">80.8%</span></td>
-          <td class="bar-cell"><span class="bar" style="width:80.8%"></span></td>
-        </tr>
-        <tr>
-          <td>cargo build (cached)</td>
-          <td>34</td><td>8</td>
-          <td><span class="pct pct-high">76.5%</span></td>
-          <td class="bar-cell"><span class="bar" style="width:76.5%"></span></td>
-        </tr>
-        <tr>
-          <td>git status (zh locale)</td>
-          <td>127</td><td>39</td>
-          <td><span class="pct pct-mid">69.3%</span></td>
-          <td class="bar-cell"><span class="bar" style="width:69.3%"></span></td>
-        </tr>
-        <tr>
-          <td>cat main.rs (2,200 lines)</td>
-          <td>22,247</td><td>7,167</td>
+          <td><code>cat settings.json</code></td>
+          <td>2,712</td><td>872</td>
           <td><span class="pct pct-mid">67.8%</span></td>
-          <td class="bar-cell"><span class="bar" style="width:67.8%"></span></td>
+          <td class="bar-cell"><div class="bar-bg"><div class="bar-fill" style="width:67.8%"></div></div></td>
         </tr>
         <tr>
-          <td>rg 'ProxyHandler' (exact)</td>
+          <td><code>cat setup-indexers.sh</code></td>
+          <td>2,644</td><td>1,666</td>
+          <td><span class="pct pct-mid">37.0%</span></td>
+          <td class="bar-cell"><div class="bar-bg"><div class="bar-fill" style="width:37%"></div></div></td>
+        </tr>
+        <tr>
+          <td data-en="Small exact match" data-zh="小型精确匹配"><em>Small exact match</em></td>
           <td>427</td><td>427</td>
           <td><span class="pct pct-low">0%</span></td>
-          <td class="bar-cell"><span class="bar" style="width:0%"></span></td>
+          <td class="bar-cell"><div class="bar-bg"><div class="bar-fill" style="width:0%"></div></div></td>
         </tr>
       </tbody>
     </table>
-    <p style="margin-top:16px;color:var(--fg2);font-size:0.8rem;">
-      0% on small results is correct &mdash; the never-worse guard passes through output that can't be compressed without information loss.
+    <p style="margin-top:20px; color:var(--fg3); font-size:0.78rem;" data-en="0% on small results is correct — the never-worse guard passes through output that compression would degrade." data-zh="小结果 0% 是正确行为——never-worse 守卫会放过无法压缩的输出。">
+      0% on small results is correct — the never-worse guard passes through output that compression would degrade.
     </p>
   </div>
 </section>
 
-<!-- VS RTK -->
-<section>
+<!-- FEATURES -->
+<section class="reveal" id="features">
   <div class="container">
-    <h2>vs. pure compressors</h2>
-    <p class="subtitle">abyss is not "another RTK" &mdash; it's a code-aware compression layer.</p>
-    <div class="compare">
+    <div class="section-label" data-en="Capabilities" data-zh="核心能力">Capabilities</div>
+    <h2 data-en="Two layers. One binary." data-zh="双层架构，单一二进制。">Two layers. One binary.</h2>
+    <p class="sub" data-en="Code intelligence and token compression reinforce each other. Neither works this well alone." data-zh="代码智能与 Token 压缩互相增强，缺一不可。">Code intelligence and token compression reinforce each other. Neither works this well alone.</p>
+
+    <div class="features-grid">
+      <div class="feature-card">
+        <div class="icon">&#9876;</div>
+        <h3 data-en="Call Graph" data-zh="调用图谱">Call Graph</h3>
+        <p data-en="Cross-file caller tracing with confidence scores. Tiered SQL resolver: L0 type-evidence → L4 global unique. 99%+ precision on 6 eval corpora." data-zh="跨文件调用者追踪，带置信度评分。分层 SQL 解析器：L0 类型证据 → L4 全局唯一。6 个评估语料库 99%+ 精度。">Cross-file caller tracing with confidence scores. Tiered SQL resolver: L0 type-evidence → L4 global unique. 99%+ precision on 6 eval corpora.</p>
+      </div>
+      <div class="feature-card">
+        <div class="icon">&#9889;</div>
+        <h3 data-en="Proxy Compression" data-zh="代理压缩">Proxy Compression</h3>
+        <p data-en="Intercepts agent commands, structurally compresses output. 28 handlers + TOML rule engine. Never-worse guard: 0% savings beats mangled output." data-zh="拦截 Agent 命令，结构化压缩输出。28 个处理器 + TOML 规则引擎。never-worse 守卫：0% 节省好过损坏输出。">Intercepts agent commands, structurally compresses output. 28 handlers + TOML rule engine. Never-worse guard: 0% savings beats mangled output.</p>
+      </div>
+      <div class="feature-card">
+        <div class="icon">&#128165;</div>
+        <h3 data-en="Blast Radius" data-zh="爆炸半径">Blast Radius</h3>
+        <p data-en="Before every edit: who calls this, transitive impact, test coverage gaps, risk score 0-10. The pre-edit safety card agents never had." data-zh="每次编辑前：谁调用了它、传递影响、测试覆盖缺口、风险评分 0-10。Agent 从未有过的编辑前安全卡。">Before every edit: who calls this, transitive impact, test coverage gaps, risk score 0-10. The pre-edit safety card agents never had.</p>
+      </div>
+      <div class="feature-card">
+        <div class="icon">&#128293;</div>
+        <h3 data-en="Hotspot Mining" data-zh="热点挖掘">Hotspot Mining</h3>
+        <p data-en="Churn &times; complexity from git history. Change coupling detects files that always move together. Temporal intelligence no grep can provide." data-zh="从 git 历史中挖掘 变更频率 &times; 复杂度。变更耦合检测总是一起改动的文件。Grep 做不到的时序智能。">Churn &times; complexity from git history. Change coupling detects files that always move together. Temporal intelligence no grep can provide.</p>
+      </div>
+      <div class="feature-card">
+        <div class="icon">&#127795;</div>
+        <h3 data-en="Tree-sitter Smart Read" data-zh="Tree-sitter 智能读取">Tree-sitter Smart Read</h3>
+        <p data-en="AST-level body stripping for 14 languages. cat on a 600-line file returns 98 lines of signatures. Brace-counting fallback for the rest." data-zh="14 种语言的 AST 级函数体裁剪。600 行文件 cat 后只返回 98 行签名。其余语言用花括号计数兜底。">AST-level body stripping for 14 languages. <code>cat</code> on a 600-line file returns 98 lines of signatures. Brace-counting fallback for the rest.</p>
+      </div>
+      <div class="feature-card">
+        <div class="icon">&#128268;</div>
+        <h3 data-en="Agent Hooks" data-zh="Agent 钩子">Agent Hooks</h3>
+        <p data-en="Pre-edit safety cards, post-edit incremental reindex, proxy rewrite — all at 2ms latency. One command installs hooks for Claude, Codex, Gemini." data-zh="编辑前安全卡、编辑后增量重索引、代理重写——全部 2ms 延迟。一条命令为 Claude、Codex、Gemini 安装钩子。">Pre-edit safety cards, post-edit incremental reindex, proxy rewrite — all at 2ms latency. One command installs hooks for Claude, Codex, Gemini.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- DOGFOOD -->
+<section class="reveal">
+  <div class="container">
+    <div class="section-label" data-en="Battle-tested" data-zh="实战验证">Battle-tested</div>
+    <h2 data-en="Tested on real codebases. Scores published." data-zh="在真实代码库上测试。评分公开。">Tested on real codebases. Scores published.</h2>
+    <p class="sub" data-en="Every dogfood report is public: probe results, bugs found, axes scored." data-zh="每份 dogfood 报告公开：探针结果、发现的 bug、各轴评分。">Every dogfood report is public: probe results, bugs found, axes scored.</p>
+
+    <div class="dogfood-grid">
+      <div class="dogfood-card">
+        <div class="project">Django 5.1</div>
+        <div class="lang">Python &middot; 3,292 files &middot; 6.91s</div>
+        <div class="score-row"><span class="score">8/10</span><span class="score-label">ORM / CBV / Admin</span></div>
+      </div>
+      <div class="dogfood-card">
+        <div class="project">SQLAlchemy 2.0</div>
+        <div class="lang">Python &middot; 687 files &middot; 8.41s</div>
+        <div class="score-row"><span class="score">8/10</span><span class="score-label">mixin / SQL expr</span></div>
+      </div>
+      <div class="dogfood-card">
+        <div class="project">hono v4.6</div>
+        <div class="lang">TypeScript &middot; 388 files &middot; 0.79s</div>
+        <div class="score-row"><span class="score">8/10</span><span class="score-label">HTTP framework</span></div>
+      </div>
+      <div class="dogfood-card">
+        <div class="project">helix-editor</div>
+        <div class="lang">Rust &middot; 545 files &middot; 1.57s</div>
+        <div class="score-row"><span class="score">7.5/10</span><span class="score-label">workspace</span></div>
+      </div>
+      <div class="dogfood-card">
+        <div class="project">vite v5.4</div>
+        <div class="lang">TS/JS monorepo &middot; 1,793 files &middot; 0.91s</div>
+        <div class="score-row"><span class="score">7/10</span><span class="score-label">monorepo</span></div>
+      </div>
+      <div class="dogfood-card">
+        <div class="project">FastAPI 0.115</div>
+        <div class="lang">Python &middot; 2,164 files &middot; 1.07s</div>
+        <div class="score-row"><span class="score">6.5/10</span><span class="score-label">async web</span></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- VS OTHERS -->
+<section class="reveal">
+  <div class="container">
+    <div class="section-label" data-en="Comparison" data-zh="对比">Comparison</div>
+    <h2 data-en="Not another output filter." data-zh="不只是输出过滤器。">Not another output filter.</h2>
+    <p class="sub" data-en="abyss is code-aware compression. It knows what the code does, not just what the output looks like." data-zh="abyss 是代码感知的压缩。它理解代码在做什么，而不只是输出长什么样。">abyss is code-aware compression. It knows what the code does, not just what the output looks like.</p>
+
+    <div class="compare-grid">
       <div class="compare-col">
-        <h3>Pure compressor (e.g. RTK)</h3>
+        <h3 data-en="Pure compressor" data-zh="纯压缩工具">Pure compressor</h3>
         <ul>
-          <li class="yes">Pattern-matching output filters</li>
-          <li class="yes">100+ command handlers</li>
-          <li class="yes">14 AI tool integrations</li>
-          <li class="no">No code understanding</li>
-          <li class="no">No blast-radius annotations</li>
-          <li class="no">Brace-counting smart read</li>
-          <li class="no">Requires separate install</li>
+          <li><span class="ci ci-yes">&#10003;</span> <span data-en="Pattern-matching output filters" data-zh="模式匹配输出过滤">Pattern-matching output filters</span></li>
+          <li><span class="ci ci-yes">&#10003;</span> <span data-en="100+ command handlers" data-zh="100+ 命令处理器">100+ command handlers</span></li>
+          <li><span class="ci ci-no">&#10007;</span> <span data-en="No code understanding" data-zh="不理解代码">No code understanding</span></li>
+          <li><span class="ci ci-no">&#10007;</span> <span data-en="No blast-radius annotations" data-zh="无爆炸半径标注">No blast-radius annotations</span></li>
+          <li><span class="ci ci-no">&#10007;</span> <span data-en="Brace-counting only" data-zh="仅花括号计数">Brace-counting only</span></li>
+          <li><span class="ci ci-no">&#10007;</span> <span data-en="Separate install required" data-zh="需要单独安装">Separate install required</span></li>
         </ul>
       </div>
       <div class="compare-col highlight">
-        <h3>abyss proxy</h3>
+        <h3>abyss</h3>
         <ul>
-          <li class="yes">Structural + semantic filters</li>
-          <li class="yes">28 handlers + TOML engine</li>
-          <li class="yes">Claude / Codex / Gemini hooks</li>
-          <li class="yes">Call graph + impact analysis</li>
-          <li class="yes">Blast-radius &amp; hotspot annotations</li>
-          <li class="yes">Tree-sitter AST body strip (14 langs)</li>
-          <li class="yes">Built into existing binary</li>
+          <li><span class="ci ci-yes">&#10003;</span> <span data-en="Structural + semantic filters" data-zh="结构化 + 语义过滤">Structural + semantic filters</span></li>
+          <li><span class="ci ci-yes">&#10003;</span> <span data-en="28 handlers + TOML engine" data-zh="28 处理器 + TOML 引擎">28 handlers + TOML engine</span></li>
+          <li><span class="ci ci-yes">&#10003;</span> <span data-en="Call graph + impact analysis" data-zh="调用图 + 影响分析">Call graph + impact analysis</span></li>
+          <li><span class="ci ci-yes">&#10003;</span> <span data-en="Blast-radius & hotspot annotations" data-zh="爆炸半径 & 热点标注">Blast-radius &amp; hotspot annotations</span></li>
+          <li><span class="ci ci-yes">&#10003;</span> <span data-en="Tree-sitter AST strip (14 langs)" data-zh="Tree-sitter AST 裁剪 (14 种语言)">Tree-sitter AST strip (14 langs)</span></li>
+          <li><span class="ci ci-yes">&#10003;</span> <span data-en="Built into one binary" data-zh="内建于单一二进制">Built into one binary</span></li>
         </ul>
       </div>
     </div>
@@ -431,65 +638,124 @@ footer a { color: var(--fg2); }
 </section>
 
 <!-- SETUP -->
-<section>
+<section class="reveal" id="setup">
   <div class="container">
-    <h2>Get started in 60 seconds</h2>
-    <p class="subtitle">One install, one command. No config files, no API keys, no embedding models.</p>
-    <div class="setup-steps">
-      <div class="step">
+    <div class="section-label" data-en="Get started" data-zh="快速开始">Get started</div>
+    <h2 data-en="60 seconds. For real." data-zh="60 秒上手，说到做到。">60 seconds. For real.</h2>
+    <p class="sub" data-en="No config files. No API keys. No embedding models. No language servers." data-zh="无需配置文件、无需 API Key、无需嵌入模型、无需语言服务器。">No config files. No API keys. No embedding models. No language servers.</p>
+
+    <div class="setup-grid">
+      <div class="setup-step">
         <div class="num">1</div>
+        <h3 data-en="Install" data-zh="安装">Install</h3>
         <code>cargo install code-abyss</code>
-        <p>Single static binary. ~20MB.</p>
+        <p data-en="Also: npm, curl, binstall" data-zh="也可用：npm、curl、binstall">Also: npm, curl, binstall</p>
       </div>
-      <div class="step">
+      <div class="setup-step">
         <div class="num">2</div>
+        <h3 data-en="Setup" data-zh="配置">Setup</h3>
         <code>abyss setup</code>
-        <p>Index + hooks + proxy in one shot.</p>
+        <p data-en="Index + hooks + proxy, one shot" data-zh="索引 + 钩子 + 代理，一步到位">Index + hooks + proxy, one shot</p>
       </div>
-      <div class="step">
+      <div class="setup-step">
         <div class="num">3</div>
+        <h3 data-en="Verify" data-zh="验证">Verify</h3>
         <code>abyss gain</code>
-        <p>See your token savings after a session.</p>
+        <p data-en="See savings after one session" data-zh="一个会话后查看节省量">See savings after one session</p>
+      </div>
+    </div>
+
+    <div style="text-align:center; margin-top:32px;">
+      <div class="terminal" style="max-width:520px; margin:0 auto; display:inline-block;">
+        <div class="dots"><span class="r"></span><span class="y"></span><span class="g"></span></div>
+<span class="t-dim" data-en="# or use the install script" data-zh="# 或使用安装脚本"># or use the install script</span>
+<span class="t-prompt">$</span> <span class="t-cmd">curl -fsSL https://raw.githubusercontent.com/telagod/abyss/main/install.sh | bash</span>
+<span class="t-dim" data-en="# or via npm" data-zh="# 或通过 npm"># or via npm</span>
+<span class="t-prompt">$</span> <span class="t-cmd">npm install -g @code-abyss/cli</span>
       </div>
     </div>
   </div>
 </section>
 
-<!-- CLI -->
-<section>
+<!-- CLI SURFACE -->
+<section class="reveal">
   <div class="container">
-    <h2>Full CLI surface</h2>
-    <p class="subtitle">Everything is a subcommand. No plugins, no runtime dependencies.</p>
-    <div class="terminal" style="max-width:800px;">
-<span class="out"># Code intelligence</span><br>
-<span class="cmd">abyss index</span>            <span class="out">Build the structural index</span><br>
-<span class="cmd">abyss callers</span> Symbol   <span class="out">Who calls this?</span><br>
-<span class="cmd">abyss impact</span> Symbol    <span class="out">What breaks if I change it?</span><br>
-<span class="cmd">abyss context</span> file     <span class="out">Full pre-edit context</span><br>
-<span class="cmd">abyss map</span>              <span class="out">Hotspots, coupling, risk areas</span><br>
-<span class="cmd">abyss where</span> file       <span class="out">Architectural coordinates</span><br><br>
-<span class="out"># Proxy compression</span><br>
-<span class="cmd">abyss proxy</span> &lt;cmd&gt;      <span class="out">Run + compress + track</span><br>
-<span class="cmd">abyss proxy --explain</span>  <span class="out">Show which handler fired and why</span><br>
-<span class="cmd">abyss gain</span>             <span class="out">Token savings dashboard</span><br><br>
-<span class="out"># Integration</span><br>
-<span class="cmd">abyss setup</span>            <span class="out">One-command onboarding</span><br>
-<span class="cmd">abyss attach</span> claude    <span class="out">Install hooks (proxy on by default)</span><br>
-<span class="cmd">abyss mcp</span>              <span class="out">MCP server (stdio)</span><br>
-<span class="cmd">abyss watch</span>            <span class="out">Live reindex on file save</span><br>
+    <div class="section-label" data-en="CLI" data-zh="命令行">CLI</div>
+    <h2 data-en="Everything is a subcommand." data-zh="一切皆子命令。">Everything is a subcommand.</h2>
+    <p class="sub" data-en="No plugins. No runtime deps. Every command takes --json for machine consumption." data-zh="无插件、无运行时依赖。每条命令支持 --json 供机器消费。">No plugins. No runtime deps. Every command takes <code>--json</code> for machine consumption.</p>
+
+    <div class="cli-grid">
+      <div class="cli-group">
+        <h3 data-en="Code Intelligence" data-zh="代码智能">Code Intelligence</h3>
+        <div class="cli-row"><span class="cli-cmd">abyss index</span><span class="cli-desc" data-en="Build index" data-zh="构建索引">Build index</span></div>
+        <div class="cli-row"><span class="cli-cmd">abyss callers</span><span class="cli-desc" data-en="Who calls this?" data-zh="谁调用了它？">Who calls this?</span></div>
+        <div class="cli-row"><span class="cli-cmd">abyss impact</span><span class="cli-desc" data-en="Blast radius" data-zh="爆炸半径">Blast radius</span></div>
+        <div class="cli-row"><span class="cli-cmd">abyss context</span><span class="cli-desc" data-en="Pre-edit card" data-zh="编辑前卡片">Pre-edit card</span></div>
+        <div class="cli-row"><span class="cli-cmd">abyss map</span><span class="cli-desc" data-en="Hotspots & coupling" data-zh="热点 & 耦合">Hotspots &amp; coupling</span></div>
+        <div class="cli-row"><span class="cli-cmd">abyss where</span><span class="cli-desc" data-en="Arch coordinates" data-zh="架构坐标">Arch coordinates</span></div>
+        <div class="cli-row"><span class="cli-cmd">abyss search</span><span class="cli-desc" data-en="Symbol + fulltext" data-zh="符号 + 全文搜索">Symbol + fulltext</span></div>
+        <div class="cli-row"><span class="cli-cmd">abyss history</span><span class="cli-desc" data-en="File/symbol evolution" data-zh="文件/符号演变">File/symbol evolution</span></div>
+      </div>
+      <div class="cli-group">
+        <h3 data-en="Compression & Integration" data-zh="压缩 & 集成">Compression &amp; Integration</h3>
+        <div class="cli-row"><span class="cli-cmd">abyss proxy</span><span class="cli-desc" data-en="Run + compress" data-zh="执行 + 压缩">Run + compress</span></div>
+        <div class="cli-row"><span class="cli-cmd">abyss gain</span><span class="cli-desc" data-en="Token savings" data-zh="Token 节省报告">Token savings</span></div>
+        <div class="cli-row"><span class="cli-cmd">abyss setup</span><span class="cli-desc" data-en="One-cmd onboarding" data-zh="一键配置">One-cmd onboarding</span></div>
+        <div class="cli-row"><span class="cli-cmd">abyss attach</span><span class="cli-desc" data-en="Install hooks" data-zh="安装钩子">Install hooks</span></div>
+        <div class="cli-row"><span class="cli-cmd">abyss mcp</span><span class="cli-desc" data-en="MCP server" data-zh="MCP 服务器">MCP server</span></div>
+        <div class="cli-row"><span class="cli-cmd">abyss daemon</span><span class="cli-desc" data-en="Background reindex" data-zh="后台重索引">Background reindex</span></div>
+        <div class="cli-row"><span class="cli-cmd">abyss watch</span><span class="cli-desc" data-en="Live reindex" data-zh="实时重索引">Live reindex</span></div>
+        <div class="cli-row"><span class="cli-cmd">abyss config</span><span class="cli-desc" data-en="Show config" data-zh="显示配置">Show config</span></div>
+      </div>
     </div>
   </div>
 </section>
 
+<!-- FOOTER -->
 <footer>
   <div class="container">
-    <p>
-      <a href="https://github.com/telagod/abyss">GitHub</a> &middot;
-      <a href="docs/">Documentation</a> &middot;
-      Apache-2.0
-    </p>
+    <div class="footer-links">
+      <a href="https://github.com/telagod/abyss">GitHub</a>
+      <a href="docs/" data-en="Documentation" data-zh="文档">Documentation</a>
+      <a href="https://crates.io/crates/code-abyss">crates.io</a>
+      <a href="https://www.npmjs.com/package/@code-abyss/cli">npm</a>
+    </div>
+    <p data-en="Apache-2.0 &middot; Built with tree-sitter, SQLite, and unreasonable ambition." data-zh="Apache-2.0 &middot; 用 tree-sitter、SQLite 和不合理的野心构建。">Apache-2.0 &middot; Built with tree-sitter, SQLite, and unreasonable ambition.</p>
   </div>
 </footer>
+
+<script>
+// i18n toggle
+let lang = 'en';
+function toggleLang() {
+  lang = lang === 'en' ? 'zh' : 'en';
+  document.getElementById('langBtn').textContent = lang === 'en' ? '中文' : 'English';
+  document.documentElement.lang = lang;
+  document.querySelectorAll('[data-en][data-zh]').forEach(el => {
+    el.textContent = el.getAttribute('data-' + lang);
+  });
+}
+
+// Scroll reveal
+const observer = new IntersectionObserver((entries) => {
+  entries.forEach(entry => {
+    if (entry.isIntersecting) {
+      entry.target.classList.add('visible');
+    }
+  });
+}, { threshold: 0.1, rootMargin: '0px 0px -40px 0px' });
+
+document.querySelectorAll('.reveal').forEach(el => observer.observe(el));
+
+// Smooth scroll for anchor links
+document.querySelectorAll('a[href^="#"]').forEach(a => {
+  a.addEventListener('click', e => {
+    e.preventDefault();
+    const target = document.querySelector(a.getAttribute('href'));
+    if (target) target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  });
+});
+</script>
 
 </body>
 </html>
