@@ -1,6 +1,4 @@
-use crate::graph::extractor::{
-    LanguageRefExtractor, RawReference, RefKind, VarTypes, build_scope_map, default_scope_name,
-};
+use crate::graph::extractor::{LanguageRefExtractor, RawReference, RefKind};
 use std::path::{Path, PathBuf};
 use tree_sitter::{Node, Tree};
 
@@ -10,16 +8,7 @@ impl LanguageRefExtractor for TypeScriptExtractor {
     fn extract(&self, tree: &Tree, source: &str) -> Vec<RawReference> {
         let mut refs = Vec::new();
         let root = tree.root_node();
-        let scope_map = build_scope_map(
-            &root,
-            source,
-            &[
-                "function_declaration",
-                "method_definition",
-                "arrow_function",
-            ],
-            default_scope_name,
-        );
+        let scope_map = build_scope_map(&root, source);
         // Module-level declarations (const app = new Hono()) seed the map for
         // everything below; nested functions inherit and extend it.
         let mut vt = VarTypes::new();
@@ -34,37 +23,16 @@ impl LanguageRefExtractor for TypeScriptExtractor {
 
     fn resolve_import(&self, import_path: &str, workspace: &Path) -> Option<PathBuf> {
         let clean = import_path.trim_matches(|c| c == '\'' || c == '"');
-
-        // Relative imports: existing logic
-        if clean.starts_with('.') {
-            let candidate = workspace.join(clean);
-            return try_ts_extensions(&candidate);
-        }
-
-        // Skip bare Node.js builtins and scoped packages that are definitely external
-        if clean.starts_with("node:") || clean.starts_with("@types/") {
+        if !clean.starts_with('.') {
             return None;
         }
-
-        // Non-relative: try as workspace-relative path.
-        // e.g. 'hono/utils' → workspace/hono/utils.ts, workspace/src/hono/utils.ts, etc.
-        let bases = [workspace.to_path_buf(), workspace.join("src")];
-        for base in &bases {
-            let candidate = base.join(clean);
-            if let Some(p) = try_ts_extensions(&candidate) {
+        let candidate = workspace.join(clean);
+        for ext in &[".ts", ".tsx", ".js", ".jsx", "/index.ts", "/index.js"] {
+            let p = PathBuf::from(format!("{}{ext}", candidate.display()));
+            if p.exists() {
                 return Some(p);
             }
-            // Also try as a directory with index file
-            if candidate.is_dir() {
-                for idx in &["index.ts", "index.tsx", "index.js"] {
-                    let p = candidate.join(idx);
-                    if p.exists() {
-                        return Some(p);
-                    }
-                }
-            }
         }
-
         None
     }
 
@@ -72,6 +40,45 @@ impl LanguageRefExtractor for TypeScriptExtractor {
         "typescript"
     }
 }
+
+fn build_scope_map(root: &Node, source: &str) -> Vec<Option<String>> {
+    let line_count = source.lines().count();
+    let mut map: Vec<Option<String>> = vec![None; line_count + 1];
+
+    fn walk(node: &Node, source: &str, current: &Option<String>, map: &mut Vec<Option<String>>) {
+        let kind = node.kind();
+        let name = match kind {
+            "function_declaration" | "method_definition" | "arrow_function" => node
+                .child_by_field_name("name")
+                .map(|n| source[n.start_byte()..n.end_byte()].to_string()),
+            _ => None,
+        };
+        let active = name.as_ref().or(current.as_ref());
+        if let Some(n) = active {
+            for line in node.start_position().row..=node.end_position().row.min(map.len() - 1) {
+                if map[line].is_none() {
+                    map[line] = Some(n.clone());
+                }
+            }
+        }
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            walk(
+                &child,
+                source,
+                &name.clone().or_else(|| current.clone()),
+                map,
+            );
+        }
+    }
+    walk(root, source, &None, &mut map);
+    map
+}
+
+/// Lite per-scope variable → type map (mirrors the Go extractor): parameters
+/// with type annotations, `const x = new T()`, and `this` → enclosing class.
+/// No data-flow, no interfaces, no union types.
+type VarTypes = std::collections::HashMap<String, String>;
 
 fn collect_refs(
     node: &Node,
@@ -490,17 +497,6 @@ fn base_ts_type_name(annotation: &Node, source: &str) -> Option<String> {
         }
         _ => None,
     }
-}
-
-/// Try common TypeScript/JavaScript extensions on a candidate path.
-fn try_ts_extensions(candidate: &Path) -> Option<PathBuf> {
-    for ext in &[".ts", ".tsx", ".js", ".jsx", "/index.ts", "/index.js"] {
-        let p = PathBuf::from(format!("{}{ext}", candidate.display()));
-        if p.exists() {
-            return Some(p);
-        }
-    }
-    None
 }
 
 fn text(node: &Node, source: &str) -> String {

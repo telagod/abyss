@@ -1,6 +1,4 @@
-use crate::graph::extractor::{
-    LanguageRefExtractor, RawReference, RefKind, VarTypes, build_scope_map, default_scope_name,
-};
+use crate::graph::extractor::{LanguageRefExtractor, RawReference, RefKind};
 use std::path::{Path, PathBuf};
 use tree_sitter::{Node, Tree};
 
@@ -10,12 +8,7 @@ impl LanguageRefExtractor for PythonExtractor {
     fn extract(&self, tree: &Tree, source: &str) -> Vec<RawReference> {
         let mut refs = Vec::new();
         let root = tree.root_node();
-        let scope_map = build_scope_map(
-            &root,
-            source,
-            &["function_definition", "class_definition"],
-            default_scope_name,
-        );
+        let scope_map = build_scope_map(&root, source);
         // Module-level assignments (ctx = Context(...)) seed the map for
         // everything below; nested functions inherit and extend it.
         let mut vt = VarTypes::new();
@@ -29,29 +22,52 @@ impl LanguageRefExtractor for PythonExtractor {
         name.starts_with("test_") || name.ends_with("_test.py") || path.contains("/tests/")
     }
 
-    fn resolve_import(&self, import_path: &str, workspace: &Path) -> Option<PathBuf> {
-        // Python import paths use dots: "click.core" → "click/core.py" or "click/core/__init__.py"
-        let fs_path = import_path.replace('.', "/");
-        let candidate = workspace.join(&fs_path);
-
-        // Try direct module file
-        let py_file = candidate.with_extension("py");
-        if py_file.exists() {
-            return Some(py_file);
-        }
-
-        // Try package __init__.py
-        let init_file = candidate.join("__init__.py");
-        if init_file.exists() {
-            return Some(init_file);
-        }
-
+    fn resolve_import(&self, _import_path: &str, _workspace: &Path) -> Option<PathBuf> {
         None
     }
     fn language_name(&self) -> &'static str {
         "python"
     }
 }
+
+fn build_scope_map(root: &Node, source: &str) -> Vec<Option<String>> {
+    let line_count = source.lines().count();
+    let mut map: Vec<Option<String>> = vec![None; line_count + 1];
+
+    fn walk(node: &Node, source: &str, current: &Option<String>, map: &mut Vec<Option<String>>) {
+        let name = if node.kind() == "function_definition" || node.kind() == "class_definition" {
+            node.child_by_field_name("name")
+                .map(|n| source[n.start_byte()..n.end_byte()].to_string())
+        } else {
+            None
+        };
+        let active = name.as_ref().or(current.as_ref());
+        if let Some(n) = active {
+            for line in node.start_position().row..=node.end_position().row.min(map.len() - 1) {
+                if map[line].is_none() {
+                    map[line] = Some(n.clone());
+                }
+            }
+        }
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            walk(
+                &child,
+                source,
+                &name.clone().or_else(|| current.clone()),
+                map,
+            );
+        }
+    }
+    walk(root, source, &None, &mut map);
+    map
+}
+
+/// Lite per-scope variable → type map (mirrors the Go/TS extractors):
+/// parameters with annotations, `x = Type(...)` constructor assignments,
+/// `x: Type = ...` annotated assignments, and `self`/`cls` → enclosing class.
+/// No data-flow, no Protocols, no unions.
+type VarTypes = std::collections::HashMap<String, String>;
 
 fn collect_refs(
     node: &Node,

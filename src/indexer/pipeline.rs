@@ -715,31 +715,6 @@ impl IndexPipeline {
                 )\
              ))";
 
-        // Python built-in name guard — parallel to TS and Rust guards.
-        // Python builtins like `print`, `open`, `len`, `type`, `list`,
-        // `dict` etc. are ambient in every Python module. When a user
-        // defines a function or class with the same name somewhere in the
-        // workspace, L4/L4b/L5 will globally name-match and create false
-        // positives. The extractor already filters most builtin *calls*
-        // (is_builtin_py), but refs that slip through (e.g. via import
-        // rebinding, type annotations, or indirect paths) still need a
-        // resolver-level guard to avoid polluting the call graph.
-        const PYTHON_BUILTIN_GUARD: &str = "NOT (\
-             (SELECT lang_family FROM files WHERE id = refs.source_file_id) = 'python' \
-             AND refs.target_name IN (\
-                 'print', 'len', 'range', 'type', 'str', 'int', 'float', 'bool', \
-                 'list', 'dict', 'set', 'tuple', 'bytes', 'bytearray', \
-                 'open', 'input', 'repr', 'abs', 'min', 'max', 'sum', \
-                 'map', 'filter', 'zip', 'enumerate', 'sorted', 'reversed', \
-                 'isinstance', 'issubclass', 'hasattr', 'getattr', 'setattr', 'delattr', \
-                 'super', 'property', 'classmethod', 'staticmethod', \
-                 'id', 'hash', 'iter', 'next', 'callable', 'vars', 'dir', \
-                 'globals', 'locals', 'eval', 'exec', 'compile', \
-                 'Exception', 'ValueError', 'TypeError', 'KeyError', 'IndexError', \
-                 'AttributeError', 'RuntimeError', 'StopIteration', 'NotImplementedError', \
-                 'OSError', 'IOError', 'FileNotFoundError', 'ImportError'\
-             ))";
-
         // Level 0: Receiver-type match (confidence = 0.95).
         // The call site knows its receiver's static type (x.M() where x: T,
         // inferred lite from receivers/params/local literals) and exactly one
@@ -747,6 +722,7 @@ impl IndexPipeline {
         // Runs BEFORE same-file: type evidence beats proximity — same-file
         // name reuse on a different type was a measured error class.
         let l0 = conn.execute(
+            &format!(
             "UPDATE refs SET
                  target_file_id = (SELECT s.file_id FROM symbols s
                      WHERE s.name = refs.target_name AND s.scope = refs.receiver_type LIMIT 1),
@@ -755,8 +731,9 @@ impl IndexPipeline {
                  confidence = 0.95
              WHERE confidence = 0.0 AND kind NOT IN ('import', 'import_binding')
                AND receiver_type IS NOT NULL
+               AND {SELF_SAME_FILE_PRIORITY}
                AND (SELECT COUNT(DISTINCT s.file_id) FROM symbols s
-                   WHERE s.name = refs.target_name AND s.scope = refs.receiver_type) = 1",
+                   WHERE s.name = refs.target_name AND s.scope = refs.receiver_type) = 1"),
             [],
         )?;
 
@@ -765,7 +742,23 @@ impl IndexPipeline {
         // trait-scoped methods, and impls split across files — but when the
         // source file IMPORTS the receiver type, the binding's target file is
         // type-grade evidence. Require the method name to exist there.
+        // Same-file priority for self/cls/super: when the method name also
+        // exists in the source file, type-evidence tiers (L0c/L0d) should NOT
+        // claim it cross-file — let L1 (same-file) handle it. Measured on
+        // Click: self.to_info_dict() in core.py was claimed by types.py (which
+        // also defines to_info_dict on a different class), but SCIP says the
+        // call resolves to the current file's override. 11 wrong refs, all
+        // polymorphic methods that exist in both source and candidate files.
+        const SELF_SAME_FILE_PRIORITY: &str = "\
+            NOT (\
+                COALESCE(refs.target_qualifier, '') IN ('self', 'cls', 'super') \
+                AND EXISTS (SELECT 1 FROM symbols s \
+                    WHERE s.name = refs.target_name \
+                    AND s.file_id = refs.source_file_id)\
+            )";
+
         let l0c = conn.execute(
+            &format!(
             "UPDATE refs SET
                  target_file_id = (SELECT ib.target_file_id FROM refs ib
                      WHERE ib.source_file_id = refs.source_file_id
@@ -783,13 +776,14 @@ impl IndexPipeline {
                  confidence = 0.95
              WHERE confidence = 0.0 AND kind NOT IN ('import', 'import_binding')
                AND receiver_type IS NOT NULL
+               AND {SELF_SAME_FILE_PRIORITY}
                AND EXISTS (SELECT 1 FROM refs ib
                    JOIN symbols s ON s.file_id = ib.target_file_id
                    WHERE ib.source_file_id = refs.source_file_id
                      AND ib.kind = 'import_binding'
                      AND ib.target_name = refs.receiver_type
                      AND ib.target_file_id IS NOT NULL
-                     AND s.name = refs.target_name)",
+                     AND s.name = refs.target_name)"),
             [],
         )?;
 
@@ -798,6 +792,7 @@ impl IndexPipeline {
         // exactly one file and that file defines the method name — methods
         // and their type overwhelmingly share a file.
         let l0d = conn.execute(
+            &format!(
             "UPDATE refs SET
                  target_file_id = (SELECT t.file_id FROM symbols t
                      WHERE t.name = refs.receiver_type
@@ -811,6 +806,7 @@ impl IndexPipeline {
                  confidence = 0.95
              WHERE confidence = 0.0 AND kind NOT IN ('import', 'import_binding')
                AND receiver_type IS NOT NULL
+               AND {SELF_SAME_FILE_PRIORITY}
                AND (SELECT COUNT(DISTINCT t.file_id) FROM symbols t
                    WHERE t.name = refs.receiver_type
                      AND t.kind IN ('class', 'struct', 'interface', 'enum')) = 1
@@ -818,7 +814,7 @@ impl IndexPipeline {
                    WHERE m.name = refs.target_name
                      AND m.file_id = (SELECT t.file_id FROM symbols t
                          WHERE t.name = refs.receiver_type
-                           AND t.kind IN ('class', 'struct', 'interface', 'enum') LIMIT 1))",
+                           AND t.kind IN ('class', 'struct', 'interface', 'enum') LIMIT 1))"),
             [],
         )?;
 
@@ -948,6 +944,17 @@ impl IndexPipeline {
                AND (target_qualifier IS NULL
                     OR COALESCE((SELECT language FROM files
                         WHERE id = refs.source_file_id), '') != 'rust')
+               -- Same-file priority: when the target name also exists in the
+               -- source file, a cross-file L2 guess is wrong for qualified
+               -- calls (self.x.method() where method is defined in both the
+               -- current file and one other). Measured on Click: 5× to_info_dict
+               -- resolved cross-file when the correct answer was same-file.
+               AND NOT (
+                   target_qualifier IS NOT NULL
+                   AND EXISTS (SELECT 1 FROM symbols s
+                       WHERE s.name = refs.target_name
+                       AND s.file_id = refs.source_file_id)
+               )
                AND (SELECT COUNT(DISTINCT s.file_id) FROM symbols s JOIN files f ON s.file_id = f.id
                    WHERE s.name = refs.target_name
                      AND f.dir = (SELECT dir FROM files WHERE id = refs.source_file_id)
@@ -1041,7 +1048,6 @@ impl IndexPipeline {
                AND receiver_type IS NULL
                AND {TS_BUILTIN_GUARD}
                AND {RUST_BUILTIN_GUARD}
-               AND {PYTHON_BUILTIN_GUARD}
                AND (SELECT COUNT(DISTINCT s.file_id) FROM symbols s JOIN files f ON s.file_id = f.id
                    WHERE s.name = refs.target_name
                      AND f.lang_family = (SELECT lang_family FROM files WHERE id = refs.source_file_id)
@@ -1116,7 +1122,6 @@ impl IndexPipeline {
              WHERE confidence = 0.0 AND kind NOT IN ('import', 'import_binding')
                AND {TS_BUILTIN_GUARD}
                AND {RUST_BUILTIN_GUARD}
-               AND {PYTHON_BUILTIN_GUARD}
                AND EXISTS (SELECT 1 FROM symbols s JOIN files f ON s.file_id = f.id
                    WHERE s.name = refs.target_name
                      AND f.dir = (SELECT dir FROM files WHERE id = refs.source_file_id)
@@ -1160,7 +1165,6 @@ impl IndexPipeline {
              WHERE confidence = 0.0 AND kind NOT IN ('import', 'import_binding')
                AND {TS_BUILTIN_GUARD}
                AND {RUST_BUILTIN_GUARD}
-               AND {PYTHON_BUILTIN_GUARD}
                AND EXISTS (SELECT 1 FROM symbols s JOIN files f ON s.file_id = f.id
                    WHERE s.name = refs.target_name
                      AND f.lang_family = (SELECT lang_family FROM files WHERE id = refs.source_file_id)
