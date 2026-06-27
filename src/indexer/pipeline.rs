@@ -723,7 +723,7 @@ impl IndexPipeline {
         // name reuse on a different type was a measured error class.
         let l0 = conn.execute(
             &format!(
-            "UPDATE refs SET
+                "UPDATE refs SET
                  target_file_id = (SELECT s.file_id FROM symbols s
                      WHERE s.name = refs.target_name AND s.scope = refs.receiver_type LIMIT 1),
                  target_symbol_id = (SELECT s.id FROM symbols s
@@ -733,7 +733,8 @@ impl IndexPipeline {
                AND receiver_type IS NOT NULL
                AND {SELF_SAME_FILE_PRIORITY}
                AND (SELECT COUNT(DISTINCT s.file_id) FROM symbols s
-                   WHERE s.name = refs.target_name AND s.scope = refs.receiver_type) = 1"),
+                   WHERE s.name = refs.target_name AND s.scope = refs.receiver_type) = 1"
+            ),
             [],
         )?;
 
@@ -759,7 +760,7 @@ impl IndexPipeline {
 
         let l0c = conn.execute(
             &format!(
-            "UPDATE refs SET
+                "UPDATE refs SET
                  target_file_id = (SELECT ib.target_file_id FROM refs ib
                      WHERE ib.source_file_id = refs.source_file_id
                        AND ib.kind = 'import_binding'
@@ -783,7 +784,8 @@ impl IndexPipeline {
                      AND ib.kind = 'import_binding'
                      AND ib.target_name = refs.receiver_type
                      AND ib.target_file_id IS NOT NULL
-                     AND s.name = refs.target_name)"),
+                     AND s.name = refs.target_name)"
+            ),
             [],
         )?;
 
@@ -793,7 +795,7 @@ impl IndexPipeline {
         // and their type overwhelmingly share a file.
         let l0d = conn.execute(
             &format!(
-            "UPDATE refs SET
+                "UPDATE refs SET
                  target_file_id = (SELECT t.file_id FROM symbols t
                      WHERE t.name = refs.receiver_type
                        AND t.kind IN ('class', 'struct', 'interface', 'enum') LIMIT 1),
@@ -814,7 +816,8 @@ impl IndexPipeline {
                    WHERE m.name = refs.target_name
                      AND m.file_id = (SELECT t.file_id FROM symbols t
                          WHERE t.name = refs.receiver_type
-                           AND t.kind IN ('class', 'struct', 'interface', 'enum') LIMIT 1))"),
+                           AND t.kind IN ('class', 'struct', 'interface', 'enum') LIMIT 1))"
+            ),
             [],
         )?;
 
