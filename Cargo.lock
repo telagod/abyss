@@ -432,7 +432,6 @@ dependencies = [
  "serde_json",
  "sqlite-vec",
  "tempfile",
- "thiserror",
  "tokio",
  "toml",
  "tracing",
