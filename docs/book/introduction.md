@@ -28,17 +28,19 @@ impact: SetError  direct=17  transitive=521  tests=3  uncovered=319  risk=8.5/10
 abyss is not a search engine replacement — it's the **impact-awareness
 layer** agents are missing. Pair it with whatever search you like.
 
-> abyss is currently at **v0.5.20**, with **6 dogfood evaluations**
-> shipped against real-world Python / TS / JS / Rust codebases. See the
+> abyss is currently at **v0.5.27**: **535 tests**, **6 eval corpora**
+> all holding ≥98.5% gated precision (Click climbed 97.9% → 99.3%), a
+> **90% proxy compression rate**, and an architecture overhaul that split
+> `main.rs` into a focused `src/commands/` tree. See the
 > [Dogfood chapter](dogfood/index.md) for what running abyss against
 > SQLAlchemy / Django / hono / vite / FastAPI / helix-editor actually
 > looks like — score, bugs found, falsified predictions, all in public.
 
 ## What changed in v0.5.x
 
-The v0.5.x patch sprint (v0.5.3 → v0.5.20, 17 small patches, zero
-breaking changes) hardened the daemon, matured Python coverage, and
-sanded a long backlog of operability rough edges:
+The v0.5.x patch sprint (v0.5.3 → v0.5.27, zero breaking changes)
+hardened the daemon, matured Python coverage, and sanded a long backlog
+of operability rough edges:
 
 - **V2 daemon emerges** — `abyss mcp --via-daemon` (v0.5.2),
   `daemon logs --follow` (v0.5.7), and a `subscribe` socket verb that
@@ -54,6 +56,23 @@ sanded a long backlog of operability rough edges:
   `abyss config show` introspection (v0.5.10), `abyss reset` (v0.5.11),
   incremental `abyss index --since <ref>` (v0.5.12), hostile-concurrent
   hook p99 of 82 ms with zero failures (v0.5.5 stress test).
+
+The v0.5.21 → v0.5.27 stretch turned the corner from operability to
+audit-driven hardening, a resolver precision breakthrough, and a new
+token-compressing proxy:
+
+- **v0.5.27 audit-driven hardening** — daemon socket chmod 0700,
+  SQL safety (debug_assert → assert), attach panic fixes. Architecture
+  overhaul: main.rs 2489 → 505 lines via `src/commands/` extraction.
+- **Resolver precision breakthrough** — same-file priority for
+  qualified calls eliminates polymorphic false positives. Click
+  97.9% → 99.3% gated precision. All 6 corpora pass 98.5% gate.
+- **Token-compressing proxy** — `abyss proxy` intercepts commands
+  and compresses output (90% average savings). 28 Rust handlers +
+  13 TOML declarative filters. Tree-sitter AST body stripping for
+  `cat`, structural parsing for git/cargo/go.
+- **Schema v7 performance** — 4 new indices, PRAGMA busy_timeout,
+  full reindex 534 → 286ms (−46%).
 
 The single-page [Release Notes](https://github.com/telagod/abyss/blob/main/RELEASE-NOTES.md)
 walks through the whole series; per-version detail lives in
@@ -74,7 +93,8 @@ walks through the whole series; per-version detail lives in
 - **Getting started** — install, your first index, attaching the agent
   hook so the pre-edit card shows up before every edit.
 - **Daily use** — `abyss where`, `context`, `impact`, `callers`,
-  `search`. The commands you actually run.
+  `search`, plus `proxy` / `gain` for token-compressed command output.
+  The commands you actually run.
 - **Ambient mode** — `abyss watch` (foreground) and
   `abyss daemon start --detach` (background) keep the index fresh as
   files change.

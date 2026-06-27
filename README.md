@@ -97,7 +97,11 @@ abyss daemon start [--foreground]  Foreground / shell-backgrounded equivalent
 abyss daemon stop|status      Stop daemon / report pid + uptime + last reindex
 abyss daemon logs [--tail N]  Tail .code-abyss/daemon.log via socket or direct file read (default N=50)
 abyss stats                   Index statistics
-abyss mcp                     MCP server (stdio) — 7 tools for any MCP client
+abyss proxy <command>         Token-compressing command proxy (90% avg savings)
+abyss gain                    Dashboard of token savings from proxy
+abyss rewrite <command>       Rewrite a command for proxy hooks (internal)
+abyss setup                   One-command onboarding: index + daemon + attach
+abyss mcp                     MCP server (stdio) — 9 tools for any MCP client
 abyss mcp --via-daemon        V2: stdio MCP that tunnels through `abyss daemon` over its socket
 abyss attach <host>           Idempotently install hook config for an agent host (production
                               entrypoint for claude/codex/gemini).
@@ -153,21 +157,37 @@ This is not a compiler. Measured against SCIP (compiler-grade) ground truth — 
 
 | Corpus | Language | Gated precision | Gated recall |
 |--------|----------|----------------:|-------------:|
-| gin v1.10.0 | Go | **99.3%** | **82.6%** |
-| hono v4.6.14 | TypeScript | **98.8%** | 63.8%* |
-| click 8.1.8 | Python | **97.9%** | **93.0%** |
-| ripgrep 14.1.1 | Rust | **98.5%** | **75.3%** |
-| abyss (dogfood) | Rust | **100.0%** | **90.9%** |
+| gin v1.10.0 | Go | **99.4%** | **83.0%** |
+| hono v4.6.14 | TypeScript | **98.9%** | **64.6%** |
+| click 8.1.8 | Python | **99.3%** | **94.6%** |
+| ripgrep 14.1.1 | Rust | **98.5%** | **75.5%** |
+| abyss (dogfood) | Rust | **100.0%** | **76.0%** |
 | cmark 0.31.1 | C | **99.1%** | **74.8%** |
 
-\* hono assigns router verbs (`app.get/post/use`) at runtime — statically
-unresolvable by design; they surface as `possible_callers`.
+hono's recall gap is by design — it assigns router verbs (`app.get/post/use`)
+at runtime, statically unresolvable; they surface as `possible_callers`. The
+abyss dogfood corpus is pinned at an older snapshot (`@8099aeb`, pre-`src/commands/`
+split) while the binary has new shared scope attribution, which lowers recall
+against the stale truth set without reflecting a resolver regression.
 
 abyss indexed gin in **~150ms**; scip-go took ~40s. Full method, per-tier tables, and known weaknesses: [eval/RESULTS.md](eval/RESULTS.md). Reproduce: `bash eval/setup-indexers.sh && bash eval/run.sh` — prereqs in [eval/README.md](eval/README.md).
 
 ## Agent integration
 
-**MCP**: `abyss mcp` exposes `search_context`, `get_symbols`, `find_callers`, `impact_analysis`, `code_map`, `evolution`, `index_project` over stdio. With a running daemon, `abyss mcp --via-daemon` tunnels the same surface through `.code-abyss/daemon.sock` so multiple MCP clients share one in-process index and one set of read-only SQLite handles.
+**MCP**: `abyss mcp` exposes 9 tools — `search_context`, `get_symbols`, `find_callers`, `impact_analysis`, `code_map`, `evolution`, `index_project`, `arch_map`, `proxy_gain` — over stdio. With a running daemon, `abyss mcp --via-daemon` tunnels the same surface through `.code-abyss/daemon.sock` so multiple MCP clients share one in-process index and one set of read-only SQLite handles.
+
+## Token-compressing proxy
+
+`abyss proxy <command>` intercepts shell commands and compresses their output before it reaches the agent — 90% average savings across grep, cat, git, cargo, and 28 other command families.
+
+- **Rust handlers** for high-value commands: tree-sitter AST body stripping for `cat` (signatures only), structural parsing for `git diff/status/log`, error-focused filtering for `cargo test/build/clippy`
+- **TOML declarative filters** for the long tail: regex pipelines covering `make`, `docker build`, `pip/npm install`, `curl`, `tree`, and more
+- **Semantic enrichment**: when the index is available, compressed output includes blast-radius warnings (🔥 hotspot, ⚠ callers) for files touched by the command
+- **Never-worse guard**: if compression inflates the output, the raw output passes through
+
+Install the proxy hook: `abyss attach claude --proxy` (or codex/gemini). Track savings: `abyss gain`.
+
+## Agent hooks
 
 **Pre-edit hooks**: `abyss hook pre-edit` reads the tool-call JSON any agent platform pipes to its hooks (Claude Code, Codex CLI, Gemini CLI, Pi, Hermes, OpenClaw payload shapes auto-detected), refreshes the index incrementally, and warns about production callers, ambiguous references, and hotspots — before the edit happens.
 
@@ -254,7 +274,7 @@ evaluations enforced.
 
 ## Status
 
-**v0.5.20** — 386 tests, prebuilt binaries for 5 platforms, single-binary agent hooks. Six SCIP-eval corpora across five languages, all ≥98.5% gated precision and zero regression across v0.4.0 → v0.5.20 (see the table above and [eval/RESULTS.md](eval/RESULTS.md)). The 17-patch v0.5.x small-patch sprint (v0.5.3 → v0.5.20) hardened the daemon (`mcp --via-daemon`, `logs --follow`, socket `subscribe`), matured Python coverage (generic-base inherit edges, first-class `type_ref` for typed params, `.pyi` end-to-end, MRO walker pinned by regression test), and rounded out operability (`completion`, `config show`, `reset`, `index --since`). One-page overview: [RELEASE-NOTES.md](RELEASE-NOTES.md). Pages site live at [telagod.github.io/abyss](https://telagod.github.io/abyss/). Six dogfood reports now (SQLAlchemy 8/10 — L0e fires 4 496 times on declarative mixin towers, Django 8/10, helix-editor 7.5, vite 7, FastAPI 6.5 — L0e=0 falsified in public, hono 8). APIs and index format may still change before 1.0.
+**v0.5.27** — 535 tests, prebuilt binaries for 5 platforms, single-binary agent hooks plus a token-compressing command proxy (90% average output savings). Six SCIP-eval corpora across five languages, all ≥98.5% gated precision and zero precision regression through v0.5.27 (see the table above and [eval/RESULTS.md](eval/RESULTS.md)). This release split the monolithic `main.rs` into a `src/commands/` module tree and landed the proxy stack (Rust handlers + TOML declarative filters + semantic blast-radius enrichment). The preceding v0.5.x sprint hardened the daemon (`mcp --via-daemon`, `logs --follow`, socket `subscribe`), matured Python coverage (generic-base inherit edges, first-class `type_ref` for typed params, `.pyi` end-to-end, MRO walker pinned by regression test), and rounded out operability (`completion`, `config show`, `reset`, `index --since`, `setup`). One-page overview: [RELEASE-NOTES.md](RELEASE-NOTES.md). Pages site live at [telagod.github.io/abyss](https://telagod.github.io/abyss/). Six dogfood reports now (SQLAlchemy 8/10 — L0e fires 4 496 times on declarative mixin towers, Django 8/10, helix-editor 7.5, vite 7, FastAPI 6.5 — L0e=0 falsified in public, hono 8). APIs and index format may still change before 1.0.
 
 ## License
 
