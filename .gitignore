@@ -9,3 +9,9 @@ npm/node_modules/
 eval/corpus/
 __pycache__/
 book-out/
+
+# Agent config dirs (session-local, never commit)
+.claude/
+.codex/
+.gemini/
+.openclaw/
