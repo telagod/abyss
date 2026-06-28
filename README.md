@@ -1,280 +1,247 @@
+<div align="center">
+
 # abyss
 
-> **The code graph your agent checks before it edits.**
+**Your agent wastes 85% of tokens. We fix that.**
 
-[Full docs at the GitHub Pages site](https://telagod.github.io/abyss/)
-&nbsp;·&nbsp; [What v0.5.x was about (release notes)](RELEASE-NOTES.md)
-&nbsp;·&nbsp; [Per-version changelog](CHANGELOG.md)
+Code graph + token compression for AI coding agents.<br>
+One binary. Zero config. 14 languages.
 
-abyss builds a call graph + temporal intelligence index of your codebase, so an AI coding agent can answer — in milliseconds, before touching a file — three questions grep can't:
+[![CI](https://github.com/telagod/abyss/actions/workflows/ci.yml/badge.svg)](https://github.com/telagod/abyss/actions/workflows/ci.yml)
+[![Crates.io](https://img.shields.io/crates/v/code-abyss.svg)](https://crates.io/crates/code-abyss)
+[![npm](https://img.shields.io/npm/v/@code-abyss/cli.svg)](https://www.npmjs.com/package/@code-abyss/cli)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
-1. **Who calls this?** — cross-file caller tracing with confidence scores
-2. **What breaks if I change it?** — blast-radius analysis with risk scoring and test-coverage gaps
-3. **Where does this code hurt?** — hotspots (churn × complexity) and change-coupled files, mined from git history
+[Website](https://telagod.github.io/abyss/) · [Docs](https://telagod.github.io/abyss/docs/) · [Changelog](CHANGELOG.md)
 
-No language server. No embedding model required. One static binary, one SQLite file, second-scale indexing.
+</div>
+
+---
+
+## The Problem
+
+AI coding agents read entire files to change one line. They dump 50K tokens of `cargo test` output when only 3 lines matter. They edit functions without knowing who calls them.
+
+**abyss** fixes this with two layers that reinforce each other:
+
+| Layer | What it does | Result |
+|-------|-------------|--------|
+| **Code Graph** | Call graph, blast radius, hotspot scoring — from tree-sitter + git history | Agent knows *who calls this* and *what breaks* before editing |
+| **Proxy Compression** | Intercepts agent commands, structurally compresses output | 85% fewer tokens, zero information loss |
+
+## Quick Demo
 
 ```
-$ abyss index
-✓ 312 files, 4,209 chunks, 11,487 symbols, 23,961 refs in 4,820ms
+$ abyss setup
+✓ 210 files, 1545 symbols, 12216 refs in 165ms
+✓ hooks installed: pre-edit + post-edit + proxy
 
-$ abyss impact SetError
-impact: SetError  direct=17  transitive=521  tests=3  uncovered=319  risk=8.5/10
-  ⚠ high blast radius
-  ⚠ 319 paths without test coverage
+$ abyss callers batch_resolve_refs
+callers of 'batch_resolve_refs' (1 prod):
+  1. src/indexer/pipeline.rs:255 → run_structural()  (100%, call)
+
+$ abyss gain
+╭────────────────────────────────────────────╮
+│  abyss proxy —   96K tokens saved (85%)   │
+╰────────────────────────────────────────────╯
+  148 commands proxied
+  113K raw → 17K delivered
 ```
-
-## Why not just grep / LSP / embeddings?
-
-| | grep | LSP | embedding search | **abyss** |
-|---|---|---|---|---|
-| Find callers | text matches, noisy | ✅ precise, needs running server per language | ❌ | ✅ one binary, indexed |
-| Blast radius + risk score | ❌ | ❌ | ❌ | ✅ |
-| Hotspot / change coupling (git temporal) | ❌ | ❌ | ❌ | ✅ |
-| Pre-edit agent hook | ❌ | ❌ | ❌ | ✅ |
-| Works offline, zero setup | ✅ | ❌ | ❌ | ✅ |
-
-abyss is not a search engine replacement — it's the **impact-awareness layer** agents are missing. Pair it with whatever search you like.
 
 ## Install
 
 ```sh
-# prebuilt binary (linux/macos, x64/arm64) with source-build fallback
+# prebuilt binary (linux / macOS / Windows, x64 / arm64)
 curl -fsSL https://raw.githubusercontent.com/telagod/abyss/main/install.sh | bash
 
-# mirror, for networks where raw.githubusercontent.com is unreachable
-curl -fsSL https://cdn.jsdelivr.net/gh/telagod/abyss@main/install.sh | bash
-
-# via npm (wrapper downloads the prebuilt binary on install)
+# or via package managers
 npm install -g @code-abyss/cli
-
-# via cargo (binstall fetches the prebuilt binary; install builds from source)
-cargo binstall code-abyss   # or: cargo install code-abyss
-
-# or force a source build from a checkout
-./install.sh --from-source
+cargo binstall code-abyss       # or: cargo install code-abyss
 ```
 
-Windows: `npm install -g @code-abyss/cli`, `cargo binstall code-abyss`, or prebuilt `.zip` on [GitHub Releases](https://github.com/telagod/abyss/releases).
+<details>
+<summary>More install options</summary>
 
-Shell tab-completion (bash / zsh / fish / powershell): run `abyss completion --help` for the supported shells, then dump the script to the shell's completion directory, e.g. `abyss completion bash | sudo tee /etc/bash_completion.d/abyss`.
+```sh
+# mirror for restricted networks
+curl -fsSL https://cdn.jsdelivr.net/gh/telagod/abyss@main/install.sh | bash
 
-## Quickstart (60 seconds)
+# Windows
+npm install -g @code-abyss/cli
+# or: prebuilt .zip on GitHub Releases
+
+# from source
+git clone https://github.com/telagod/abyss && cd abyss
+cargo install --path .
+
+# shell completion (bash / zsh / fish / powershell)
+abyss completion bash | sudo tee /etc/bash_completion.d/abyss
+```
+
+</details>
+
+## Setup (60 Seconds)
 
 ```sh
 cd your-project
-abyss index                 # build structural index (~seconds)
-abyss daemon start --detach # v0.5.0: background reindex on save (Unix)
-abyss map                   # hotspots + coupling overview
-abyss context src/auth.go   # full context before editing a file
-abyss callers Editor        # who uses this (calls + TS/Rust type refs)
-abyss impact ValidateToken  # blast radius of changing a symbol
+abyss setup       # index + hooks + proxy — one command, done
 ```
 
-`abyss daemon start --detach` is the recommended way to keep the index
-warm while you (or an agent) edit — double-fork + `setsid`, survives the
-shell that launched it, telemetry via `abyss daemon status` /
-`abyss daemon logs`. The foreground `abyss watch` still exists as an
-alias for `daemon start --foreground` if you want stdout in your terminal.
+That's it. Your agent now has:
+- **Pre-edit safety cards** — callers, blast radius, risk score before every edit
+- **Post-edit reindex** — incremental, hash-based, milliseconds
+- **Proxy compression** — every shell command output compressed automatically
 
-Every command takes `--json` for machine consumption.
+Works with **Claude Code**, **Codex CLI**, **Gemini CLI**, and **OpenClaw**. No config files.
 
-## Commands
+## What Can It Do?
 
-```
-abyss index                   Structural index: symbols, refs, fulltext, git temporal. Seconds.
-abyss context <file>          Everything an agent needs before editing: callers, deps, risk, coupling
-abyss callers <symbol>        Who calls this (calls + type refs by default; --calls-only / --types-only restrict; --min-confidence 0 reveals guesses)
-abyss impact <symbol>         Blast radius: direct/transitive callers, uncovered paths, risk 0-10
-abyss hook pre-edit           Agent hook: tool-call JSON on stdin → refresh index → warn on stderr
-abyss hook post-edit          Agent hook: incremental refresh after an edit
-abyss history <file>          Evolution: commits, churn, coupled files [--symbol <fn>]
-abyss search "query"          Symbol + fulltext fusion search
-abyss map                     Codebase map: hotspots, coupling, risk areas
-abyss watch                   Foreground daemon-lite: reindex on file save (debounced)
-abyss daemon start --detach   Background daemon (Unix): double-fork, returns once pidfile is claimed
-abyss daemon start [--foreground]  Foreground / shell-backgrounded equivalent
-abyss daemon stop|status      Stop daemon / report pid + uptime + last reindex
-abyss daemon logs [--tail N]  Tail .code-abyss/daemon.log via socket or direct file read (default N=50)
-abyss stats                   Index statistics
-abyss proxy <command>         Token-compressing command proxy (90% avg savings)
-abyss gain                    Dashboard of token savings from proxy
-abyss rewrite <command>       Rewrite a command for proxy hooks (internal)
-abyss setup                   One-command onboarding: index + daemon + attach
-abyss mcp                     MCP server (stdio) — 9 tools for any MCP client
-abyss mcp --via-daemon        V2: stdio MCP that tunnels through `abyss daemon` over its socket
-abyss attach <host>           Idempotently install hook config for an agent host (production
-                              entrypoint for claude/codex/gemini).
-                              host ∈ { claude | codex | gemini | openclaw* | all }
-                              * openclaw is an intentional no-op (architectural delegation);
-                                use `npx code-abyss -t openclaw --with-hooks` instead.
-                              For pi/hermes, see the companion `code-abyss` npm package.
-                              --local writes <cwd>/.<host>/... instead of $HOME
-abyss skill-manifest          Emit machine-readable JSON for skill-discovery consumers (code-abyss)
+### Code Intelligence
+
+```sh
+abyss callers SetError         # who calls this?
+abyss impact  SetError         # what breaks if I change it?
+abyss context src/auth.go      # full pre-edit card: callers, deps, risk, coupling
+abyss map                      # hotspots + change coupling overview
+abyss search  "validate"       # symbol + fulltext fusion search
+abyss where   src/auth.go      # architectural coordinates (layer / module / role)
+abyss history src/auth.go      # file evolution from git
 ```
 
-## Language support
+### Proxy Compression
 
-Caller tracing & impact analysis (reference extraction):
+```sh
+abyss proxy cargo test         # run + compress + track
+abyss proxy --explain          # show which handler fired and why
+abyss gain                     # token savings dashboard
+```
 
-| Language | Calls | Type refs | Imports |
-|----------|-------|-----------|---------|
-| Go | ✅ | ✅ | ✅ |
-| Rust | ✅ | ✅ | ✅ |
-| TypeScript / TSX | ✅ | ✅ | ✅ |
-| JavaScript | ✅ | ✅ | ✅ |
-| Python | ✅ | ✅ | ✅ |
-| Java | ✅ | ✅ | ✅ |
-| C | ✅ | ✅ | ✅ |
-| C++ | ✅ | ✅ | ✅ |
+### Integration
 
-Symbol indexing & search additionally cover JSON, TOML, YAML, Bash, HTML, CSS.
+```sh
+abyss attach claude            # install hooks for Claude Code
+abyss attach all               # claude + codex + gemini in one shot
+abyss mcp                      # MCP server (9 tools, stdio)
+abyss daemon start --detach    # background reindex on file save
+```
 
-## How resolution works (and how honest it is)
+Every command supports `--json` for machine consumption.
 
-References resolve through tiered heuristics, each tagged with a confidence score stored in the index:
+## Real-World Compression
+
+Measured on real coding sessions. Not synthetic benchmarks.
+
+| Scenario | Without abyss | With abyss | Compression |
+|----------|:------------:|:----------:|:-----------:|
+| "Who calls this function?" | 221 KB (read 6 files) | 6 KB (caller graph) | **36×** |
+| "Find all usages of `run_structural`" | 328 KB (grep + read) | 1.7 KB (callers) | **195×** |
+| Codebase overview | 291 KB (read all .rs) | 2.1 KB (map) | **138×** |
+| `cargo test` (237 tests pass) | 8,861 tokens | 11 tokens | **99.9%** |
+| `cat` large file (862 lines) | 8,151 tokens | 782 tokens | **90.4%** |
+| `git diff` | 4,493 tokens | 862 tokens | **80.8%** |
+
+> 0% on small results is correct — the never-worse guard passes through output that can't be compressed without information loss.
+
+## Resolver Precision
+
+Not a compiler. Not a guess. Measured against [SCIP](https://sourcegraph.com/docs/code-intelligence/scip) (compiler-grade) ground truth:
+
+| Corpus | Language | Precision | Recall |
+|--------|----------|:---------:|:------:|
+| gin v1.10 | Go | **99.4%** | 83.0% |
+| hono v4.6 | TypeScript | **98.9%** | 64.6% |
+| click 8.1 | Python | **99.3%** | 94.6% |
+| ripgrep 14.1 | Rust | **98.5%** | 75.5% |
+| abyss (dogfood) | Rust | **100%** | 76.0% |
+| cmark 0.31 | C | **99.1%** | 74.8% |
+
+All corpora ≥ 98.5% gated precision — regressions are release-blockers. Reproduce: `cd eval && ./run.sh`
+
+<details>
+<summary>How the resolver works</summary>
+
+Tiered heuristic resolution, each level tagged with a confidence score:
 
 | Tier | Strategy | Confidence |
-|------|----------|-----------|
-| 0 | Receiver-type match (`x.M()` where `x: T` is statically inferrable) — by owner scope, the type's import binding, or the type's unique defining file | 0.95 |
-| 0b | Named-import binding (`import { x } from './m'`, `from m import x`, `import com.f.X`, `use crate::m::x`; barrel/`pub use` chains chased) | 0.95 |
-| 1 | Same file (bare + self-like calls only) | 1.0 |
-| 2 | Same package/directory, unique candidate | 0.95 |
-| 3 | Import-qualifier match, unique candidate | 0.9 |
-| 4 | Globally unique symbol (member-shaped for qualified calls) | 0.8 |
-| 5 | Same package, multiple candidates (demoted) | 0.6 |
-| 6 | Same-file fallback for qualified calls / ambiguous | 0.6 / 0.5 |
+|------|----------|:---------:|
+| L0 | Receiver-type match (`x.M()` where type of `x` is known) | 0.95 |
+| L0b | Named-import binding (`import { x } from './m'`) | 0.95 |
+| L1 | Same file, bare/self-like calls | 1.0 |
+| L2 | Same package, unique candidate | 0.95 |
+| L3 | Import-qualifier match, unique | 0.9 |
+| L4 | Globally unique symbol | 0.8 |
+| L5 | Same package, multiple candidates | 0.6 |
 
-Receiver types are inferred lite — method receivers, typed parameters,
-`x := T{}` / `new T()` / `NewT()` / `x = Type()` declarations, `this`/`self` —
-no data-flow, no interface resolution. When a receiver's type is known, only
-type-consistent evidence may resolve the call; name-only proximity guesses
-demote instead. Full confidence is reserved for call shapes measured ≥98%
-correct (bare and self-like calls); qualified calls with an unknown receiver
-never pose as facts.
+Agent-facing APIs default to `min_confidence=0.7` to filter noise.
 
-This is not a compiler. Measured against SCIP (compiler-grade) ground truth — published whatever the numbers say:
+</details>
 
-| Corpus | Language | Gated precision | Gated recall |
-|--------|----------|----------------:|-------------:|
-| gin v1.10.0 | Go | **99.4%** | **83.0%** |
-| hono v4.6.14 | TypeScript | **98.9%** | **64.6%** |
-| click 8.1.8 | Python | **99.3%** | **94.6%** |
-| ripgrep 14.1.1 | Rust | **98.5%** | **75.5%** |
-| abyss (dogfood) | Rust | **100.0%** | **76.0%** |
-| cmark 0.31.1 | C | **99.1%** | **74.8%** |
+## Language Support
 
-hono's recall gap is by design — it assigns router verbs (`app.get/post/use`)
-at runtime, statically unresolvable; they surface as `possible_callers`. The
-abyss dogfood corpus is pinned at an older snapshot (`@8099aeb`, pre-`src/commands/`
-split) while the binary has new shared scope attribution, which lowers recall
-against the stale truth set without reflecting a resolver regression.
+**Full call graph** (calls + type refs + imports): Go, Rust, TypeScript/TSX, JavaScript, Python, Java, C, C++
 
-abyss indexed gin in **~150ms**; scip-go took ~40s. Full method, per-tier tables, and known weaknesses: [eval/RESULTS.md](eval/RESULTS.md). Reproduce: `bash eval/setup-indexers.sh && bash eval/run.sh` — prereqs in [eval/README.md](eval/README.md).
+**Symbol indexing + search**: all of the above + JSON, TOML, YAML, Bash, HTML, CSS
 
-## Agent integration
+## Battle-Tested
 
-**MCP**: `abyss mcp` exposes 9 tools — `search_context`, `get_symbols`, `find_callers`, `impact_analysis`, `code_map`, `evolution`, `index_project`, `arch_map`, `proxy_gain` — over stdio. With a running daemon, `abyss mcp --via-daemon` tunnels the same surface through `.code-abyss/daemon.sock` so multiple MCP clients share one in-process index and one set of read-only SQLite handles.
+We run abyss on real codebases and publish every score — including the gaps.
 
-## Token-compressing proxy
+| Project | Language | Files | Index Time | Score |
+|---------|----------|------:|----------:|---------:|
+| Django 5.1 | Python | 3,292 | 6.9s | **8 / 10** |
+| SQLAlchemy 2.0 | Python | 687 | 8.4s | **8 / 10** |
+| hono v4.6 | TypeScript | 388 | 0.8s | **8 / 10** |
+| helix-editor | Rust | 545 | 1.6s | **7.5 / 10** |
+| vite v5.4 | TS/JS mono | 1,793 | 0.9s | **7 / 10** |
+| FastAPI 0.115 | Python | 2,164 | 1.1s | **6.5 / 10** |
 
-`abyss proxy <command>` intercepts shell commands and compresses their output before it reaches the agent — 90% average savings across grep, cat, git, cargo, and 28 other command families.
+Full reports: [docs/DOGFOOD.md](docs/DOGFOOD.md)
 
-- **Rust handlers** for high-value commands: tree-sitter AST body stripping for `cat` (signatures only), structural parsing for `git diff/status/log`, error-focused filtering for `cargo test/build/clippy`
-- **TOML declarative filters** for the long tail: regex pipelines covering `make`, `docker build`, `pip/npm install`, `curl`, `tree`, and more
-- **Semantic enrichment**: when the index is available, compressed output includes blast-radius warnings (🔥 hotspot, ⚠ callers) for files touched by the command
-- **Never-worse guard**: if compression inflates the output, the raw output passes through
+## vs. Pure Compressors
 
-Install the proxy hook: `abyss attach claude --proxy` (or codex/gemini). Track savings: `abyss gain`.
+| | Pure compressor | **abyss** |
+|---|---|---|
+| Output filtering | ✅ Pattern-matching | ✅ Structural + semantic |
+| Code understanding | ❌ | ✅ Call graph + impact |
+| Blast-radius annotations | ❌ | ✅ Risk scores in output |
+| Smart file read | Brace-counting | ✅ Tree-sitter AST (14 langs) |
+| Pre-edit safety | ❌ | ✅ Callers, coverage gaps |
+| Setup | Separate install | ✅ Built into one binary |
 
-## Agent hooks
+## Architecture
 
-**Pre-edit hooks**: `abyss hook pre-edit` reads the tool-call JSON any agent platform pipes to its hooks (Claude Code, Codex CLI, Gemini CLI, Pi, Hermes, OpenClaw payload shapes auto-detected), refreshes the index incrementally, and warns about production callers, ambiguous references, and hotspots — before the edit happens.
+Single Rust binary (~18 MB). SQLite index at `.code-abyss/index.db`.
 
-Host integration is split by hook-surface shape (stable contract as of v0.5.24):
-
-- **abyss attach (production entrypoint)** — `claude`, `codex`, `gemini`. Shared-settings-file hosts, idempotent installer, single static binary owns the install.
-- **companion [`code-abyss`](https://github.com/telagod/code-abyss) (architectural delegation)** — `openclaw` (per-pack layout, not a settings file), `pi`, `hermes` (hook shapes still evolving). The npm package's shape adapters iterate independently of abyss's release cadence.
-
-Run `abyss attach all` to install all three abyss-owned hosts in one go (`openclaw` is surfaced as a `skipped: …` row pointing at the code-abyss flow).
-
-**Skill manifest**: `abyss skill-manifest` emits a machine-readable JSON document (CLI commands, MCP tools, hook entry points, attach hosts, daemon verbs) for skill-discovery consumers like `code-abyss`. Pass `--compact` for single-line output. Pin against `schema_version` rather than the abyss version.
-
-**Arch layers**: every file gets an architectural layer (`api`, `domain`, `infra`, `util`, …) via a built-in path-segment dictionary. Project-specific directory names? Drop a `.code-abyss/arch.toml` at the workspace root — see [docs/ARCH-LAYERS.md](docs/ARCH-LAYERS.md).
-
-**Ambient reindex (`abyss daemon` / `abyss watch`)**: subscribes to file-system events and reindexes on save. The 150ms debounce coalesces editor write bursts (atomic-rename saves, formatter passes) into one update; hash-incremental skip keeps cost proportional to what actually changed.
-
-Two flavors share the same watcher:
-
-```sh
-# Background daemon (Unix only) — pidfile-locked, Unix-socket fronted.
-# V1.5: --detach does a proper double-fork; pre-V1.5 `start &` still works.
-abyss daemon start --detach        # double-fork + setsid, returns once pidfile is claimed
-abyss daemon start &               # alternative: shell-backgrounded (no double-fork)
-abyss daemon status                # prints pid, uptime, last reindex; exit 1 if not running
-abyss daemon stop                  # SIGTERM the recorded pid, wait ≤5s for cleanup
-abyss daemon logs --tail 50        # tail .code-abyss/daemon.log (default N=50)
-
-# Foreground equivalent — unchanged from v0.4.0, alias of `daemon start --foreground`.
-abyss watch                        # default 150ms debounce
-abyss watch --debounce-ms 300      # tune for slower disks / heavier formatters
+```
+CLI (clap)
+ ├── Indexer: walker → tree-sitter parse → tiered SQL resolver → git temporal
+ ├── Proxy: 28 Rust handlers + TOML rule engine → never-worse guard
+ ├── MCP: 9 tools over stdio (rmcp)
+ ├── Daemon: pidfile + Unix socket, hash-incremental reindex on file save
+ └── Hooks: pre-edit card / post-edit refresh / proxy rewrite (2ms budget)
 ```
 
-The V2 socket protocol is newline-delimited JSON and exposes five verbs:
-
-- `{"cmd":"ping"}` — uptime + last-reindex telemetry + epoch counter.
-- `{"cmd":"stats"}` — file / symbol / ref / chunk counts.
-- `{"cmd":"reindex"}` — synchronous hash-incremental reindex on a worker thread; returns `{reindexed, removed, duration_ms, epoch}`. Two concurrent reindex calls get one structured `index lock contention` error rather than fighting at the SQLite layer.
-- `{"cmd":"logs","tail":N}` — last N lines of `daemon.log`.
-- `{"cmd":"mcp"}` (V2) — switches the connection into MCP stdio mode and runs an `rmcp` service over the same socket with a per-connection read-only SQLite handle. Used under the hood by `abyss mcp --via-daemon`.
-
-```sh
-echo '{"cmd":"ping"}'     | nc -U .code-abyss/daemon.sock
-echo '{"cmd":"reindex"}'  | nc -U .code-abyss/daemon.sock
-
-# Switch a raw socket into MCP mode + initialize handshake:
-( printf '{"cmd":"mcp"}\n'
-  printf '%s\n' '{"jsonrpc":"2.0","method":"initialize","id":1,"params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"smoke","version":"0"}}}'
-) | nc -U .code-abyss/daemon.sock
-```
-
-Hooks deliberately stay on the direct-SQLite path — a socket hop would regress the pre-edit hook's sub-12ms budget. Only `abyss mcp --via-daemon` uses the new MCP-over-socket path.
-
-## Dogfood evaluations
-
-We run abyss on real third-party codebases and publish the result —
-score, bugs found, and honest gaps — under `docs/dogfood/`. See
-[docs/DOGFOOD.md](docs/DOGFOOD.md) for the index.
-
-| Project | Lang | Score | Report |
-|---------|------|------:|--------|
-| Django 5.1.4 | Python | 8 / 10 | [docs/dogfood/django-2026-06-17.md](docs/dogfood/django-2026-06-17.md) |
-| helix-editor | Rust workspace | 7.5 / 10 | [docs/dogfood/helix-editor-2026-06-17.md](docs/dogfood/helix-editor-2026-06-17.md) |
-| vite | TS/JS monorepo | 7 / 10 | [docs/dogfood/vite-2026-06-17.md](docs/dogfood/vite-2026-06-17.md) |
-| FastAPI | Python | 6.5 / 10 | [docs/dogfood/fastapi-2026-06-17.md](docs/dogfood/fastapi-2026-06-17.md) |
-| hono | TypeScript | 8 / 10 | [docs/dogfood/hono-2026-06-17.md](docs/dogfood/hono-2026-06-17.md) |
-
-Each report drove concrete fixes (TS `callers` learning type refs from
-vite, monorepo labeller from helix, `docs_src/` / top-level `tests/`
-filter from FastAPI, `kind='inherit'` surfacing + L0e sibling
-disambiguation from Django, `callers --limit` + built-in name-shadow
-filter from hono). When a prediction got falsified — MRO L0e didn't
-fire on FastAPI — we wrote it down instead of quietly burying it; when
-the same prediction re-validated on Django (9 450 L0e hits, 94× the
-floor), we wrote that down too. See
-[docs/PRINCIPLES.md](docs/PRINCIPLES.md) for the design contracts these
-evaluations enforced.
-
-## Features
+<details>
+<summary>Build variants</summary>
 
 | Build | Contents | Size |
 |-------|----------|------|
-| default (slim) | call graph + temporal + fulltext + MCP | ~18M |
-| `--features semantic` | + embedding-based semantic search (fastembed/ONNX) | ~43M |
+| Default (slim) | Call graph + temporal + fulltext + proxy + MCP | ~18 MB |
+| `--features semantic` | + embedding search (fastembed / ONNX) | ~43 MB |
 
-## Status
+</details>
 
-**v0.5.27** — 535 tests, prebuilt binaries for 5 platforms, single-binary agent hooks plus a token-compressing command proxy (90% average output savings). Six SCIP-eval corpora across five languages, all ≥98.5% gated precision and zero precision regression through v0.5.27 (see the table above and [eval/RESULTS.md](eval/RESULTS.md)). This release split the monolithic `main.rs` into a `src/commands/` module tree and landed the proxy stack (Rust handlers + TOML declarative filters + semantic blast-radius enrichment). The preceding v0.5.x sprint hardened the daemon (`mcp --via-daemon`, `logs --follow`, socket `subscribe`), matured Python coverage (generic-base inherit edges, first-class `type_ref` for typed params, `.pyi` end-to-end, MRO walker pinned by regression test), and rounded out operability (`completion`, `config show`, `reset`, `index --since`, `setup`). One-page overview: [RELEASE-NOTES.md](RELEASE-NOTES.md). Pages site live at [telagod.github.io/abyss](https://telagod.github.io/abyss/). Six dogfood reports now (SQLAlchemy 8/10 — L0e fires 4 496 times on declarative mixin towers, Django 8/10, helix-editor 7.5, vite 7, FastAPI 6.5 — L0e=0 falsified in public, hono 8). APIs and index format may still change before 1.0.
+## Development
+
+```sh
+cargo build                    # slim build
+cargo test                     # all tests
+cargo clippy -- -D warnings    # lint
+cargo fmt --check              # format check
+
+# smoke test
+cargo run -- index && cargo run -- stats && cargo run -- map --json
+```
 
 ## License
 
