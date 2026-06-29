@@ -246,13 +246,20 @@ pub fn init_db(conn: &Connection) -> Result<()> {
 }
 
 pub fn init_vec_table(conn: &Connection, dimensions: usize) -> Result<()> {
-    conn.execute_batch(&format!(
+    if let Err(e) = conn.execute_batch(&format!(
         "
         CREATE VIRTUAL TABLE IF NOT EXISTS vec_chunks USING vec0(
             chunk_id INTEGER PRIMARY KEY,
             embedding float[{dimensions}]
         );
         "
-    ))?;
+    )) {
+        let msg = e.to_string();
+        if msg.contains("no such module") || msg.contains("SQL error") {
+            eprintln!("warning: sqlite-vec not available, vector search disabled");
+            return Ok(());
+        }
+        return Err(e.into());
+    }
     Ok(())
 }
