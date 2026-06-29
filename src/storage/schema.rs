@@ -40,7 +40,6 @@ pub fn init_db(conn: &Connection) -> Result<()> {
         );
         CREATE INDEX IF NOT EXISTS idx_files_path ON files(path);
         CREATE INDEX IF NOT EXISTS idx_files_dir ON files(dir);
-        CREATE INDEX IF NOT EXISTS idx_files_lang_family ON files(lang_family);
 
         CREATE TABLE IF NOT EXISTS chunks (
             id         INTEGER PRIMARY KEY,
